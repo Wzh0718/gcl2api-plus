@@ -19,7 +19,8 @@
 
 - 流程：拉上游 master → 应用 overlay → 质量门禁（专项测试、全量 pytest、compileall、`node --check front/common.js`、diff 空白检查）→ 构建 → 推送 `harbor.beeintel.com/crawler-platform/gcli2api:vYYYYMMDD` 和 `latest`；
 - 需要先 `docker login harbor.beeintel.com`；
-- 可选环境变量见 `scripts/build-and-push.sh --help`。
+- 可选环境变量见 `scripts/build-and-push.sh --help`；
+- GitHub 侧另有 `.github/workflows/ghcr-sync-release.yml`：每天定时执行同一脚本（通过 `HARBOR_IMAGE` 指向 `ghcr.io/wzh0718/gcl2api-plus`），上游无新提交则跳过，详见 `docs/CUSTOMIZATION.md`。
 
 ## 测试
 

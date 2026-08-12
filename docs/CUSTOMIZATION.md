@@ -28,6 +28,20 @@ harbor.beeintel.com/crawler-platform/gcli2api:latest
 
 同一天重复执行会重新推送当天 Tag 和 `latest`。如果 Harbor 项目启用了 Tag 不可变策略，已经存在的日期 Tag 可能拒绝覆盖，此时需要调整 Harbor 策略或在下一日期发布。
 
+## GitHub Actions 自动发布（ghcr.io）
+
+`.github/workflows/ghcr-sync-release.yml` 每天 09:17（Asia/Shanghai）自动执行与 `build-and-push.sh` 等价的流程：拉上游 `master` → 应用覆盖层 → 质量门禁 → 构建镜像，推送到 GitHub Container Registry：
+
+```text
+ghcr.io/wzh0718/gcl2api-plus:vYYYYMMDD
+ghcr.io/wzh0718/gcl2api-plus:latest
+```
+
+- 上游无新提交时跳过（`.last-released-upstream-sha` 记录上次发布的上游 SHA）；
+- 认证使用内置 `GITHUB_TOKEN`（`packages: write`），无需配置额外 secret；
+- 也可在 Actions 页面手动触发（workflow_dispatch）；
+- 脚本通过环境变量 `HARBOR_IMAGE=ghcr.io/wzh0718/gcl2api-plus` 复用同一套发布逻辑，本地手动发布到 Harbor 的方式不受影响。
+
 ## 首次准备
 
 发布机器需要：
