@@ -698,7 +698,7 @@ curl -X POST "http://127.0.0.1:7861/antigravity/v1/messages" \
 - Gemini 系列：`gemini-2.5-flash`、`gemini-2.5-pro` 等
 - 自动支持思维模型（thinking models）
 
-**Gemini 原生示例：**
+**Gemini SDK 图片编辑示例：**
 ```python
 from io import BytesIO
 from PIL import Image
@@ -708,20 +708,23 @@ from google.genai import types
 # The client gets the API key from the environment variable `GEMINI_API_KEY`.
 
 client = Client(
-            api_key="pwd",
-            http_options=HttpOptions(base_url="http://127.0.0.1:7861"),
-        )
-
-prompt = (
-    """
-    画一只猫
-    """
+    api_key="pwd",
+    http_options=HttpOptions(
+        # SDK 会自动追加 api_version，因此 base_url 不包含 /v1。
+        base_url="http://127.0.0.1:7861/antigravity",
+        api_version="v1",
+    ),
 )
+
+prompt = "保留主体，只把背景改成海边"
+input_image = Image.open("input.png")
 
 response = client.models.generate_content(
     model="gemini-3.1-flash-image",
-    contents=[prompt],
+    # Gemini 没有独立 images.edit；提示词和原图共同作为 contents。
+    contents=[prompt, input_image],
     config=types.GenerateContentConfig(
+        response_modalities=["IMAGE"],
         image_config=types.ImageConfig(
             aspect_ratio="16:9",
         )
@@ -732,8 +735,16 @@ for part in response.candidates[0].content.parts:
         print(part.text)
     elif part.inline_data is not None:
         image = Image.open(BytesIO(part.inline_data.data))
-        image.save("generated_image.png")
+        image.save("edited_image.png")
 
+```
+
+可直接运行仓库示例：
+
+```bash
+uv run --with google-genai --with pillow \
+  python examples/gemini_sdk_image_edit.py \
+  input.png "保留主体，只把背景改成海边"
 ```
 
 **说明：**

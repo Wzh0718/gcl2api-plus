@@ -6,6 +6,10 @@ services:
     container_name: gcli2api
     restart: unless-stopped
     network_mode: host
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     environment:
       # Password configuration (choose one)
       # Option 1: Use common password
@@ -24,9 +28,10 @@ services:
       # Optional: Logging configuration
       # - LOG_LEVEL=${LOG_LEVEL:-info}
 
-      # Optional: Redis configuration (for distributed storage)
-      # - REDIS_URI=${REDIS_URI}
-      # - REDIS_DATABASE=${REDIS_DATABASE:-0}
+      # Optional: Redis configuration (billing mirror/dashboard)
+      - REDIS_URL=${REDIS_URL:-}
+      - REDIS_USER=${REDIS_USER:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
 
       # Optional: MongoDB configuration (for distributed storage)
       # - MONGODB_URI=${MONGODB_URI}
@@ -37,6 +42,15 @@ services:
 
       # Optional: Proxy configuration
       # - PROXY=${PROXY}
+
+      # Optional: Antigravity account-bound IP and eligibility checks
+      - ANTIGRAVITY_CLI_VERSION=${ANTIGRAVITY_CLI_VERSION:-1.1.8}
+      - ANTIGRAVITY_CLI_OS_TYPE=${ANTIGRAVITY_CLI_OS_TYPE:-linux}
+      - ANTIGRAVITY_CLI_ARCH=${ANTIGRAVITY_CLI_ARCH:-amd64}
+      - ANTIGRAVITY_CLI_AUTH_METHOD=${ANTIGRAVITY_CLI_AUTH_METHOD:-consumer}
+      - ANTIGRAVITY_NETWORK_CHECK_ENABLED=${ANTIGRAVITY_NETWORK_CHECK_ENABLED:-false}
+      - ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS=${ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS:-1800}
+      - ANTIGRAVITY_EGRESS_IP_CHECK_URL=${ANTIGRAVITY_EGRESS_IP_CHECK_URL:-}
     volumes:
       - ./data/creds:/app/creds
 

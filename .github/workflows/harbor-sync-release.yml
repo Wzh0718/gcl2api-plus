@@ -1,0 +1,57 @@
+name: Sync Upstream and Release to Harbor
+
+# 定时从上游 su-kaka/gcli2api 拉取最新 master，
+# 应用 custom-overlay/files 覆盖层，跑质量门禁，
+# 构建镜像并推送 vYYYYMMDD + latest 到 Harbor。
+# 与本地手动执行 ./scripts/build-and-push.sh 完全等价。
+
+on:
+  schedule:
+    # 每天 09:17（Asia/Shanghai，UTC+8）= 01:17 UTC
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout custom overlay repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Harbor
+        run: |
+          echo "${{ secrets.HARBOR_PASSWORD }}" \
+            | docker login harbor.beeintel.com \
+                -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+
+      - name: Skip if upstream has no new commits
+        id: check
+        run: |
+          git remote add upstream https://github.com/su-kaka/gcli2api.git
+          git fetch upstream master
+          UPSTREAM_SHA="$(git rev-parse upstream/master)"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          LAST_FILE=".last-released-upstream-sha"
+          if [[ -f "${LAST_FILE}" ]] && [[ "$(cat "${LAST_FILE}")" == "${UPSTREAM_SHA}" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游无新提交（${UPSTREAM_SHA:0:8}），跳过本次发布"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull upstream, apply overlay, run gates, build and push
+        if: steps.check.outputs.changed == 'true'
+        run: ./scripts/build-and-push.sh
+
+      - name: Record released upstream SHA
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          echo "${{ steps.check.outputs.upstream_sha }}" > .last-released-upstream-sha
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last-released-upstream-sha
+          git commit -m "chore: record released upstream sha ${{ steps.check.outputs.upstream_sha }} [skip ci]"
+          git push

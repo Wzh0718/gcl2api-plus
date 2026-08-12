@@ -1,0 +1,16 @@
+.git
+.github
+.codegraph
+.env
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+creds/
+tests/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log

@@ -6,6 +6,12 @@
 *.toml
 !pyproject.toml
 creds/
+.codegraph/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 CLAUDE.md
 GEMINI.md
 .kiro
@@ -91,6 +97,10 @@ Thumbs.db
 *.log
 log.txt
 
+# Generated Banana image stress-test reports
+reports/banana-stress-*.html
+reports/banana-stress-*.json
+
 # Temporary files
 *.tmp
 *.temp
@@ -98,3 +108,7 @@ log.txt
 
 tools/
 aicode/
+
+# Local agent / debug artifacts
+.playwright-mcp/
+gcli2api_logs_*.txt
