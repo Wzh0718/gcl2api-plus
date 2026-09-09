@@ -9,6 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "build-and-push.sh"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+WORKFLOW_FILE = REPO_ROOT / ".github" / "workflows" / "ghcr-sync-release.yml"
 OVERLAY_FILES = REPO_ROOT / "custom-overlay" / "files"
 
 CUSTOM_FILE_PATHS = {
@@ -276,6 +277,14 @@ def test_compose_passes_split_redis_config_from_dotenv_to_container():
     assert "- REDIS_URL=${REDIS_URL:-}" in compose
     assert "- REDIS_USER=${REDIS_USER:-}" in compose
     assert "- REDIS_PASSWORD=${REDIS_PASSWORD:-}" in compose
+
+
+def test_ghcr_workflow_installs_uv_before_running_release_script():
+    workflow = WORKFLOW_FILE.read_text(encoding="utf-8")
+
+    setup_uv = workflow.index("uses: astral-sh/setup-uv@")
+    run_release = workflow.index("run: ./scripts/build-and-push.sh")
+    assert setup_uv < run_release
 
 
 def test_repository_overlay_is_an_exact_copy_of_custom_runtime_files():
