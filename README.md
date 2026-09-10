@@ -96,6 +96,8 @@ cp .env.example .env
 
 配置优先级为：显式环境变量 > `.env` > SQLite 配置 > 代码默认值。SQLite 是唯一的持久化主账本，Redis 只作为计费和看板镜像，不替代 SQLite。
 
+上面只是常用项。全部环境变量（含本 fork 新增的 ★ 标记变量，如 403 复检、网络检查、计费看板等）按功能分组收录在 [环境变量参考](docs/CUSTOMIZATION.md#环境变量参考)；`.env.example` 中每个变量也带默认值注释。
+
 ### 模型降级链示例
 
 ```dotenv
