@@ -302,6 +302,29 @@ def test_image_description_label_and_manifest_annotation_stay_in_sync():
     assert f"IMAGE_DESCRIPTION:-{label.group(1)}" in script
 
 
+def test_release_labels_image_source_with_fork_repository_not_upstream(tmp_path):
+    upstream = create_upstream(tmp_path)
+    overlay = create_overlay(tmp_path)
+    env, log_file = create_fake_toolchain(tmp_path)
+    release_env(env, upstream, overlay)
+
+    result = run([str(SCRIPT)], tmp_path, env=env, check=False)
+
+    assert result.returncode == 0, result.stdout
+    commands = log_file.read_text(encoding="utf-8")
+    # GitHub 用 source 标签做「包 → 仓库」关联，必须是构建发布方（本 fork）
+    assert (
+        "--label org.opencontainers.image.source=https://github.com/Wzh0718/gcl2api-plus"
+        in commands
+    )
+    assert (
+        "--label org.opencontainers.image.source=https://github.com/su-kaka/gcli2api.git"
+        not in commands
+    )
+    # 上游代码基线仍然记录在 revision 标签里
+    assert "--label org.opencontainers.image.revision=" in commands
+
+
 def test_release_stops_before_docker_build_when_tests_fail(tmp_path):
     upstream = create_upstream(tmp_path)
     overlay = create_overlay(tmp_path)

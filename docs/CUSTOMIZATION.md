@@ -264,9 +264,20 @@ IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 | `UPSTREAM_BRANCH` | `master` |
 | `CUSTOM_OVERLAY_DIR` | `custom-overlay/files` |
 | `IMAGE_NAME` | `ghcr.io/wzh0718/gcl2api-plus` |
+| `SOURCE_URL` | `https://github.com/Wzh0718/gcl2api-plus`；写入 `org.opencontainers.image.source` 标签 |
 | `PLATFORMS` | `linux/amd64,linux/arm64`；只需 amd64 时设为 `linux/amd64` |
+| `IMAGE_DESCRIPTION` | GHCR 包描述，默认与 `Dockerfile` 的 `description` 标签一致 |
 | `RELEASE_DATE` | 上海时区当天，格式 `YYYYMMDD` |
 | `KEEP_BUILD_DIR` | `0`；设为 `1` 时保留临时源码用于排查 |
+
+镜像元数据标签的含义：
+
+| 标签 / 注释 | 内容 |
+| --- | --- |
+| `org.opencontainers.image.source` | 本 fork 仓库（真正构建发布方）；GitHub 用它做「包 → 仓库」关联 |
+| `org.opencontainers.image.revision` | 本次构建使用的上游 commit sha |
+| `org.opencontainers.image.created` | 构建时间（上海时区） |
+| `org.opencontainers.image.title` / `description` | 来自 `Dockerfile`；多架构时同时写入 manifest index 注释 |
 
 `RELEASE_DATE` 主要用于补发或测试。例如：
 

@@ -10,6 +10,10 @@ readonly UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-master}"
 readonly CUSTOM_OVERLAY_DIR="${CUSTOM_OVERLAY_DIR:-${REPO_ROOT}/custom-overlay/files}"
 readonly IMAGE_NAME="${IMAGE_NAME:-ghcr.io/wzh0718/gcl2api-plus}"
 readonly IMAGE_REGISTRY="${IMAGE_NAME%%/*}"
+# org.opencontainers.image.source 标签：指向真正构建并发布镜像的仓库（本 fork）。
+# 不要用 UPSTREAM_URL —— 那是代码基线仓库，GitHub 会用该标签做「包 → 仓库」关联。
+# 上游代码基线仍记录在 revision 标签（上游 commit sha）中。
+readonly SOURCE_URL="${SOURCE_URL:-https://github.com/Wzh0718/gcl2api-plus}"
 readonly RELEASE_DATE="${RELEASE_DATE:-$(TZ=Asia/Shanghai date +%Y%m%d)}"
 readonly VERSION_TAG="v${RELEASE_DATE}"
 readonly DATE_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
@@ -42,6 +46,7 @@ usage() {
   UPSTREAM_BRANCH     上游分支，默认 master
   CUSTOM_OVERLAY_DIR  定制覆盖目录
   IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
+  SOURCE_URL          镜像 source 标签指向的仓库，默认 https://github.com/Wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
   PLATFORMS           目标平台列表，默认 linux/amd64,linux/arm64；只需 amd64 时设为 linux/amd64
   IMAGE_DESCRIPTION   GHCR 包描述，默认与 Dockerfile 的 description 标签一致
@@ -217,7 +222,7 @@ docker buildx build \
     --pull \
     --provenance=false \
     "${ANNOTATION_ARGS[@]+"${ANNOTATION_ARGS[@]}"}" \
-    --label "org.opencontainers.image.source=${UPSTREAM_URL}" \
+    --label "org.opencontainers.image.source=${SOURCE_URL}" \
     --label "org.opencontainers.image.revision=${UPSTREAM_COMMIT}" \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
     -t "${DATE_IMAGE}" \
