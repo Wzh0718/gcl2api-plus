@@ -4012,6 +4012,7 @@ function populateConfigForm() {
 
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
     setConfigField('antigravity403RecheckInterval', c.antigravity_403_recheck_interval || 3600);
+    setConfigField('antigravityModelFallbackChain', c.antigravity_model_fallback_chain || '');
 
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
@@ -4069,6 +4070,7 @@ async function saveConfig() {
             antigravity_switch_credential_enabled: getChecked('antigravitySwitchCredentialEnabled'),
             antigravity_403_recheck_enabled: getChecked('antigravity403RecheckEnabled'),
             antigravity_403_recheck_interval: getInt('antigravity403RecheckInterval', 3600),
+            antigravity_model_fallback_chain: getValue('antigravityModelFallbackChain'),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
             keepalive_url: getValue('keepaliveUrl'),
             keepalive_interval: getInt('keepaliveInterval', 60)

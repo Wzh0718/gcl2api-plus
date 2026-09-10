@@ -6,5 +6,5 @@ Rules:
 
 - Keep only customized source, UI, configuration examples, Docker exclusions, and focused tests here.
 - A file in this directory replaces the complete upstream file at the same path.
-- Never add `.env`, credentials, SQLite databases, Git metadata, or Harbor secrets.
+- Never add `.env`, credentials, SQLite databases, Git metadata, or registry secrets.
 - When a customized working-tree file changes, update its matching copy under `files/`; `tests/test_build_and_push_script.py` detects drift.

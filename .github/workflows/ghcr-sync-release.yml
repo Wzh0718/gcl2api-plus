@@ -54,7 +54,7 @@ jobs:
       - name: Pull upstream, apply overlay, run gates, build and push
         if: steps.check.outputs.changed == 'true'
         env:
-          HARBOR_IMAGE: ${{ env.GHCR_IMAGE }}
+          IMAGE_NAME: ${{ env.GHCR_IMAGE }}
         run: ./scripts/build-and-push.sh
 
       - name: Record released upstream SHA

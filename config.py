@@ -61,6 +61,7 @@ ENV_MAPPINGS = {
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
     "ANTIGRAVITY_SWITCH_CREDENTIAL": "antigravity_switch_credential_enabled",
+    "ANTIGRAVITY_MODEL_FALLBACK_CHAIN": "antigravity_model_fallback_chain",
     "ENABLE_GEMINICLI": "enable_geminicli",
     "BILLING_CURRENCY": "billing_currency",
     "BILLING_DEDUPE_TTL_DAYS": "billing_dedupe_ttl_days",
@@ -449,6 +450,43 @@ async def get_antigravity_switch_credential_enabled() -> bool:
         return env_value.lower() in ("true", "1", "yes", "on")
 
     return bool(await get_config_value("antigravity_switch_credential_enabled", False))
+
+
+# 配额耗尽时的默认模型降级链（逗号分隔）
+DEFAULT_ANTIGRAVITY_MODEL_FALLBACK_CHAIN = (
+    "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,"
+    "gemini-3.6-flash-tiered,gemini-3.7-flash-tiered"
+)
+
+
+async def get_antigravity_model_fallback_chain() -> list:
+    """
+    Get antigravity model fallback chain.
+
+    模型配额耗尽（429 且带明确配额重置信息）且号池无可用凭证时，
+    按链顺序降级到下一个模型重试。逗号分隔，留空关闭。
+
+    Environment variable: ANTIGRAVITY_MODEL_FALLBACK_CHAIN
+    Database config key: antigravity_model_fallback_chain
+    Default: gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered
+    """
+    env_value = os.getenv("ANTIGRAVITY_MODEL_FALLBACK_CHAIN")
+    if env_value is not None:
+        raw = env_value
+    else:
+        raw = await get_config_value(
+            "antigravity_model_fallback_chain", DEFAULT_ANTIGRAVITY_MODEL_FALLBACK_CHAIN
+        )
+
+    if not isinstance(raw, str):
+        return []
+
+    chain = []
+    for item in raw.split(","):
+        model = item.strip()
+        if model and model not in chain:
+            chain.append(model)
+    return chain
 
 
 async def get_oauth_proxy_url() -> str:

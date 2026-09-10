@@ -1,6 +1,6 @@
-# 定制覆盖与 Harbor 一键发布
+# 定制覆盖与 GitHub Container Registry 一键发布
 
-本仓库不再通过合并定制分支来同步上游。发布时始终临时拉取 GitHub 最新 `master`，再用 `custom-overlay/files/` 覆盖定制文件，测试通过后构建并推送 Harbor。
+本仓库不再通过合并定制分支来同步上游。发布时始终临时拉取 GitHub 最新 `master`，再用 `custom-overlay/files/` 覆盖定制文件，测试通过后构建并推送 GitHub Container Registry。
 
 唯一发布入口：
 
@@ -15,18 +15,18 @@
 脚本只构建一次镜像，然后为同一个镜像添加并推送两个 Tag：
 
 ```text
-harbor.beeintel.com/crawler-platform/gcli2api:vYYYYMMDD
-harbor.beeintel.com/crawler-platform/gcli2api:latest
+ghcr.io/wzh0718/gcl2api-plus:vYYYYMMDD
+ghcr.io/wzh0718/gcl2api-plus:latest
 ```
 
 日期固定按 `Asia/Shanghai` 生成。例如 2026 年 7 月 27 日发布：
 
 ```text
-harbor.beeintel.com/crawler-platform/gcli2api:v20260727
-harbor.beeintel.com/crawler-platform/gcli2api:latest
+ghcr.io/wzh0718/gcl2api-plus:v20260727
+ghcr.io/wzh0718/gcl2api-plus:latest
 ```
 
-同一天重复执行会重新推送当天 Tag 和 `latest`。如果 Harbor 项目启用了 Tag 不可变策略，已经存在的日期 Tag 可能拒绝覆盖，此时需要调整 Harbor 策略或在下一日期发布。
+同一天重复执行会重新推送当天 Tag 和 `latest`。如果仓库启用了不可变 Tag 策略，已经存在的日期 Tag 可能拒绝覆盖，此时应使用新的日期 Tag。
 
 ## GitHub Actions 自动发布（ghcr.io）
 
@@ -40,7 +40,7 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 - 上游无新提交时跳过（`.last-released-upstream-sha` 记录上次发布的上游 SHA）；
 - 认证使用内置 `GITHUB_TOKEN`（`packages: write`），无需配置额外 secret；
 - 也可在 Actions 页面手动触发（workflow_dispatch）；
-- 脚本通过环境变量 `HARBOR_IMAGE=ghcr.io/wzh0718/gcl2api-plus` 复用同一套发布逻辑，本地手动发布到 Harbor 的方式不受影响。
+- 脚本通过环境变量 `IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus` 复用同一套发布逻辑。
 
 ## 首次准备
 
@@ -51,12 +51,12 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 - `python3`
 - `node`
 - 可用的 Docker 服务
-- 访问 GitHub、Python 包源、基础镜像仓库和 Harbor 的网络
+- 访问 GitHub、Python 包源、基础镜像仓库和 GitHub Container Registry 的网络
 
-Harbor 登录只需要提前执行一次，密码不写入脚本：
+GitHub Container Registry 登录只需要提前执行一次，密码不写入脚本：
 
 ```bash
-docker login harbor.beeintel.com
+echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 ```
 
 ## 一键发布流程
@@ -103,7 +103,7 @@ custom-overlay/files/
 - `creds/`
 - `.codegraph/`
 - `*.db`、`*.sqlite`、WAL/SHM 文件
-- Harbor、GitHub 或第三方服务的真实密码和 Token
+- GitHub、镜像仓库或第三方服务的真实密码和 Token
 
 `.dockerignore` 会阻止 Git 元数据、环境文件、凭证、数据库、缓存和测试目录进入最终镜像。测试会在 Docker 构建前完成。
 
@@ -159,6 +159,7 @@ custom-overlay/files/
 | `MAX_NON_STREAM_BUFFER_BYTES` | 最大非流缓冲区 | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` | 账号候选上限 | 最大 `32` |
 | `DINGTALK_WEBHOOK_URL` | 全账号不可用钉钉告警 | 首次立即发送，之后所有反代不可用提醒每小时最多一次；机器人关键词设为 `Gemini反代` |
+| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | 配额耗尽时的模型降级链 | 逗号分隔；留空关闭 |
 | `BILLING_CURRENCY` | 计费币种 | `CNY` |
 | `BILLING_DEDUPE_TTL_DAYS` | 请求去重时间 | `7` 天 |
 | `BILLING_REDIS_PREFIX` | Redis 键前缀 | `gcli:billing` |
@@ -177,7 +178,7 @@ custom-overlay/files/
 
 ```bash
 UPSTREAM_BRANCH=master \
-HARBOR_IMAGE=harbor.beeintel.com/crawler-platform/gcli2api \
+IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 ./scripts/build-and-push.sh
 ```
 
@@ -188,7 +189,7 @@ HARBOR_IMAGE=harbor.beeintel.com/crawler-platform/gcli2api \
 | `UPSTREAM_URL` | `https://github.com/su-kaka/gcli2api.git` |
 | `UPSTREAM_BRANCH` | `master` |
 | `CUSTOM_OVERLAY_DIR` | `custom-overlay/files` |
-| `HARBOR_IMAGE` | `harbor.beeintel.com/crawler-platform/gcli2api` |
+| `IMAGE_NAME` | `ghcr.io/wzh0718/gcl2api-plus` |
 | `RELEASE_DATE` | 上海时区当天，格式 `YYYYMMDD` |
 | `KEEP_BUILD_DIR` | `0`；设为 `1` 时保留临时源码用于排查 |
 
@@ -203,7 +204,7 @@ RELEASE_DATE=20260727 ./scripts/build-and-push.sh
 `latest` 始终指向最近一次成功推送的构建。需要回滚时，部署明确的历史日期 Tag，而不是重新构建旧代码：
 
 ```text
-harbor.beeintel.com/crawler-platform/gcli2api:v20260727
+ghcr.io/wzh0718/gcl2api-plus:v20260727
 ```
 
 日期 Tag 提供可追溯的发布锚点；镜像标签中还记录了构建使用的上游 Git Commit。

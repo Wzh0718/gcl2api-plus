@@ -17,6 +17,7 @@ from fastapi import Response
 from config import (
     get_antigravity_api_url,
     get_antigravity_api_url_candidates,
+    get_antigravity_model_fallback_chain,
     get_antigravity_network_check_enabled,
     get_antigravity_stream2nostream,
     get_auto_ban_error_codes,
@@ -702,6 +703,69 @@ async def _switch_credential_for_retry(
     return False, next_cred_task
 
 
+def _is_quota_exhausted_429(status_code: int, error_body: Optional[str]) -> bool:
+    """判断是否为「配额耗尽」型 429（区别于瞬时限流）。
+
+    配额耗尽特征：ErrorInfo reason=QUOTA_EXHAUSTED、携带 quotaResetTimeStamp/
+    quotaResetDelay、RESOURCE_EXHAUSTED 配额消息，或 credits 余额不足标记。
+    瞬时限流（无这些特征的 429）不算，仍走短冷却换号重试。
+    """
+    if status_code != 429 or not error_body:
+        return False
+    return any(
+        marker in error_body
+        for marker in (
+            "QUOTA_EXHAUSTED",
+            "quotaResetTimeStamp",
+            "quotaResetDelay",
+            "Resource has been exhausted",
+            CREDITS_EXHAUSTED_MARKER,
+        )
+    )
+
+
+def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
+    """当前模型在降级链中时返回链上下一个模型，否则返回 None。"""
+    if not chain:
+        return None
+    try:
+        index = chain.index(current_model)
+    except ValueError:
+        return None
+    if index + 1 < len(chain):
+        return chain[index + 1]
+    return None
+
+
+async def _try_model_fallback(
+    *,
+    model_name: str,
+    inner_request: Dict[str, Any],
+    credential_data: Dict[str, Any],
+    quota_exhausted: bool,
+    image_request: bool,
+    log_prefix: str,
+) -> Optional[Tuple[str, Dict[str, Any], str]]:
+    """模型配额耗尽且号池无可用凭证时，按配置的降级链切换到下一个模型。
+
+    返回 (新模型名, 新payload, 新request_id)；不降级时返回 None。
+    """
+    if image_request or not quota_exhausted:
+        return None
+    chain = await get_antigravity_model_fallback_chain()
+    next_model = _next_fallback_model(chain, model_name)
+    if not next_model:
+        return None
+    new_payload, new_request_id = await wrap_cli_request(
+        inner_request, next_model, credential_data.get("project_id", ""),
+        user_email=credential_data.get("user_email"),
+    )
+    log.warning(
+        f"{log_prefix} 模型 {model_name} 配额耗尽且号池无可用凭证，降级到 {next_model}"
+    )
+    return next_model, new_payload, new_request_id
+
+
 # ==================== 新的流式和非流式请求函数 ====================
 
 async def _stream_request_inner(
@@ -731,6 +795,20 @@ async def _stream_request_inner(
     cred_result = await credential_manager.get_valid_credential(
         mode="antigravity", model_name=model_name, image_request=image_request
     )
+
+    # 当前模型号池无可用凭证时，按配置的降级链尝试后续模型（图片请求不降级）
+    if not cred_result and not image_request:
+        chain = await get_antigravity_model_fallback_chain()
+        next_model = _next_fallback_model(chain, model_name)
+        while next_model and not cred_result:
+            log.warning(
+                f"[ANTIGRAVITY STREAM] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
+            )
+            model_name = next_model
+            cred_result = await credential_manager.get_valid_credential(
+                mode="antigravity", model_name=model_name
+            )
+            next_model = _next_fallback_model(chain, model_name)
 
     if not cred_result:
         # 如果返回值是None，直接返回错误500
@@ -787,6 +865,7 @@ async def _stream_request_inner(
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
+    last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     usage_metadata = None
@@ -872,9 +951,11 @@ async def _stream_request_inner(
         final_payload["project"] = project_id
         return True
 
-    for attempt in range(max_retries + 1):
+    attempt = 0
+    while attempt <= max_retries:
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
+        model_fell_back = False  # 标记本轮重试是否由模型降级触发（跳过换号）
         attempted_credentials.add(current_file)
         attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
 
@@ -902,6 +983,7 @@ async def _stream_request_inner(
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                         log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
+                        last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_body)
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
@@ -965,6 +1047,22 @@ async def _stream_request_inner(
                             need_retry = True
                             break  # 跳出内层循环，准备重试
                         else:
+                            # 配额耗尽型 429：先沿降级链切换模型，链路全部耗尽才算整体 429
+                            if last_error_quota_exhausted:
+                                fallback = await _try_model_fallback(
+                                    model_name=model_name,
+                                    inner_request=inner_request,
+                                    credential_data=credential_data,
+                                    quota_exhausted=True,
+                                    image_request=image_request,
+                                    log_prefix="[ANTIGRAVITY STREAM]",
+                                )
+                                if fallback is not None:
+                                    model_name, final_payload, request_id = fallback
+                                    attempted_credentials.clear()
+                                    need_retry = True
+                                    model_fell_back = True
+                                    break  # 跳出内层循环，用降级模型重试
                             # 不重试，直接返回原始错误（上游 403 改写为 503）
                             log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数或不应重试，返回原始错误")
                             await record_billing_once(False)
@@ -1014,6 +1112,7 @@ async def _stream_request_inner(
             elif not need_retry:
                 # 没有收到任何数据（空回复），需要重试
                 log.warning(f"[ANTIGRAVITY STREAM] 收到空回复，无任何内容，凭证: {current_file}")
+                last_error_quota_exhausted = False
                 await record_api_call_error(
                     credential_manager, current_file, 200,
                     None, mode="antigravity", model_name=model_name,
@@ -1041,6 +1140,11 @@ async def _stream_request_inner(
                 if lease_tracker is not None:
                     await lease_tracker.release()
 
+                if model_fell_back:
+                    # 模型已降级，沿用当前凭证直接重试，重试预算重置
+                    attempt = 0
+                    continue
+
                 switched, next_cred_task = await _switch_credential_for_retry(
                     next_cred_task=next_cred_task,
                     retry_interval=retry_interval,
@@ -1049,6 +1153,20 @@ async def _stream_request_inner(
                     log_prefix="[ANTIGRAVITY STREAM]",
                 )
                 if not switched:
+                    # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
+                    fallback = await _try_model_fallback(
+                        model_name=model_name,
+                        inner_request=inner_request,
+                        credential_data=credential_data,
+                        quota_exhausted=last_error_quota_exhausted,
+                        image_request=image_request,
+                        log_prefix="[ANTIGRAVITY STREAM]",
+                    )
+                    if fallback is not None:
+                        model_name, final_payload, request_id = fallback
+                        attempted_credentials.clear()
+                        attempt = 0
+                        continue
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
                     await record_billing_once(False)
                     await _alert_all_accounts_unavailable_if_needed(
@@ -1060,6 +1178,7 @@ async def _stream_request_inner(
                         media_type="application/json"
                     )
                     return
+                attempt += 1
                 continue  # 重试
 
         except Exception as e:
@@ -1067,6 +1186,7 @@ async def _stream_request_inner(
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
                 await asyncio.sleep(retry_interval)
+                attempt += 1
                 continue
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）
@@ -1090,7 +1210,7 @@ async def _stream_request_inner(
             # 无论流被完整消费，还是因重试/返回/异常被中途放弃，都显式关闭上游流
             await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
 
-    # 所有重试均已耗尽（for循环正常结束），返回最后记录的错误
+    # 所有重试均已耗尽（while 循环正常结束），返回最后记录的错误
     log.error("[ANTIGRAVITY STREAM] 所有重试均失败")
     if last_error_response:
         await record_billing_once(False)
@@ -1446,6 +1566,20 @@ async def non_stream_request(
         mode="antigravity", model_name=model_name
     )
 
+    # 当前模型号池无可用凭证时，按配置的降级链尝试后续模型
+    if not cred_result:
+        chain = await get_antigravity_model_fallback_chain()
+        next_model = _next_fallback_model(chain, model_name)
+        while next_model and not cred_result:
+            log.warning(
+                f"[ANTIGRAVITY] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
+            )
+            model_name = next_model
+            cred_result = await credential_manager.get_valid_credential(
+                mode="antigravity", model_name=model_name
+            )
+            next_model = _next_fallback_model(chain, model_name)
+
     if not cred_result:
         # 如果返回值是None，直接返回错误500
         log.error("[ANTIGRAVITY] 当前无可用凭证")
@@ -1496,6 +1630,7 @@ async def non_stream_request(
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
+    last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     usage_metadata = None
@@ -1552,7 +1687,8 @@ async def non_stream_request(
         final_payload["project"] = project_id
         return True
 
-    for attempt in range(max_retries + 1):
+    attempt = 0
+    while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
         attempted_credentials.add(current_file)
         
@@ -1574,6 +1710,7 @@ async def non_stream_request(
                 # 检查是否为空回复
                 if not response.content or len(response.content) == 0:
                     log.warning(f"[ANTIGRAVITY] 收到200响应但内容为空，凭证: {current_file}")
+                    last_error_quota_exhausted = False
                     
                     # 记录错误
                     await record_api_call_error(
@@ -1627,6 +1764,7 @@ async def non_stream_request(
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                     log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
+                    last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_text)
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
@@ -1681,6 +1819,21 @@ async def non_stream_request(
                     if should_retry and attempt < max_retries:
                         need_retry = True
                     else:
+                        # 配额耗尽型 429：先沿降级链切换模型，链路全部耗尽才算整体 429
+                        if last_error_quota_exhausted:
+                            fallback = await _try_model_fallback(
+                                model_name=model_name,
+                                inner_request=inner_request,
+                                credential_data=credential_data,
+                                quota_exhausted=True,
+                                image_request=False,
+                                log_prefix="[ANTIGRAVITY]",
+                            )
+                            if fallback is not None:
+                                model_name, final_payload, request_id = fallback
+                                attempted_credentials.clear()
+                                attempt = 0
+                                continue
                         # 不重试，直接返回原始错误（上游 403 改写为 503）
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数或不应重试，返回原始错误")
                         await record_billing_once(False)
@@ -1716,6 +1869,20 @@ async def non_stream_request(
                     log_prefix="[ANTIGRAVITY]",
                 )
                 if not switched:
+                    # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
+                    fallback = await _try_model_fallback(
+                        model_name=model_name,
+                        inner_request=inner_request,
+                        credential_data=credential_data,
+                        quota_exhausted=last_error_quota_exhausted,
+                        image_request=False,
+                        log_prefix="[ANTIGRAVITY]",
+                    )
+                    if fallback is not None:
+                        model_name, final_payload, request_id = fallback
+                        attempted_credentials.clear()
+                        attempt = 0
+                        continue
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
                     await record_billing_once(False)
                     await _alert_all_accounts_unavailable_if_needed(
@@ -1726,6 +1893,7 @@ async def non_stream_request(
                         status_code=500,
                         media_type="application/json"
                     )
+                attempt += 1
                 continue  # 重试
 
         except Exception as e:
@@ -1733,6 +1901,7 @@ async def non_stream_request(
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
                 await asyncio.sleep(retry_interval)
+                attempt += 1
                 continue
             else:
                 # 所有重试都失败，返回最后一次的错误（如果有）或500错误

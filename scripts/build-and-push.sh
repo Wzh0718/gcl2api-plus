@@ -8,12 +8,12 @@ readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/su-kaka/gcli2api.git}"
 readonly UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-master}"
 readonly CUSTOM_OVERLAY_DIR="${CUSTOM_OVERLAY_DIR:-${REPO_ROOT}/custom-overlay/files}"
-readonly HARBOR_IMAGE="${HARBOR_IMAGE:-harbor.beeintel.com/crawler-platform/gcli2api}"
-readonly HARBOR_REGISTRY="${HARBOR_IMAGE%%/*}"
+readonly IMAGE_NAME="${IMAGE_NAME:-ghcr.io/wzh0718/gcl2api-plus}"
+readonly IMAGE_REGISTRY="${IMAGE_NAME%%/*}"
 readonly RELEASE_DATE="${RELEASE_DATE:-$(TZ=Asia/Shanghai date +%Y%m%d)}"
 readonly VERSION_TAG="v${RELEASE_DATE}"
-readonly DATE_IMAGE="${HARBOR_IMAGE}:${VERSION_TAG}"
-readonly LATEST_IMAGE="${HARBOR_IMAGE}:latest"
+readonly DATE_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
+readonly LATEST_IMAGE="${IMAGE_NAME}:latest"
 
 RELEASE_WORK_DIR=""
 SOURCE_DIR=""
@@ -28,16 +28,16 @@ usage() {
   2. 使用 custom-overlay/files 覆盖定制文件
   3. 运行专项测试、完整测试和静态检查
   4. 构建一次 Docker 镜像
-  5. 推送 vYYYYMMDD 和 latest 两个 Tag 到 Harbor
+  5. 推送 vYYYYMMDD 和 latest 两个 Tag 到 GitHub Container Registry
 
-首次使用前请登录 Harbor:
-  docker login harbor.beeintel.com
+首次使用前请登录镜像仓库（GitHub Container Registry）:
+  echo "\$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 
 可选环境变量:
   UPSTREAM_URL        上游 Git 地址
   UPSTREAM_BRANCH     上游分支，默认 master
   CUSTOM_OVERLAY_DIR  定制覆盖目录
-  HARBOR_IMAGE        Harbor 镜像名
+  IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
   KEEP_BUILD_DIR=1    保留临时构建目录用于排查
 EOF
@@ -192,11 +192,11 @@ docker build --pull \
 
 printf '\n==> 推送日期镜像 %s\n' "${DATE_IMAGE}"
 docker push "${DATE_IMAGE}" \
-    || die "日期镜像推送失败。请先执行 docker login ${HARBOR_REGISTRY}。"
+    || die "日期镜像推送失败。请先执行 docker login ${IMAGE_REGISTRY}。"
 
 printf '\n==> 推送 latest 镜像 %s\n' "${LATEST_IMAGE}"
 docker push "${LATEST_IMAGE}" \
-    || die "latest 镜像推送失败。请先执行 docker login ${HARBOR_REGISTRY}。"
+    || die "latest 镜像推送失败。请先执行 docker login ${IMAGE_REGISTRY}。"
 
 printf '\n发布完成:\n'
 printf '  %s\n' "${DATE_IMAGE}"

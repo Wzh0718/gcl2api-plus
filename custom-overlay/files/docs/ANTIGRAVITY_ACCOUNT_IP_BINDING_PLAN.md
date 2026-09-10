@@ -209,4 +209,4 @@ POST /creds/network-health/batch-check
 9. 根目录与 `custom-overlay/files` 字节一致。
 10. 单账号、单代理完成 `loadCodeAssist`、一次最小生成及 10 次串行灰度验证。
 
-未经明确授权，不构建镜像、不推送 Harbor、不重建或重启容器。
+未经明确授权，不构建镜像、不推送镜像、不重建或重启容器。

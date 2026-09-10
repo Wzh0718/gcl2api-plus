@@ -3034,6 +3034,14 @@
                                     max="86400" />
                                 <small class="config-note">默认 3600 秒（1 小时），最小 60 秒</small>
                             </div>
+
+                            <div class="form-group">
+                                <label for="antigravityModelFallbackChain">模型配额降级链:</label>
+                                <input type="text" id="antigravityModelFallbackChain" class="config-input"
+                                    placeholder="gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered" />
+                                <small class="config-note">逗号分隔；模型配额耗尽且号池无可用凭证时，按顺序降级到下一个模型重试，留空关闭 <span
+                                        style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
                         </div>
 
                         <div class="config-group">

@@ -64,6 +64,11 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_403_recheck_enabled"] = await config.get_antigravity_403_recheck_enabled()
         current_config["antigravity_403_recheck_interval"] = await config.get_antigravity_403_recheck_interval()
 
+        # Antigravity 模型配额降级链
+        current_config["antigravity_model_fallback_chain"] = ",".join(
+            await config.get_antigravity_model_fallback_chain()
+        )
+
         # 保活配置
         current_config["keepalive_url"] = await config.get_keepalive_url()
         current_config["keepalive_interval"] = await config.get_keepalive_interval()
@@ -163,6 +168,18 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config["antigravity_403_recheck_interval"] = interval
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="403复检间隔必须是有效整数")
+
+        if "antigravity_model_fallback_chain" in new_config:
+            chain_value = new_config["antigravity_model_fallback_chain"]
+            if not isinstance(chain_value, str):
+                raise HTTPException(status_code=400, detail="模型配额降级链必须是逗号分隔的字符串")
+            # 规范化：去空白、去空项、去重；空串表示关闭降级
+            chain_items = []
+            for item in chain_value.split(","):
+                item = item.strip()
+                if item and item not in chain_items:
+                    chain_items.append(item)
+            new_config["antigravity_model_fallback_chain"] = ",".join(chain_items)
 
         # 验证保活配置
         if "keepalive_url" in new_config:

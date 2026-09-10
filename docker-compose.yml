@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   gcli2api:
-    image: ghcr.io/su-kaka/gcli2api:latest
+    image: ghcr.io/wzh0718/gcl2api-plus:latest
     container_name: gcli2api
     restart: unless-stopped
     network_mode: host

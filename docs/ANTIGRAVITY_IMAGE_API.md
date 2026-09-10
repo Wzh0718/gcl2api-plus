@@ -655,8 +655,8 @@ UV_CACHE_DIR=/tmp/gcli2api-uv-cache PYTHONPATH=. \
 2026-07-29 已将包含 4K 缓冲修复和 OpenAI Images API 的镜像推送为：
 
 ```text
-harbor.beeintel.com/crawler-platform/gcli2api:v20260729
-harbor.beeintel.com/crawler-platform/gcli2api:latest
+ghcr.io/wzh0718/gcl2api-plus:v20260729
+ghcr.io/wzh0718/gcl2api-plus:latest
 sha256:2284df759026df219a6bc3c81a8e13a59c51860f318adfc416f21000edea1de3
 ```
 
