@@ -26,9 +26,11 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-# Antigravity CLI 客户端标识。默认值来自 2026-08-06 实际 AGY CLI 请求，
-# 同时允许在 CLI 更新后通过环境变量调整，避免再次把旧版本/旧平台写死。
-ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.1.10")
+# Antigravity CLI 客户端标识。默认值需与真实 AGY CLI 版本保持一致：
+# 上游按 User-Agent 中的版本号下发模型列表（1.1.10 只有 27 个模型，
+# 1.1.28 起返回 gemini-3.7/3.8-flash 等共 33 个），版本过旧会导致
+# /models 列表比真实 agy cli 少。CLI 更新后可通过环境变量调整。
+ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.1.28")
 ANTIGRAVITY_CLI_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
 ANTIGRAVITY_CLI_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
 ANTIGRAVITY_CLI_AUTH_METHOD = os.getenv(
