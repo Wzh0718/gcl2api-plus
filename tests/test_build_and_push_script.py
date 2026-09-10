@@ -1,4 +1,5 @@
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -244,6 +245,7 @@ def test_release_uses_fresh_upstream_overlay_and_pushes_date_and_latest(tmp_path
     assert f"-t {image}:latest" in commands
     assert "docker buildx build --platform linux/amd64,linux/arm64" in commands
     assert " --push " in commands
+    assert "index:org.opencontainers.image.description=" in commands
     assert "docker push" not in commands
     assert "context-config=SOURCE = 'custom-overlay'" in commands
     assert "context-plugin=enabled" in commands
@@ -280,6 +282,24 @@ def test_release_honors_platforms_override_for_single_arch(tmp_path):
     commands = log_file.read_text(encoding="utf-8")
     assert "docker buildx build --platform linux/amd64 " in commands
     assert "arm64" not in commands
+    # 单平台推送没有 manifest index，不应传 index 注释
+    assert "index:org.opencontainers.image.description=" not in commands
+
+
+def test_image_description_label_and_manifest_annotation_stay_in_sync():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    label = re.search(
+        r'org\.opencontainers\.image\.description="([^"]+)"', dockerfile
+    )
+    assert label, "Dockerfile 缺少 org.opencontainers.image.description 标签"
+
+    assert (
+        "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}" in script
+    ), "构建脚本未把描述写入 manifest index 注释（多架构镜像的 GHCR 包描述）"
+    # 两处文案必须一致：单架构镜像描述来自 Dockerfile 标签，多架构来自 index 注释
+    assert f"IMAGE_DESCRIPTION:-{label.group(1)}" in script
 
 
 def test_release_stops_before_docker_build_when_tests_fail(tmp_path):

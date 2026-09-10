@@ -1,6 +1,11 @@
 # Multi-stage build for gcli2api
 FROM python:3.13-slim as base
 
+# OCI 元数据：GitHub Container Registry 的包页面用 description 展示包描述。
+# 多架构构建时还需要 manifest index 级注释，见 scripts/build-and-push.sh。
+LABEL org.opencontainers.image.title="gcli2api-plus" \
+      org.opencontainers.image.description="gcli2api-plus —— GeminiCLI / Antigravity 反向代理增强镜像：Token 计费看板、账号额度总览、403 自动复检、模型降级链；多架构 amd64 + arm64。Custom multi-arch build of su-kaka/gcli2api."
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

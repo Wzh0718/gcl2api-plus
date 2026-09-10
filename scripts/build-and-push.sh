@@ -15,6 +15,9 @@ readonly VERSION_TAG="v${RELEASE_DATE}"
 readonly DATE_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
 readonly LATEST_IMAGE="${IMAGE_NAME}:latest"
 readonly PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+# GitHub Container Registry 包描述；与 Dockerfile 的 description 标签保持一致。
+# 多架构镜像还需写入 manifest index 注释，GHCR 包页面才会显示描述。
+readonly IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION:-gcli2api-plus —— GeminiCLI / Antigravity 反向代理增强镜像：Token 计费看板、账号额度总览、403 自动复检、模型降级链；多架构 amd64 + arm64。Custom multi-arch build of su-kaka/gcli2api.}"
 
 RELEASE_WORK_DIR=""
 SOURCE_DIR=""
@@ -41,6 +44,7 @@ usage() {
   IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
   PLATFORMS           目标平台列表，默认 linux/amd64,linux/arm64；只需 amd64 时设为 linux/amd64
+  IMAGE_DESCRIPTION   GHCR 包描述，默认与 Dockerfile 的 description 标签一致
   KEEP_BUILD_DIR=1    保留临时构建目录用于排查
 
 多架构说明:
@@ -200,11 +204,19 @@ printf '\n==> 运行发布质量检查\n'
 run_quality_gates
 
 BUILD_CREATED="$(TZ=Asia/Shanghai date -Iseconds)"
+
+# 单平台推送只有一个 manifest，写 index 注释无意义；多架构时用它设置 GHCR 包描述。
+ANNOTATION_ARGS=()
+if [[ "${PLATFORMS}" == *,* ]]; then
+    ANNOTATION_ARGS+=(--annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}")
+fi
+
 printf '\n==> 使用 Buildx 构建 %s 平台镜像并推送，同时标记 %s 和 latest\n' "${PLATFORMS}" "${VERSION_TAG}"
 docker buildx build \
     --platform "${PLATFORMS}" \
     --pull \
     --provenance=false \
+    "${ANNOTATION_ARGS[@]+"${ANNOTATION_ARGS[@]}"}" \
     --label "org.opencontainers.image.source=${UPSTREAM_URL}" \
     --label "org.opencontainers.image.revision=${UPSTREAM_COMMIT}" \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
