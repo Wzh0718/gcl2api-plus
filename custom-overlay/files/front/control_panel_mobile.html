@@ -1889,6 +1889,20 @@
                         </select>
                     </div>
 
+                    <div class="form-group" style="margin-bottom: 8px;">
+                        <label for="antigravityQuotaModelFilter">额度模型：</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <select id="antigravityQuotaModelFilter" style="flex: 1;"
+                                onfocus="ensureAntigravityQuotaModelOptions()"
+                                onchange="handleAntigravityQuotaModelChange()">
+                                <option value="">选择模型查看额度</option>
+                            </select>
+                            <button type="button" class="btn btn-small"
+                                onclick="loadAntigravityQuotaOverview(true)"
+                                title="忽略缓存，重新获取当前筛选条件下凭证的额度数据">↻ 刷新</button>
+                        </div>
+                    </div>
+
                     <div class="form-group" style="margin-bottom: 0;">
                         <label for="antigravityPageSizeSelect">每页显示：</label>
                         <select id="antigravityPageSizeSelect" onchange="changeAntigravityPageSize()">
@@ -1900,6 +1914,7 @@
                     </div>
                 </div>
 
+                <div id="antigravityQuotaSummary" style="display: none;"></div>
                 <div id="antigravityCredsListSection">
                     <div class="loading" id="antigravityCredsLoading">正在加载凭证文件...</div>
                     <div id="antigravityCredsList"></div>
@@ -2441,7 +2456,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=model-stats-v4-20260807"></script>
+    <script src="./front/common.js?v=quota-overview-v2-20260910"></script>
 </body>
 
 </html>

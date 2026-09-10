@@ -2727,6 +2727,16 @@
                         <option value="ultra">Ultra</option>
                     </select>
 
+                    <label for="antigravityQuotaModelFilter" style="margin-left: 20px;">额度模型：</label>
+                    <select id="antigravityQuotaModelFilter" class="filter-select"
+                        onfocus="ensureAntigravityQuotaModelOptions()"
+                        onchange="handleAntigravityQuotaModelChange()">
+                        <option value="">选择模型查看额度</option>
+                    </select>
+                    <button type="button" class="batch-btn" style="margin-left: 8px;"
+                        onclick="loadAntigravityQuotaOverview(true)"
+                        title="忽略缓存，重新获取当前筛选条件下凭证的额度数据">↻ 刷新额度</button>
+
                     <label for="antigravityPageSizeSelect" style="margin-left: 20px;">每页显示：</label>
                     <select id="antigravityPageSizeSelect" class="page-size-select"
                         onchange="changeAntigravityPageSize()">
@@ -2739,6 +2749,7 @@
                     </select>
                 </div>
 
+                <div id="antigravityQuotaSummary" style="display: none;"></div>
                 <div id="antigravityCredsListSection">
                     <div class="loading" id="antigravityCredsLoading">正在加载凭证文件...</div>
                     <div id="antigravityCredsList"></div>
@@ -3247,7 +3258,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=model-stats-v4-20260807"></script>
+    <script src="./front/common.js?v=quota-overview-v2-20260910"></script>
 
 </body>
 

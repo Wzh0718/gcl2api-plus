@@ -82,6 +82,7 @@ CUSTOM_FILE_PATHS = {
     "tests/test_openai_image_generations.py",
     "tests/test_openai_image_edits.py",
     "tests/test_oauth_clients.py",
+    "tests/test_panel_quota_batch.py",
     "tests/test_rt_login.py",
     "tests/test_proxy_context.py",
     "tests/test_proxy_groups.py",

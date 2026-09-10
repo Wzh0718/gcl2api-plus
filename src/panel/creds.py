@@ -13,6 +13,7 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from log import log
 from src.credential_manager import credential_manager
@@ -1303,32 +1304,25 @@ async def get_credential_errors(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/quota/{filename}")
-async def get_credential_quota(
-    filename: str,
-    token: str = Depends(verify_panel_token),
-    mode: str = "antigravity"
-):
+async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
     """
-    获取指定凭证的额度信息（仅支持 antigravity 模式）
+    获取单个凭证的额度信息（供单个/批量额度接口复用）。
+
+    失败时不抛异常，统一返回 {"success": False, "filename": ..., "error": ...}，
+    便于批量查询时单个凭证的失败不影响其它凭证。
     """
     try:
-        mode = validate_mode(mode)
-        # 验证文件名
         if not filename.endswith(".json"):
-            raise HTTPException(status_code=400, detail="无效的文件名")
-
+            return {"success": False, "filename": filename, "error": "无效的文件名"}
 
         storage_adapter = await get_storage_adapter()
 
         # 获取凭证数据
         credential_data = await storage_adapter.get_credential(filename, mode=mode)
         if not credential_data:
-            raise HTTPException(status_code=404, detail="凭证不存在")
+            return {"success": False, "filename": filename, "error": "凭证不存在"}
 
         # 使用 Credentials 对象自动处理 token 刷新
-        from src.google_oauth_api import Credentials
-
         creds = Credentials.from_dict(credential_data)
         network = await storage_adapter.resolve_credential_network(filename, mode="antigravity")
         creds.proxy_url = proxy_argument_from_network(network)
@@ -1346,7 +1340,7 @@ async def get_credential_quota(
         # 获取访问令牌
         access_token = credential_data.get("access_token") or credential_data.get("token")
         if not access_token:
-            raise HTTPException(status_code=400, detail="凭证中没有访问令牌")
+            return {"success": False, "filename": filename, "error": "凭证中没有访问令牌"}
 
         # 获取额度信息
         quota_info = await fetch_quota_info(
@@ -1356,27 +1350,125 @@ async def get_credential_quota(
         )
 
         if quota_info.get("success"):
-            return JSONResponse(content={
+            return {
                 "success": True,
                 "filename": filename,
                 "models": quota_info.get("models", {}),
                 "groups": quota_info.get("groups"),
-            })
-        else:
-            return JSONResponse(
+            }
+        return {
+            "success": False,
+            "filename": filename,
+            "error": quota_info.get("error", "未知错误"),
+        }
+
+    except Exception as e:
+        log.error(f"获取凭证额度失败 {filename}: {e}")
+        return {"success": False, "filename": filename, "error": str(e)}
+
+
+class QuotaBatchRequest(BaseModel):
+    filenames: List[str]
+    mode: str = "antigravity"
+
+
+# 批量额度查询的进程内缓存与并发控制：
+# 每个凭证的额度查询包含 2 次上游调用（fetchAvailableModels + retrieveUserQuotaSummary），
+# 必须限制并发避免打爆上游；额度数据短时间不会变化，缓存避免翻页/切模型时重复请求。
+QUOTA_BATCH_CACHE_TTL_SECONDS = 60.0
+QUOTA_BATCH_MAX_FILES = 1000
+QUOTA_BATCH_CONCURRENCY = 8
+
+_quota_batch_cache: dict = {}
+_quota_batch_semaphore = asyncio.Semaphore(QUOTA_BATCH_CONCURRENCY)
+
+
+def _quota_batch_cache_get(filename: str) -> Optional[dict]:
+    cached = _quota_batch_cache.get(filename)
+    if not cached:
+        return None
+    timestamp, result = cached
+    if time.monotonic() - timestamp > QUOTA_BATCH_CACHE_TTL_SECONDS:
+        _quota_batch_cache.pop(filename, None)
+        return None
+    return result
+
+
+def _quota_batch_cache_set(filename: str, result: dict) -> None:
+    # 防止缓存无限增长：达到上限时先清理过期项
+    if len(_quota_batch_cache) >= QUOTA_BATCH_MAX_FILES:
+        now = time.monotonic()
+        for key in list(_quota_batch_cache.keys()):
+            if now - _quota_batch_cache[key][0] > QUOTA_BATCH_CACHE_TTL_SECONDS:
+                _quota_batch_cache.pop(key, None)
+    _quota_batch_cache[filename] = (time.monotonic(), result)
+
+
+@router.post("/quota/batch")
+async def batch_get_credential_quota(
+    request: QuotaBatchRequest,
+    token: str = Depends(verify_panel_token),
+):
+    """
+    批量获取多个凭证的额度信息（凭证页"额度模型"选择器专用，仅支持 antigravity 模式）
+
+    - 每个凭证独立返回结果，单个失败不影响其它凭证；
+    - 信号量限制对上游的并发；
+    - 结果带 TTL 进程内缓存，翻页或切换模型时不重复请求上游。
+    """
+    try:
+        mode = validate_mode(request.mode)
+        filenames = [f for f in request.filenames if f]
+        if not filenames:
+            raise HTTPException(status_code=400, detail="filenames 不能为空")
+        if len(filenames) > QUOTA_BATCH_MAX_FILES:
+            raise HTTPException(
                 status_code=400,
-                content={
-                    "success": False,
-                    "filename": filename,
-                    "error": quota_info.get("error", "未知错误")
-                }
+                detail=f"单次最多查询 {QUOTA_BATCH_MAX_FILES} 个凭证",
             )
+
+        results: dict = {}
+        misses: List[str] = []
+        for filename in filenames:
+            cached = _quota_batch_cache_get(filename)
+            if cached is not None:
+                results[filename] = cached
+            else:
+                misses.append(filename)
+
+        if misses:
+            async def _fetch_one(fn: str):
+                async with _quota_batch_semaphore:
+                    return fn, await _collect_quota_for_filename(fn, mode)
+
+            fetched = await asyncio.gather(*(_fetch_one(fn) for fn in misses))
+            for filename, result in fetched:
+                results[filename] = result
+                _quota_batch_cache_set(filename, result)
+
+        return JSONResponse(content={"success": True, "results": results})
 
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"获取凭证额度失败 {filename}: {e}")
-        raise HTTPException(status_code=500, detail=f"获取额度失败: {str(e)}")
+        log.error(f"批量获取凭证额度失败: {e}")
+        raise HTTPException(status_code=500, detail=f"批量获取额度失败: {str(e)}")
+
+
+@router.get("/quota/{filename}")
+async def get_credential_quota(
+    filename: str,
+    token: str = Depends(verify_panel_token),
+    mode: str = "antigravity"
+):
+    """
+    获取指定凭证的额度信息（仅支持 antigravity 模式）
+    """
+    mode = validate_mode(mode)
+    result = await _collect_quota_for_filename(filename, mode)
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content=result)
+    return JSONResponse(content=result)
 
 
 @router.post("/configure-preview/{filename}")

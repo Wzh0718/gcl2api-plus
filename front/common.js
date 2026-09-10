@@ -19,6 +19,16 @@ const AppState = {
     creds: createCredsManager('normal'),
     antigravityCreds: createCredsManager('antigravity'),
 
+    // Antigravity 额度总览（额度模型选择器：选模型后列表内联显示各凭证额度）
+    antigravityQuotaOverview: {
+        selectedModel: '',
+        data: {},        // filename -> {success, models, groups, error}
+        models: [],      // 已知模型并集（填充下拉框候选）
+        modelsLoading: false,  // 模型候选列表加载中
+        fetchedAt: 0,
+        loading: false,  // 全量额度数据加载中
+    },
+
     // 文件上传
     uploadFiles: createUploadManager('normal'),
     antigravityUploadFiles: createUploadManager('antigravity'),
@@ -166,6 +176,12 @@ function createCredsManager(type) {
                     this.filteredData = this.data;
                     this.renderList();
                     this.updatePagination();
+
+                    if (type === 'antigravity') {
+                        // 列表就绪后立即预加载模型候选，并刷新额度汇总条
+                        maybePreloadAntigravityQuotaModels();
+                        renderAntigravityQuotaSummary();
+                    }
 
                     let msg = `已加载 ${data.total} 个${type === 'antigravity' ? 'Antigravity' : ''}凭证文件`;
                     if (this.currentStatusFilter !== 'all') {
@@ -1137,6 +1153,7 @@ function createCredCard(credInfo, manager) {
             <div class="cred-status">${statusBadges}</div>
         </div>
         <div class="cred-actions">${actionButtons}</div>
+        ${managerType === 'antigravity' ? buildAntigravityQuotaOverviewInline(filename) : ''}
         <div class="cred-details" id="details-${pathId}">
             <div class="cred-content" data-filename="${filename}" data-loaded="false">点击"查看内容"按钮加载文件详情...</div>
         </div>
@@ -3162,6 +3179,276 @@ async function toggleAntigravityQuotaDetails(pathId) {
             }
         }
     }
+}
+
+// =====================================================================
+// 额度模型选择器（选中模型后列表页内联显示各凭证额度 + 顶部汇总条）
+// =====================================================================
+const ANTIGRAVITY_QUOTA_OVERVIEW_TTL_MS = 60 * 1000;
+const ANTIGRAVITY_QUOTA_SAMPLE_SIZE = 10;
+
+function antigravityQuotaOverviewVisibleFilenames() {
+    // filteredData 是当前筛选条件下本页的凭证集合
+    return Object.keys(AppState.antigravityCreds.filteredData || {});
+}
+
+async function fetchAntigravityQuotaBatch(filenames) {
+    const response = await fetch('./creds/quota/batch', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ filenames, mode: 'antigravity' })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.detail || data.error || `批量获取额度失败 (HTTP ${response.status})`);
+    }
+    return data.results || {};
+}
+
+function computeAntigravityQuotaModelUnion() {
+    const state = AppState.antigravityQuotaOverview;
+    const union = new Set();
+    for (const entry of Object.values(state.data)) {
+        if (entry && entry.success) {
+            for (const modelName of Object.keys(entry.models || {})) {
+                union.add(modelName);
+            }
+        }
+    }
+    return Array.from(union).sort();
+}
+
+function rebuildAntigravityQuotaModelOptions(options = {}) {
+    const select = document.getElementById('antigravityQuotaModelFilter');
+    if (!select) return;
+    const state = AppState.antigravityQuotaOverview;
+
+    // 候选尚未就绪时显示加载中占位，避免用户点开看到空下拉框误以为没有额度
+    if (options.loading && state.models.length === 0) {
+        select.disabled = true;
+        select.innerHTML = '<option value="">⏳ 正在加载模型列表...</option>';
+        return;
+    }
+
+    select.disabled = false;
+    state.models = computeAntigravityQuotaModelUnion();
+    const previous = state.selectedModel || select.value || '';
+    select.innerHTML = '<option value="">选择模型查看额度</option>' +
+        state.models.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    if (previous && state.models.includes(previous)) {
+        select.value = previous;
+    }
+}
+
+function maybePreloadAntigravityQuotaModels() {
+    // 凭证列表就绪后立即用前 N 个凭证取样预加载模型候选；
+    // 失败时恢复占位，用户点开下拉框（onfocus）会自动重试。
+    const state = AppState.antigravityQuotaOverview;
+    if (state.modelsLoading || state.models.length > 0) return;
+    const sample = antigravityQuotaOverviewVisibleFilenames().slice(0, ANTIGRAVITY_QUOTA_SAMPLE_SIZE);
+    if (sample.length === 0) return;
+
+    state.modelsLoading = true;
+    rebuildAntigravityQuotaModelOptions({ loading: true });
+    fetchAntigravityQuotaBatch(sample)
+        .then(results => {
+            Object.assign(state.data, results);
+            state.fetchedAt = Date.now();
+            rebuildAntigravityQuotaModelOptions();
+            // 已选中模型时，取样数据可直接补上部分卡片的额度条
+            if (state.selectedModel) {
+                AppState.antigravityCreds.renderList();
+                renderAntigravityQuotaSummary();
+            }
+        })
+        .catch(() => {
+            if (state.models.length === 0) {
+                const select = document.getElementById('antigravityQuotaModelFilter');
+                if (select) {
+                    select.disabled = false;
+                    select.innerHTML = '<option value="">选择模型查看额度（点击重试加载）</option>';
+                }
+            }
+        })
+        .finally(() => {
+            state.modelsLoading = false;
+        });
+}
+
+function ensureAntigravityQuotaModelOptions() {
+    // onfocus 兜底：候选为空（含预加载失败）时自动重试
+    maybePreloadAntigravityQuotaModels();
+}
+
+async function loadAntigravityQuotaOverview(force = false) {
+    const state = AppState.antigravityQuotaOverview;
+    if (!state.selectedModel || state.loading) return;
+
+    const filenames = antigravityQuotaOverviewVisibleFilenames();
+    if (filenames.length === 0) {
+        showStatus('当前列表没有凭证', 'info');
+        return;
+    }
+
+    // 缓存仍新鲜且覆盖当前可见凭证时，直接重渲染（切换模型零请求）
+    const fresh = state.fetchedAt && (Date.now() - state.fetchedAt < ANTIGRAVITY_QUOTA_OVERVIEW_TTL_MS);
+    const needFetch = force || !fresh || filenames.some(fn => !(fn in state.data));
+    if (!needFetch) {
+        AppState.antigravityCreds.renderList();
+        renderAntigravityQuotaSummary();
+        return;
+    }
+
+    state.loading = true;
+    renderAntigravityQuotaSummary();
+    showStatus(`⏳ 正在批量获取 ${filenames.length} 个凭证的额度信息...`, 'info');
+    try {
+        const results = await fetchAntigravityQuotaBatch(filenames);
+        Object.assign(state.data, results);
+        state.fetchedAt = Date.now();
+        rebuildAntigravityQuotaModelOptions();
+        AppState.antigravityCreds.renderList();
+        renderAntigravityQuotaSummary();
+        showStatus(`✅ 额度信息加载完成（${filenames.length} 个凭证）`, 'success');
+    } catch (error) {
+        renderAntigravityQuotaSummary();
+        showStatus(`❌ ${error.message}`, 'error');
+    } finally {
+        state.loading = false;
+    }
+}
+
+async function handleAntigravityQuotaModelChange() {
+    const select = document.getElementById('antigravityQuotaModelFilter');
+    if (!select) return;
+    AppState.antigravityQuotaOverview.selectedModel = select.value;
+    if (!select.value) {
+        // 取消选择：直接去掉列表中的内联额度条与汇总条
+        AppState.antigravityCreds.renderList();
+        renderAntigravityQuotaSummary();
+        return;
+    }
+    await loadAntigravityQuotaOverview();
+}
+
+function renderAntigravityQuotaSummary() {
+    const container = document.getElementById('antigravityQuotaSummary');
+    if (!container) return;
+    const state = AppState.antigravityQuotaOverview;
+    if (!state.selectedModel) {
+        container.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+
+    const modelLabel = escapeHtml(state.selectedModel);
+    const filenames = antigravityQuotaOverviewVisibleFilenames();
+    const total = filenames.length;
+
+    if (total === 0) {
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin:10px 0;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;color:#4338ca;">
+                📊 ${modelLabel} 额度汇总：当前列表没有凭证
+            </div>`;
+        return;
+    }
+
+    if (state.loading) {
+        container.style.display = 'block';
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin:10px 0;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;font-size:12px;color:#4338ca;">
+                ⏳ 正在获取 ${modelLabel} 在 ${total} 个凭证上的额度数据...
+            </div>`;
+        return;
+    }
+
+    // 聚合：平均剩余 + 账号分布（充足>50% / 紧张10~50% / 耗尽≤10% / 无数据 / 失败）
+    let sum = 0, counted = 0;
+    let full = 0, tight = 0, exhausted = 0, noData = 0, failed = 0, pending = 0;
+    for (const fn of filenames) {
+        const entry = state.data[fn];
+        if (!entry) { pending++; continue; }
+        if (!entry.success) { failed++; continue; }
+        const modelData = (entry.models || {})[state.selectedModel];
+        if (!modelData) { noData++; continue; }
+        const remainingPct = quotaPercentageValue(modelData.remaining);
+        sum += remainingPct;
+        counted++;
+        if (remainingPct <= 10) exhausted++;
+        else if (remainingPct <= 50) tight++;
+        else full++;
+    }
+
+    const avgLabel = counted > 0 ? formatQuotaPercentage(sum / counted / 100) : '—';
+    const segments = [];
+    const addSegment = (count, color, label) => {
+        if (count > 0) {
+            segments.push(`<span style="display:inline-block;height:100%;width:${(count / total * 100)}%;background-color:${color};" title="${label}: ${count} 个"></span>`);
+        }
+    };
+    addSegment(full, '#28a745', '充足');
+    addSegment(tight, '#ffc107', '紧张');
+    addSegment(exhausted, '#dc3545', '耗尽');
+    addSegment(noData, '#9e9e9e', '无额度数据');
+    addSegment(failed, '#f8bbd0', '获取失败');
+    addSegment(pending, '#dee2e6', '待加载');
+
+    container.style.display = 'block';
+    container.innerHTML = `
+        <div style="padding:8px 12px;margin:10px 0;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:12px;color:#333;">
+                <span style="font-weight:bold;color:#4338ca;">📊 ${modelLabel} 额度汇总</span>
+                <span>平均剩余 <strong style="font-size:14px;color:#4338ca;">${avgLabel}</strong></span>
+                <span title="剩余>50%"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#28a745;"></span> 充足 ${full}</span>
+                <span title="剩余10%~50%"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ffc107;"></span> 紧张 ${tight}</span>
+                <span title="剩余≤10%"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#dc3545;"></span> 耗尽 ${exhausted}</span>
+                ${noData > 0 ? `<span title="额度数据中没有此模型"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9e9e9e;"></span> 无数据 ${noData}</span>` : ''}
+                ${failed > 0 ? `<span title="获取失败"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f8bbd0;"></span> 失败 ${failed}</span>` : ''}
+                ${pending > 0 ? `<span title="尚未加载"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#dee2e6;"></span> 待加载 ${pending}</span>` : ''}
+                <span style="color:#888;">（共 ${total} 个凭证，当前页）</span>
+            </div>
+            ${segments.length > 0 ? `<div style="display:flex;height:8px;background:#e9ecef;border-radius:4px;overflow:hidden;margin-top:6px;">${segments.join('')}</div>` : ''}
+        </div>`;
+}
+
+function buildAntigravityQuotaOverviewInline(filename) {
+    const state = AppState.antigravityQuotaOverview;
+    if (!state.selectedModel) return '';
+    const modelLabel = escapeHtml(state.selectedModel);
+
+    const entry = state.data[filename];
+    if (!entry) {
+        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px dashed #ced4da;border-radius:4px;font-size:11px;color:#888;">⏳ ${modelLabel} 额度加载中...</div>`;
+    }
+    if (!entry.success) {
+        const reason = escapeHtml(entry.error || '获取失败');
+        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#fff5f5;border:1px solid #f5c6cb;border-radius:4px;font-size:11px;color:#dc3545;" title="${reason}">❌ ${modelLabel}: ${reason}</div>`;
+    }
+    const modelData = (entry.models || {})[state.selectedModel];
+    if (!modelData) {
+        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;font-size:11px;color:#999;" title="该凭证的额度数据中没有此模型">— ${modelLabel}: 无额度数据</div>`;
+    }
+
+    const remainingPct = quotaPercentageValue(modelData.remaining);
+    const remainingLabel = formatQuotaPercentage(modelData.remaining);
+    const usedPct = 100 - remainingPct;
+    let color = '#28a745';
+    if (remainingPct <= 10) color = '#dc3545';
+    else if (remainingPct <= 30) color = '#ffc107';
+    else if (remainingPct <= 50) color = '#17a2b8';
+    const resetLabel = modelData.resetTime && modelData.resetTime !== 'N/A'
+        ? ` · 🔄 ${escapeHtml(modelData.resetTime)}` : '';
+    const exhausted = remainingPct <= 0;
+
+    return `
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;" title="${modelLabel} 5小时窗口剩余 ${remainingLabel}${resetLabel}">
+            <span style="font-size:11px;color:#555;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${modelLabel}</span>
+            <span style="flex:1;height:6px;background:#e9ecef;border-radius:3px;overflow:hidden;">
+                <span style="display:block;height:100%;width:${usedPct}%;background-color:${color};transition:width 0.3s ease;"></span>
+            </span>
+            <span style="font-size:12px;font-weight:bold;color:${color};white-space:nowrap;">${remainingLabel}${exhausted ? ' · 已用尽' : ''}</span>
+        </div>`;
 }
 
 // =====================================================================
