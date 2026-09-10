@@ -452,7 +452,7 @@ class AntiTruncationStreamProcessor:
                     for part in parts:
                         if "text" in part:
                             content += part["text"]
-        
+
         # 处理 OpenAI 流式格式（choices/delta）
         elif "choices" in data:
             for choice in data["choices"]:
@@ -605,7 +605,7 @@ class AntiTruncationStreamProcessor:
                 inner_data = data["response"]
             else:
                 inner_data = data
-            
+
             log.debug(f"Anti-truncation: inner_data keys={list(inner_data.keys())}")
 
             log.debug(f"Anti-truncation: inner_data keys={list(inner_data.keys())}")
