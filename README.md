@@ -140,3 +140,17 @@ ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3
 - [定制覆盖与发布](docs/CUSTOMIZATION.md)
 - [Antigravity 图片 API](docs/ANTIGRAVITY_IMAGE_API.md)
 - [账号出口与地区检测方案](docs/ANTIGRAVITY_ACCOUNT_IP_BINDING_PLAN.md)
+
+## 致谢
+
+- 感谢上游项目 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api)，本仓库在其基础上二次开发，遵循上游原有许可证。
+- 感谢 [LINUX DO](https://linux.do) 社区提供的交流与开源推广平台，本项目认可并链接 LINUX DO 社区。
+
+## 免责声明
+
+- 本项目仅供学习与技术研究使用，**严禁用于任何违反 Google 服务条款、上游项目许可证或当地法律法规的用途**。
+- 本项目与 Google 无任何关联，并非官方产品；Gemini、GeminiCLI、Antigravity 等名称与商标归其各自权利人所有。
+- 使用本项目可能涉及账号限制、封禁、额度扣除等风险，**使用者须自行承担由此产生的一切后果与责任**。
+- 本项目按「现状」提供，不附带任何明示或默示的保证；作者不对因使用本项目而产生的任何直接或间接损失承担责任。
+- 请勿将本项目用于任何商业转售、批量滥用或侵犯第三方权益的行为。
+- 如本项目内容侵犯了您的合法权益，请通过 GitHub Issue 联系，确认后将及时处理。

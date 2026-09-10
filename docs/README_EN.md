@@ -139,3 +139,17 @@ Only an explicitly recognized quota-exhaustion 429 triggers fallback. Image requ
 - [Customization and release workflow](CUSTOMIZATION.md)
 - [Antigravity image API](ANTIGRAVITY_IMAGE_API.md)
 - [Account egress and region checks](ANTIGRAVITY_ACCOUNT_IP_BINDING_PLAN.md)
+
+## Acknowledgements
+
+- Thanks to the upstream project [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api); this repository is a derivative work and follows the upstream license.
+- Thanks to the [LINUX DO](https://linux.do) community for providing a platform for discussion and open-source promotion. This project acknowledges and links to the LINUX DO community.
+
+## Disclaimer
+
+- This project is for learning and technical research only. **Do not use it in any way that violates Google's Terms of Service, the upstream project's license, or applicable laws and regulations.**
+- This project is not affiliated with or endorsed by Google. Gemini, GeminiCLI, Antigravity, and related names and trademarks belong to their respective owners.
+- Using this project may involve risks such as account restriction, suspension, or quota deduction. **You assume all consequences and responsibilities arising from your use.**
+- This project is provided "as is", without warranty of any kind, express or implied. The authors are not liable for any direct or indirect damages resulting from its use.
+- Do not use this project for commercial resale, bulk abuse, or any activity that infringes the rights of third parties.
+- If any content of this project infringes your legitimate rights, please open a GitHub Issue and it will be handled promptly after verification.
