@@ -2,7 +2,8 @@ name: Sync Upstream and Release to GHCR
 
 # 定时从上游 su-kaka/gcli2api 拉取最新 master，
 # 应用 custom-overlay/files 覆盖层，跑质量门禁，
-# 构建镜像并推送 vYYYYMMDD + latest 到 GitHub Container Registry (ghcr.io)。
+# 用 QEMU + Buildx 构建 amd64/arm64 多架构镜像，
+# 推送 vYYYYMMDD + latest 到 GitHub Container Registry (ghcr.io)。
 # 与本地手动执行 ./scripts/build-and-push.sh 完全等价，仅镜像仓库不同。
 
 on:
@@ -27,6 +28,10 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Set up QEMU
+        # arm64 层在 amd64 Runner 上通过 QEMU 模拟构建，多架构发布必需
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

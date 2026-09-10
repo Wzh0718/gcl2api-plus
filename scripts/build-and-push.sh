@@ -14,6 +14,7 @@ readonly RELEASE_DATE="${RELEASE_DATE:-$(TZ=Asia/Shanghai date +%Y%m%d)}"
 readonly VERSION_TAG="v${RELEASE_DATE}"
 readonly DATE_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
 readonly LATEST_IMAGE="${IMAGE_NAME}:latest"
+readonly PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 
 RELEASE_WORK_DIR=""
 SOURCE_DIR=""
@@ -27,8 +28,8 @@ usage() {
   1. 从 GitHub 拉取最新 master 到临时目录
   2. 使用 custom-overlay/files 覆盖定制文件
   3. 运行专项测试、完整测试和静态检查
-  4. 构建一次 Docker 镜像
-  5. 推送 vYYYYMMDD 和 latest 两个 Tag 到 GitHub Container Registry
+  4. 用 Docker Buildx 一次性构建多架构镜像并推送（默认 amd64 + arm64）
+  5. 推送 vYYYYMMDD 和 latest 两个多架构 Tag 到 GitHub Container Registry
 
 首次使用前请登录镜像仓库（GitHub Container Registry）:
   echo "\$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
@@ -39,7 +40,13 @@ usage() {
   CUSTOM_OVERLAY_DIR  定制覆盖目录
   IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
+  PLATFORMS           目标平台列表，默认 linux/amd64,linux/arm64；只需 amd64 时设为 linux/amd64
   KEEP_BUILD_DIR=1    保留临时构建目录用于排查
+
+多架构说明:
+  构建 linux/arm64 需要 QEMU binfmt 支持（Docker Desktop 自带）。
+  普通 Linux 主机未注册时先执行一次:
+    docker run --privileged --rm tonistiigi/binfmt --install arm64
 EOF
 }
 
@@ -155,12 +162,24 @@ require_command docker
 printf '发布目标:\n'
 printf '  上游: %s (%s)\n' "${UPSTREAM_URL}" "${UPSTREAM_BRANCH}"
 printf '  覆盖层: %s\n' "${CUSTOM_OVERLAY_DIR}"
+printf '  平台: %s\n' "${PLATFORMS}"
 printf '  日期镜像: %s\n' "${DATE_IMAGE}"
 printf '  最新镜像: %s\n' "${LATEST_IMAGE}"
 
 printf '\n==> 检查 Docker 服务\n'
 docker info >/dev/null 2>&1 \
     || die "无法连接 Docker。请确认 Docker 已启动且当前用户有权限访问。"
+
+printf '==> 检查 Docker Buildx\n'
+docker buildx version >/dev/null 2>&1 \
+    || die "缺少 Docker Buildx 插件。多架构构建需要 buildx，请先安装 docker-buildx-plugin。"
+
+if [[ "${PLATFORMS}" == *arm64* ]] \
+    && [[ -d /proc/sys/fs/binfmt_misc ]] \
+    && ! compgen -G '/proc/sys/fs/binfmt_misc/qemu-aarch64*' >/dev/null; then
+    printf '警告: 未检测到 arm64 binfmt 模拟，构建 linux/arm64 可能失败。\n'
+    printf '可先执行: docker run --privileged --rm tonistiigi/binfmt --install arm64\n'
+fi
 
 RELEASE_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gcli2api-release.XXXXXX")"
 SOURCE_DIR="${RELEASE_WORK_DIR}/source"
@@ -181,24 +200,21 @@ printf '\n==> 运行发布质量检查\n'
 run_quality_gates
 
 BUILD_CREATED="$(TZ=Asia/Shanghai date -Iseconds)"
-printf '\n==> 构建一次镜像，同时标记 %s 和 latest\n' "${VERSION_TAG}"
-docker build --pull \
+printf '\n==> 使用 Buildx 构建 %s 平台镜像并推送，同时标记 %s 和 latest\n' "${PLATFORMS}" "${VERSION_TAG}"
+docker buildx build \
+    --platform "${PLATFORMS}" \
+    --pull \
+    --provenance=false \
     --label "org.opencontainers.image.source=${UPSTREAM_URL}" \
     --label "org.opencontainers.image.revision=${UPSTREAM_COMMIT}" \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
     -t "${DATE_IMAGE}" \
     -t "${LATEST_IMAGE}" \
-    "${SOURCE_DIR}"
-
-printf '\n==> 推送日期镜像 %s\n' "${DATE_IMAGE}"
-docker push "${DATE_IMAGE}" \
-    || die "日期镜像推送失败。请先执行 docker login ${IMAGE_REGISTRY}。"
-
-printf '\n==> 推送 latest 镜像 %s\n' "${LATEST_IMAGE}"
-docker push "${LATEST_IMAGE}" \
-    || die "latest 镜像推送失败。请先执行 docker login ${IMAGE_REGISTRY}。"
+    --push \
+    "${SOURCE_DIR}" \
+    || die "多架构镜像构建/推送失败。请先执行 docker login ${IMAGE_REGISTRY}，并确认 ${PLATFORMS} 各平台均可构建。"
 
 printf '\n发布完成:\n'
-printf '  %s\n' "${DATE_IMAGE}"
-printf '  %s\n' "${LATEST_IMAGE}"
+printf '  %s (%s)\n' "${DATE_IMAGE}" "${PLATFORMS}"
+printf '  %s (%s)\n' "${LATEST_IMAGE}" "${PLATFORMS}"
 printf '  上游提交: %s\n' "${UPSTREAM_COMMIT}"

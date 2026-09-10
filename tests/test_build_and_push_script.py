@@ -14,6 +14,7 @@ OVERLAY_FILES = REPO_ROOT / "custom-overlay" / "files"
 
 CUSTOM_FILE_PATHS = {
     ".dockerignore",
+    "Dockerfile",
     ".env.example",
     "config.py",
     "docs/ANTIGRAVITY_ACCOUNT_IP_BINDING_PLAN.md",
@@ -191,7 +192,8 @@ def create_fake_toolchain(tmp_path: Path):
         "#!/usr/bin/env bash\n"
         "printf 'docker %s\\n' \"$*\" >> \"$RELEASE_TEST_LOG\"\n"
         "if [[ \"$1\" == \"info\" ]]; then exit 0; fi\n"
-        "if [[ \"$1\" == \"build\" ]]; then\n"
+        "if [[ \"$1\" == \"version\" && \"$2\" == \"buildx\" ]]; then exit 0; fi\n"
+        "if [[ \"$1\" == \"build\" ]] || [[ \"$1\" == \"buildx\" && \"$2\" == \"build\" ]]; then\n"
         "  context=\"${@: -1}\"\n"
         "  printf 'context-config=%s\\n' \"$(cat \"$context/config.py\")\" >> \"$RELEASE_TEST_LOG\"\n"
         "  printf 'context-plugin=%s\\n' \"$(cat \"$context/custom-plugin.txt\")\" >> \"$RELEASE_TEST_LOG\"\n"
@@ -240,8 +242,9 @@ def test_release_uses_fresh_upstream_overlay_and_pushes_date_and_latest(tmp_path
     image = "ghcr.io/wzh0718/gcl2api-plus"
     assert f"-t {image}:v20260727" in commands
     assert f"-t {image}:latest" in commands
-    assert f"docker push {image}:v20260727" in commands
-    assert f"docker push {image}:latest" in commands
+    assert "docker buildx build --platform linux/amd64,linux/arm64" in commands
+    assert " --push " in commands
+    assert "docker push" not in commands
     assert "context-config=SOURCE = 'custom-overlay'" in commands
     assert "context-plugin=enabled" in commands
     assert "发布完成" in result.stdout
@@ -260,7 +263,23 @@ def test_release_defaults_to_github_container_registry(tmp_path):
     commands = log_file.read_text(encoding="utf-8")
     image = "ghcr.io/wzh0718/gcl2api-plus"
     assert f"-t {image}:v20260727" in commands
-    assert f"docker push {image}:latest" in commands
+    assert "--platform linux/amd64,linux/arm64" in commands
+    assert " --push " in commands
+
+
+def test_release_honors_platforms_override_for_single_arch(tmp_path):
+    upstream = create_upstream(tmp_path)
+    overlay = create_overlay(tmp_path)
+    env, log_file = create_fake_toolchain(tmp_path)
+    release_env(env, upstream, overlay)
+    env["PLATFORMS"] = "linux/amd64"
+
+    result = run([str(SCRIPT)], tmp_path, env=env, check=False)
+
+    assert result.returncode == 0, result.stdout
+    commands = log_file.read_text(encoding="utf-8")
+    assert "docker buildx build --platform linux/amd64 " in commands
+    assert "arm64" not in commands
 
 
 def test_release_stops_before_docker_build_when_tests_fail(tmp_path):
@@ -275,7 +294,7 @@ def test_release_stops_before_docker_build_when_tests_fail(tmp_path):
     assert result.returncode != 0
     commands = log_file.read_text(encoding="utf-8")
     assert "uv run" in commands
-    assert "docker build" not in commands
+    assert "docker buildx build" not in commands
     assert "docker push" not in commands
 
 
@@ -307,6 +326,15 @@ def test_ghcr_workflow_installs_uv_before_running_release_script():
     setup_uv = workflow.index("uses: astral-sh/setup-uv@")
     run_release = workflow.index("run: ./scripts/build-and-push.sh")
     assert setup_uv < run_release
+
+
+def test_ghcr_workflow_sets_up_qemu_for_multi_arch_build():
+    workflow = WORKFLOW_FILE.read_text(encoding="utf-8")
+
+    setup_qemu = workflow.index("uses: docker/setup-qemu-action@")
+    setup_buildx = workflow.index("uses: docker/setup-buildx-action@")
+    run_release = workflow.index("run: ./scripts/build-and-push.sh")
+    assert setup_qemu < setup_buildx < run_release
 
 
 def test_ghcr_workflow_passes_github_image_name_to_release_script():

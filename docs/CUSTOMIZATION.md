@@ -12,12 +12,14 @@
 
 ## 发布结果
 
-脚本只构建一次镜像，然后为同一个镜像添加并推送两个 Tag：
+脚本用 Docker Buildx 一次构建 `linux/amd64` 与 `linux/arm64` 双架构镜像（可用 `PLATFORMS` 调整），然后为同一个多架构镜像清单添加并推送两个 Tag：
 
 ```text
 ghcr.io/wzh0718/gcl2api-plus:vYYYYMMDD
 ghcr.io/wzh0718/gcl2api-plus:latest
 ```
+
+amd64 与 arm64 主机直接 `docker pull` 同名 Tag 即可，无需指定平台。
 
 日期固定按 `Asia/Shanghai` 生成。例如 2026 年 7 月 27 日发布：
 
@@ -30,7 +32,7 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 
 ## GitHub Actions 自动发布（ghcr.io）
 
-`.github/workflows/ghcr-sync-release.yml` 每天 09:17（Asia/Shanghai）自动执行与 `build-and-push.sh` 等价的流程：拉上游 `master` → 应用覆盖层 → 质量门禁 → 构建镜像，推送到 GitHub Container Registry：
+`.github/workflows/ghcr-sync-release.yml` 每天 09:17（Asia/Shanghai）自动执行与 `build-and-push.sh` 等价的流程：拉上游 `master` → 应用覆盖层 → 质量门禁 → 用 QEMU + Buildx 构建多架构镜像，推送到 GitHub Container Registry：
 
 ```text
 ghcr.io/wzh0718/gcl2api-plus:vYYYYMMDD
@@ -50,7 +52,7 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 - `uv`
 - `python3`
 - `node`
-- 可用的 Docker 服务
+- 可用的 Docker 服务（含 Docker Buildx 插件；本地构建 arm64 需要 QEMU binfmt，Docker Desktop 自带，普通 Linux 主机执行一次 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）
 - 访问 GitHub、Python 包源、基础镜像仓库和 GitHub Container Registry 的网络
 
 GitHub Container Registry 登录只需要提前执行一次，密码不写入脚本：
@@ -70,9 +72,8 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 5. 将 `custom-overlay/files/` 原样覆盖到最新源码。
 6. 运行计费、Proxy、SQLite 迁移专项测试和完整 pytest。
 7. 运行 Python 编译、JavaScript 语法和差异空白检查。
-8. 使用上游最新 Dockerfile 构建一次镜像，同时添加日期 Tag 和 `latest`。
-9. 先推送日期 Tag，再推送 `latest`。
-10. 输出镜像名和实际使用的上游 Git Commit，然后删除临时目录。
+8. 使用 Buildx 按 `PLATFORMS`（默认 `linux/amd64,linux/arm64`）构建多架构镜像，同时添加日期 Tag 和 `latest`，并通过 `--push` 直接推送。
+9. 输出镜像名和实际使用的上游 Git Commit，然后删除临时目录。
 
 任何测试、构建或推送步骤失败，脚本立即退出，不继续后续步骤。
 
@@ -83,12 +84,15 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 ```text
 custom-overlay/files/
 ├── .dockerignore
+├── Dockerfile
 ├── config.py
 ├── front/
 ├── src/
 ├── tests/
 └── web.py
 ```
+
+覆盖层中的 `Dockerfile` 基于上游版本加入多架构 jemalloc 支持（`LD_PRELOAD` 路径按 amd64/arm64 自适应）；上游若更新 Dockerfile，需要人工同步进覆盖层。
 
 覆盖规则是完整文件替换，不是 Git merge：
 
@@ -190,6 +194,7 @@ IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 | `UPSTREAM_BRANCH` | `master` |
 | `CUSTOM_OVERLAY_DIR` | `custom-overlay/files` |
 | `IMAGE_NAME` | `ghcr.io/wzh0718/gcl2api-plus` |
+| `PLATFORMS` | `linux/amd64,linux/arm64`；只需 amd64 时设为 `linux/amd64` |
 | `RELEASE_DATE` | 上海时区当天，格式 `YYYYMMDD` |
 | `KEEP_BUILD_DIR` | `0`；设为 `1` 时保留临时源码用于排查 |
 
