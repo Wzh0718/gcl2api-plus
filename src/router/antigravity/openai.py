@@ -288,7 +288,9 @@ async def _request_openai_images(
     return JSONResponse(content=response)
 
 
+# 无前缀路径与 /antigravity 前缀路径并存：兼容只认 xxx/v1 标准路径的客户端
 @router.post("/antigravity/v1/images/generations")
+@router.post("/v1/images/generations")
 async def image_generations(
     openai_request: OpenAIImageGenerationRequest,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
@@ -338,6 +340,7 @@ def _parse_image_form_value(value) -> dict:
 
 
 @router.post("/antigravity/v1/images/edits")
+@router.post("/v1/images/edits")
 async def image_edits(
     request: Request,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
@@ -438,6 +441,7 @@ async def image_edits(
         return _openai_image_error({"error": {"message": exc.detail}}, exc.status_code)
 
 @router.post("/antigravity/v1/chat/completions")
+@router.post("/v1/chat/completions")
 async def chat_completions(
     openai_request: OpenAIChatCompletionRequest,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key)

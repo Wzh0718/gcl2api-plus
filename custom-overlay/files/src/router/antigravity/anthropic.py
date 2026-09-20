@@ -65,7 +65,9 @@ router = APIRouter()
 
 # ==================== API 路由 ====================
 
+# 无前缀路径与 /antigravity 前缀路径并存：兼容只认 xxx/v1 标准路径的客户端
 @router.post("/antigravity/v1/messages")
+@router.post("/v1/messages")
 async def messages(
     claude_request: ClaudeRequest,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key)
@@ -366,6 +368,7 @@ async def messages(
 
 
 @router.post("/antigravity/v1/messages/count_tokens")
+@router.post("/v1/messages/count_tokens")
 async def count_tokens(
     request: Request,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key)

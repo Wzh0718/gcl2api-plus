@@ -62,12 +62,17 @@ router = APIRouter()
 
 # ==================== API 路由 ====================
 
+# 无前缀路径与 /antigravity 前缀路径并存：兼容只认 xxx/v1(xxx/v1beta) 标准路径的客户端
 @router.post(
     "/antigravity/v1beta/models/{model:path}:generateContent/key={path_key}"
 )
 @router.post("/antigravity/v1/models/{model:path}:generateContent/key={path_key}")
 @router.post("/antigravity/v1beta/models/{model:path}:generateContent")
 @router.post("/antigravity/v1/models/{model:path}:generateContent")
+@router.post("/v1beta/models/{model:path}:generateContent/key={path_key}")
+@router.post("/v1/models/{model:path}:generateContent/key={path_key}")
+@router.post("/v1beta/models/{model:path}:generateContent")
+@router.post("/v1/models/{model:path}:generateContent")
 async def generate_content(
     gemini_request: "GeminiRequest",
     model: str = Path(..., description="Model name"),
@@ -142,6 +147,10 @@ async def generate_content(
 )
 @router.post("/antigravity/v1beta/models/{model:path}:streamGenerateContent")
 @router.post("/antigravity/v1/models/{model:path}:streamGenerateContent")
+@router.post("/v1beta/models/{model:path}:streamGenerateContent/key={path_key}")
+@router.post("/v1/models/{model:path}:streamGenerateContent/key={path_key}")
+@router.post("/v1beta/models/{model:path}:streamGenerateContent")
+@router.post("/v1/models/{model:path}:streamGenerateContent")
 async def stream_generate_content(
     gemini_request: GeminiRequest,
     model: str = Path(..., description="Model name"),
@@ -418,6 +427,8 @@ async def stream_generate_content(
 
 @router.post("/antigravity/v1beta/models/{model:path}:countTokens")
 @router.post("/antigravity/v1/models/{model:path}:countTokens")
+@router.post("/v1beta/models/{model:path}:countTokens")
+@router.post("/v1/models/{model:path}:countTokens")
 async def count_tokens(
     request: Request = None,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
