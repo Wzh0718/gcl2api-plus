@@ -24,10 +24,6 @@ from src.router.antigravity.openai import router as antigravity_openai_router
 from src.router.antigravity.gemini import router as antigravity_gemini_router
 from src.router.antigravity.anthropic import router as antigravity_anthropic_router
 from src.router.antigravity.model_list import router as antigravity_model_list_router
-from src.router.geminicli.openai import router as geminicli_openai_router
-from src.router.geminicli.gemini import router as geminicli_gemini_router
-from src.router.geminicli.anthropic import router as geminicli_anthropic_router
-from src.router.geminicli.model_list import router as geminicli_model_list_router
 from src.router.vertex.gemini import router as vertex_gemini_router
 from src.router.vertex.openai import router as vertex_openai_router
 from src.router.vertex.model_list import router as vertex_model_list_router
@@ -209,10 +205,8 @@ app.add_middleware(
 )
 
 # 挂载路由器
-if os.getenv("ENABLE_GEMINICLI", "false").lower() in ("true", "1", "yes", "on"):
-    app.include_router(geminicli_openai_router, prefix="", tags=["Geminicli OpenAI API"])
-    app.include_router(geminicli_gemini_router, prefix="", tags=["Geminicli Gemini API"])
-    app.include_router(geminicli_model_list_router, prefix="", tags=["Geminicli Model List"])
+# GeminiCLI 路由已下线：/v1/models、/v1beta/models 等 OpenAI/Gemini 格式
+# 模型列表路径由 Antigravity model_list 路由接管（见 src/router/antigravity/model_list.py）。
 
 # Antigravity路由 - 处理OpenAI格式请求并转换为Antigravity API
 app.include_router(antigravity_openai_router, prefix="", tags=["Antigravity OpenAI API"])
@@ -225,9 +219,6 @@ app.include_router(antigravity_model_list_router, prefix="", tags=["Antigravity 
 
 # Antigravity Anthropic Messages 路由 - Anthropic Messages 格式兼容
 app.include_router(antigravity_anthropic_router, prefix="", tags=["Antigravity Anthropic Messages"])
-
-if os.getenv("ENABLE_GEMINICLI", "false").lower() in ("true", "1", "yes", "on"):
-    app.include_router(geminicli_anthropic_router, prefix="", tags=["Geminicli Anthropic Messages"])
 
 # Panel路由 - 包含认证、凭证管理和控制面板功能
 app.include_router(panel_router, prefix="", tags=["Panel Interface"])

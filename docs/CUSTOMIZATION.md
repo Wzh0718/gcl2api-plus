@@ -185,7 +185,7 @@ custom-overlay/files/
 | 变量 | 作用 | 默认值 |
 | --- | --- | --- |
 | `ENABLE_GEMINICLI` ★ | 是否启用 GeminiCLI 路由 | `false` |
-| `ANTIGRAVITY_CLI_VERSION` ★ | User-Agent 客户端版本号；上游按版本下发模型列表，过旧会缺新模型，须跟随真实 agy cli | `1.1.28` |
+| `ANTIGRAVITY_CLI_VERSION` ★ | User-Agent 客户端版本号；上游按版本下发模型列表，过旧会缺新模型，须跟随真实 agy cli | `1.2.7` |
 | `ANTIGRAVITY_CLI_OS_TYPE` ★ | User-Agent os_type 字段 | `linux` |
 | `ANTIGRAVITY_CLI_ARCH` ★ | User-Agent arch 字段（仅标识串，与镜像架构无关） | `amd64` |
 | `ANTIGRAVITY_CLI_AUTH_METHOD` ★ | User-Agent auth_method 字段 | `consumer` |

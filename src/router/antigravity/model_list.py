@@ -73,7 +73,10 @@ async def get_antigravity_models_with_features():
 
 # ==================== API 路由 ====================
 
+# 同时保留无前缀路径（原 GeminiCLI 路由的路径），避免客户端按 /v1/models
+# 拉取模型列表时命中 404；Antigravity 模式下由本路由统一提供。
 @router.get("/antigravity/v1beta/models")
+@router.get("/v1beta/models")
 async def list_gemini_models(
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
 ):
@@ -92,6 +95,7 @@ async def list_gemini_models(
 
 
 @router.get("/antigravity/v1/models")
+@router.get("/v1/models")
 async def list_openai_models(
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
 ):

@@ -80,6 +80,7 @@ CUSTOM_FILE_PATHS = {
     "tests/test_antigravity_quota_reconcile.py",
     "tests/test_billing.py",
     "tests/test_dingtalk_alert.py",
+    "tests/test_gemini_fix.py",
     "tests/test_gemini_image_demo.py",
     "tests/test_gemini_sdk_image_edit.py",
     "tests/test_credential_success_persistence.py",

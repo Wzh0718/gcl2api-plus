@@ -138,7 +138,7 @@ antigravity/cli/{version} (aidev_client; os_type={os}; arch={arch}; auth_method=
 建议配置：
 
 ```dotenv
-ANTIGRAVITY_CLI_VERSION=1.1.8
+ANTIGRAVITY_CLI_VERSION=1.2.7
 ANTIGRAVITY_CLI_OS_TYPE=linux
 ANTIGRAVITY_CLI_ARCH=amd64
 ANTIGRAVITY_CLI_AUTH_METHOD=consumer

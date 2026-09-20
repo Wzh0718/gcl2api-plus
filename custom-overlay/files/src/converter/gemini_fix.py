@@ -699,90 +699,94 @@ def is_thinking_model(model_name: str) -> bool:
     return "think" in model_name or "pro" in model_name.lower()
 
 
+# ==================== Antigravity 模型档位映射（数据驱动） ====================
+# 上游 fetchAvailableModels 按 exact ID 下发档位化模型（如 gemini-3.8-flash-high）。
+# 统一规则（2026-09-20 实测，UA >= 1.1.28 共 33 个模型）：
+#   1) 请求名已带上游档位后缀 → 原样透传，未来新家族无需改代码；
+#   2) 上游已废弃/改名的 ID 走 _SPECIAL_TIER_OVERRIDES；
+#   3) 裸基础名（或 -preview/-think 等遗留后缀名）→ 查 _FAMILY_TIER_TABLE：
+#      按 thinkingLevel 参数（或 -minimal 关键词）选档，未提供则用 DEFAULT 档；
+#   4) 未登记家族（如 gemini-3.5-flash-lite、未来 3.9 系）一律原样透传。
+# 家族-档位对应（DEFAULT = 裸名默认档；上游可用档位以 fetchAvailableModels 为准）：
+#   gemini-3.1-pro:   -low（HIGH→-high，再被覆盖表改写为 gemini-pro-agent）
+#   gemini-3.5-flash: -extra-low/-low（无 -tiered；-high 透传由上游裁决）
+#   gemini-3.6-flash: -low/-medium/-high/-tiered
+#   gemini-3.7-flash: -low/-medium/-high/-tiered（裸名默认 -tiered）
+#   gemini-3.8-flash: -low/-medium/-high/-tiered（裸名默认 -tiered）
+#   gemini-3-flash:   -agent
+_SPECIAL_TIER_OVERRIDES = {
+    # 后端已废弃 gemini-3.1-pro-high，等价能力在 pro-agent
+    "gemini-3.1-pro-high": "gemini-pro-agent",
+}
+
+_FAMILY_TIER_TABLE = {
+    "gemini-3.1-pro": {"DEFAULT": "-low", "HIGH": "-high"},
+    "gemini-3.5-flash": {
+        "DEFAULT": "-low", "HIGH": "-high", "LOW": "-low",
+        "MINIMAL": "-extra-low", "EXTRA-LOW": "-extra-low",
+    },
+    "gemini-3.6-flash": {
+        "DEFAULT": "-low", "HIGH": "-high", "MEDIUM": "-medium",
+        "LOW": "-low", "MINIMAL": "-low",
+    },
+    "gemini-3.7-flash": {
+        "DEFAULT": "-tiered", "HIGH": "-high", "MEDIUM": "-medium",
+        "LOW": "-low", "MINIMAL": "-low",
+    },
+    "gemini-3.8-flash": {
+        "DEFAULT": "-tiered", "HIGH": "-high", "MEDIUM": "-medium",
+        "LOW": "-low", "MINIMAL": "-low",
+    },
+    "gemini-3-flash": {"DEFAULT": "-agent"},
+}
+
+# 上游 exact ID 的档位后缀（长后缀在前，避免 -low 吃掉 -extra-low）
+_UPSTREAM_TIER_SUFFIXES = ("-extra-low", "-tiered", "-medium", "-high", "-low")
+
+_FEATURE_MODEL_PREFIXES = ("假流式/", "流式抗截断/")
+
+
 def map_antigravity_gemini_model(model_name: str, thinking_level: Optional[str], thinking_budget: Optional[int]) -> str:
     """
     将客户端请求的 Gemini 模型和思考参数，映射到 Antigravity 后端支持的精确模型 ID。
+
+    统一档位处理：带上游档位后缀的请求名原样透传；仅裸基础名查家族档位表；
+    特例覆盖表处理上游废弃 ID。新增模型家族通常无需修改本函数。
     """
     model_lower = model_name.lower()
+    for prefix in _FEATURE_MODEL_PREFIXES:
+        if model_lower.startswith(prefix):
+            model_lower = model_lower[len(prefix):]
 
-    # 1. 后端支持的精确模型 ID 列表
-    exact_models = {
-        "gemini-3-flash", "gemini-3-flash-agent",
-        "gemini-3.1-pro-low", "gemini-pro-agent",
-        "gemini-3.1-flash-lite", "gemini-3.1-flash-image",
-        "gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
-        "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
-        "gemini-3.6-flash-tiered", "gemini-3.7-flash-tiered",
-        "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash-thinking",
-        "tab_flash_lite_preview", "tab_jump_flash_lite_preview", "gpt-oss-120b-medium",
-        "chat_20706", "chat_23310"
-    }
+    # 剥离 -search（工具型后缀，不参与上游模型寻址）
+    if model_lower.endswith("-search"):
+        search_stripped = model_lower[: -len("-search")]
+    else:
+        search_stripped = model_lower
 
-    base_model = get_base_model_name(model_lower)
+    # 1. 显式上游档位后缀 → 原样透传（2.5 系档位在 thinkingConfig 中表达，回基础名）
+    for suffix in _UPSTREAM_TIER_SUFFIXES:
+        if search_stripped.endswith(suffix):
+            base = search_stripped[: -len(suffix)]
+            mapped = base if base.startswith("gemini-2.5") else search_stripped
+            return _SPECIAL_TIER_OVERRIDES.get(mapped, mapped)
 
-    # 已经是一个精确的后端模型 ID 则直接返回
-    if base_model in exact_models:
-        return base_model
+    # 2. 剥离遗留后缀（-minimal/-think/-maxthinking/-nothinking）得到家族基础名
+    level_hint = "MINIMAL" if search_stripped.endswith("-minimal") else None
+    core = get_base_model_name(search_stripped)
+    if core.endswith("-preview"):
+        core = core[: -len("-preview")]
 
-    # 2. 根据请求的模型名后缀直接映射
-    if "gemini-3.1-pro" in base_model:
-        if "-high" in model_lower:
-            # gemini-3.1-pro-high is deprecated on the backend, mapped to gemini-pro-agent
-            return "gemini-pro-agent"
-        elif "-low" in model_lower:
-            return "gemini-3.1-pro-low"
+    tiers = _FAMILY_TIER_TABLE.get(core)
+    if tiers is None or core.startswith("gemini-2.5"):
+        # 未登记家族 / 2.5 系：原样透传，交由上游寻址
+        return core
 
-    if "gemini-3.5-flash" in base_model:
-        if "-extra-low" in model_lower or "-minimal" in model_lower:
-            return "gemini-3.5-flash-extra-low"
-        elif "-low" in model_lower:
-            return "gemini-3.5-flash-low"
-        elif "-high" in model_lower:
-            return "gemini-3.5-flash-high"
-
-    if "gemini-3.6-flash" in base_model:
-        # 3.6-flash 的思考档位编码在模型名后缀中（对应 agy CLI 的 --effort）
-        if "-high" in model_lower:
-            return "gemini-3.6-flash-high"
-        elif "-medium" in model_lower:
-            return "gemini-3.6-flash-medium"
-        elif "-low" in model_lower:
-            return "gemini-3.6-flash-low"
-
-    if "gemini-3.7-flash" in base_model:
-        # 上游只有 tiered 一档
-        return "gemini-3.7-flash-tiered"
-
-    if "gemini-3-flash" in base_model:
-        return "gemini-3-flash-agent"
-
-    # 3. 如果请求的是基础名，根据传入的 thinkingLevel 参数进行映射
-    if "gemini-3.1-pro" in base_model:
-        if thinking_level and thinking_level.upper() == "HIGH":
-            return "gemini-pro-agent"
-        else:
-            return "gemini-3.1-pro-low"
-
-    if "gemini-3.5-flash" in base_model:
-        if thinking_level and thinking_level.upper() in ("MINIMAL", "EXTRA-LOW"):
-            return "gemini-3.5-flash-extra-low"
-        elif thinking_level and thinking_level.upper() == "HIGH":
-            return "gemini-3.5-flash-high"
-        else:
-            return "gemini-3.5-flash-low"
-
-    if "gemini-3.6-flash" in base_model:
-        if thinking_level and thinking_level.upper() == "HIGH":
-            return "gemini-3.6-flash-high"
-        elif thinking_level and thinking_level.upper() == "MEDIUM":
-            return "gemini-3.6-flash-medium"
-        else:
-            return "gemini-3.6-flash-low"
-
-    if "gemini-3.7-flash" in base_model:
-        return "gemini-3.7-flash-tiered"
-
-    return base_model
+    # 3. 裸基础名 → 按 thinkingLevel 参数（或 -minimal 关键词）选档，缺省用家族默认档
+    level = (thinking_level or "").upper() or level_hint
+    suffix = tiers.get(level) if level else None
+    mapped = f"{core}{suffix if suffix is not None else tiers['DEFAULT']}"
+    return _SPECIAL_TIER_OVERRIDES.get(mapped, mapped)
 
 
 async def normalize_gemini_request(
