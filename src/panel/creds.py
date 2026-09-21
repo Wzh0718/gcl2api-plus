@@ -1370,6 +1370,9 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
 class QuotaBatchRequest(BaseModel):
     filenames: List[str]
     mode: str = "antigravity"
+    # 为 True 时跳过进程内缓存、强制重新采集（前端"刷新额度"按钮），
+    # 新鲜结果仍会写回缓存供后续非强制查询复用。
+    force: bool = False
 
 
 # 批量额度查询的进程内缓存与并发控制：
@@ -1430,7 +1433,7 @@ async def batch_get_credential_quota(
         results: dict = {}
         misses: List[str] = []
         for filename in filenames:
-            cached = _quota_batch_cache_get(filename)
+            cached = None if request.force else _quota_batch_cache_get(filename)
             if cached is not None:
                 results[filename] = cached
             else:
@@ -1468,6 +1471,10 @@ async def get_credential_quota(
     result = await _collect_quota_for_filename(filename, mode)
     if not result.get("success"):
         return JSONResponse(status_code=400, content=result)
+    # 详情接口永远打上游、拿到的是实时数据；回写批量缓存，
+    # 让凭证行的内联额度条与顶部汇总条（走 /quota/batch 缓存）与详情保持一致。
+    if mode == "antigravity":
+        _quota_batch_cache_set(filename, result)
     return JSONResponse(content=result)
 
 

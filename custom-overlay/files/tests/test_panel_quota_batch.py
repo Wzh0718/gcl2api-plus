@@ -125,3 +125,44 @@ async def test_single_quota_endpoint_returns_result_shape(monkeypatch):
     failed_data = failed.json()
     assert failed_data["success"] is False
     assert failed_data["error"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_batch_quota_force_bypasses_ttl_cache(monkeypatch):
+    """force=true 时跳过后端 TTL 缓存重新采集（前端"刷新额度"按钮）。"""
+    calls: list = []
+    app = _build_app(monkeypatch, calls)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/creds/quota/batch",
+            json={"filenames": ["a.json"], "mode": "antigravity"},
+        )
+        second = await client.post(
+            "/creds/quota/batch",
+            json={"filenames": ["a.json"], "mode": "antigravity", "force": True},
+        )
+
+    assert first.status_code == second.status_code == 200
+    # 第二次强制刷新：绕开缓存重新采集
+    assert calls == ["a.json", "a.json"]
+
+
+@pytest.mark.asyncio
+async def test_single_quota_endpoint_populates_batch_cache(monkeypatch):
+    """详情接口（GET /quota/{filename}）的实时结果回写批量缓存，保证行内条/汇总条与详情一致。"""
+    calls: list = []
+    app = _build_app(monkeypatch, calls)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        single = await client.get("/creds/quota/a.json", params={"mode": "antigravity"})
+        batch = await client.post(
+            "/creds/quota/batch",
+            json={"filenames": ["a.json"], "mode": "antigravity"},
+        )
+
+    assert single.status_code == 200
+    assert batch.status_code == 200
+    # 批量接口命中详情接口写入的缓存：不再触发上游采集
+    assert calls == ["a.json"]
+    assert batch.json()["results"]["a.json"] == single.json()

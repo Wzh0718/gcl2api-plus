@@ -3154,6 +3154,22 @@ async function toggleAntigravityQuotaDetails(pathId) {
                         contentDiv.innerHTML = quotaHTML;
                     }
 
+                    // 详情面板的数据是实时的（后端已回写批量缓存）；
+                    // 前端这里同步概览 state，并就地刷新该凭证行的内联额度条与顶部汇总条，
+                    // 保证只有一个账号时详情、行内条、汇总三处数字一致。
+                    const overviewState = AppState.antigravityQuotaOverview;
+                    if (overviewState) {
+                        overviewState.data[filename] = data;
+                        if (overviewState.selectedModel) {
+                            const credCard = quotaDetails.closest('.cred-card');
+                            const inlineBar = credCard ? credCard.querySelector('.quota-inline-bar') : null;
+                            if (inlineBar) {
+                                inlineBar.outerHTML = buildAntigravityQuotaOverviewInline(filename);
+                            }
+                            renderAntigravityQuotaSummary();
+                        }
+                    }
+
                     showStatus('✅ 成功加载额度信息', 'success');
                 } else {
                     // 失败时显示错误
@@ -3192,11 +3208,11 @@ function antigravityQuotaOverviewVisibleFilenames() {
     return Object.keys(AppState.antigravityCreds.filteredData || {});
 }
 
-async function fetchAntigravityQuotaBatch(filenames) {
+async function fetchAntigravityQuotaBatch(filenames, force = false) {
     const response = await fetch('./creds/quota/batch', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ filenames, mode: 'antigravity' })
+        body: JSON.stringify({ filenames, mode: 'antigravity', force })
     });
     const data = await response.json();
     if (!response.ok || !data.success) {
@@ -3303,7 +3319,8 @@ async function loadAntigravityQuotaOverview(force = false) {
     renderAntigravityQuotaSummary();
     showStatus(`⏳ 正在批量获取 ${filenames.length} 个凭证的额度信息...`, 'info');
     try {
-        const results = await fetchAntigravityQuotaBatch(filenames);
+        // force 时同时绕过后端进程内缓存，保证"刷新额度"拿到实时数据
+        const results = await fetchAntigravityQuotaBatch(filenames, force);
         Object.assign(state.data, results);
         state.fetchedAt = Date.now();
         rebuildAntigravityQuotaModelOptions();
@@ -3419,15 +3436,15 @@ function buildAntigravityQuotaOverviewInline(filename) {
 
     const entry = state.data[filename];
     if (!entry) {
-        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px dashed #ced4da;border-radius:4px;font-size:11px;color:#888;">⏳ ${modelLabel} 额度加载中...</div>`;
+        return `<div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px dashed #ced4da;border-radius:4px;font-size:11px;color:#888;">⏳ ${modelLabel} 额度加载中...</div>`;
     }
     if (!entry.success) {
         const reason = escapeHtml(entry.error || '获取失败');
-        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#fff5f5;border:1px solid #f5c6cb;border-radius:4px;font-size:11px;color:#dc3545;" title="${reason}">❌ ${modelLabel}: ${reason}</div>`;
+        return `<div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#fff5f5;border:1px solid #f5c6cb;border-radius:4px;font-size:11px;color:#dc3545;" title="${reason}">❌ ${modelLabel}: ${reason}</div>`;
     }
     const modelData = (entry.models || {})[state.selectedModel];
     if (!modelData) {
-        return `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;font-size:11px;color:#999;" title="该凭证的额度数据中没有此模型">— ${modelLabel}: 无额度数据</div>`;
+        return `<div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;font-size:11px;color:#999;" title="该凭证的额度数据中没有此模型">— ${modelLabel}: 无额度数据</div>`;
     }
 
     const remainingPct = quotaPercentageValue(modelData.remaining);
@@ -3442,7 +3459,7 @@ function buildAntigravityQuotaOverviewInline(filename) {
     const exhausted = remainingPct <= 0;
 
     return `
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;" title="${modelLabel} 5小时窗口剩余 ${remainingLabel}${resetLabel}">
+        <div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;" title="${modelLabel} 5小时窗口剩余 ${remainingLabel}${resetLabel}">
             <span style="font-size:11px;color:#555;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${modelLabel}</span>
             <span style="flex:1;height:6px;background:#e9ecef;border-radius:3px;overflow:hidden;">
                 <span style="display:block;height:100%;width:${usedPct}%;background-color:${color};transition:width 0.3s ease;"></span>
