@@ -368,3 +368,19 @@ async def test_router_bad_request(monkeypatch):
     resp = client.post("/v1/responses", json={"input": "no model"})
     assert resp.status_code == 400
     assert resp.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_responses_router_registered_in_app():
+    """回归防护：responses 路由必须真实挂载进 web.py 的 app（否则线上 404）。
+
+    行为验证：未挂载时 POST 返回 404；已挂载时未带凭证返回 401。
+    """
+    from fastapi.testclient import TestClient
+
+    from web import app
+
+    client = TestClient(app)
+    for path in ("/v1/responses", "/antigravity/v1/responses"):
+        resp = client.post(path, json={"model": "gemini-3-pro", "input": "hi"})
+        assert resp.status_code != 404, f"{path} 未挂载（404）"
+        assert resp.status_code == 401

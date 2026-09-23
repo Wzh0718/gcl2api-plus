@@ -21,6 +21,7 @@ from src.credential_manager import credential_manager
 
 # Import all routers
 from src.router.antigravity.openai import router as antigravity_openai_router
+from src.router.antigravity.responses import router as antigravity_responses_router
 from src.router.antigravity.gemini import router as antigravity_gemini_router
 from src.router.antigravity.anthropic import router as antigravity_anthropic_router
 from src.router.antigravity.model_list import router as antigravity_model_list_router
@@ -210,6 +211,9 @@ app.add_middleware(
 
 # Antigravity路由 - 处理OpenAI格式请求并转换为Antigravity API
 app.include_router(antigravity_openai_router, prefix="", tags=["Antigravity OpenAI API"])
+
+# Antigravity路由 - OpenAI Responses API 格式兼容（/v1/responses）
+app.include_router(antigravity_responses_router, prefix="", tags=["Antigravity OpenAI Responses API"])
 
 # Antigravity路由 - 处理Gemini格式请求并转换为Antigravity API
 app.include_router(antigravity_gemini_router, prefix="", tags=["Antigravity Gemini API"])
