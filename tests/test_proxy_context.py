@@ -90,11 +90,16 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
     assert calls[1]["proxy_url"] is None
     assert calls[1]["json"]["project"] == "project-two"
     assert calls[1]["headers"]["Authorization"] == "Bearer token-two"
-    assert recorder.records == [{
+    assert len(recorder.records) == 1
+    record = recorder.records[0]
+    # 新增监控字段：状态码与网关耗时（动态值，单独校验）
+    assert record.pop("status_code") == 200
+    assert record.pop("gateway_seconds") >= 0
+    assert record == {
         "request_id": "request-1", "credential_name": "two.json", "model": "gemini-test",
         "usage_metadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}, "success": True,
         "api_key_id": "env",
-    }]
+    }
 
 
 async def async_value(value):

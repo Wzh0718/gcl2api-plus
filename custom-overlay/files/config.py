@@ -78,6 +78,7 @@ ENV_MAPPINGS = {
     "PASSWORD": "password",
     "KEEPALIVE_URL": "keepalive_url",
     "KEEPALIVE_INTERVAL": "keepalive_interval",
+    "CALL_RECORDS_RETENTION_DAYS": "call_records_retention_days",
 }
 
 
@@ -698,3 +699,24 @@ async def get_keepalive_interval() -> int:
             pass
 
     return int(await get_config_value("keepalive_interval", 60))
+
+
+async def get_call_records_retention_days() -> int:
+    """
+    调用监控逐条记录的滚动保留天数，超过的记录会被自动清理。
+
+    Environment variable: CALL_RECORDS_RETENTION_DAYS
+    Database config key: call_records_retention_days
+    Default: 30（范围 1-365）
+    """
+    env_value = os.getenv("CALL_RECORDS_RETENTION_DAYS")
+    if env_value:
+        try:
+            return min(max(int(env_value), 1), 365)
+        except ValueError:
+            pass
+    value = await get_config_value("call_records_retention_days", 30)
+    try:
+        return min(max(int(value), 1), 365)
+    except (TypeError, ValueError):
+        return 30

@@ -1853,3 +1853,277 @@ textarea:disabled,
     cursor: pointer;
     user-select: none;
 }
+
+/* ==================== 调用监控（账号 / API Key / 实时） ==================== */
+
+.cm-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.cm-views {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: #f1f3f5;
+    border-radius: 999px;
+}
+
+.cm-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: #495057;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cm-chip:hover:not(.active) {
+    background: #e9ecef;
+}
+
+.cm-chip.active {
+    background: #e7f1ff;
+    color: #0d6efd;
+    font-weight: 600;
+}
+
+.cm-chip-icon {
+    width: 14px;
+    height: 14px;
+}
+
+.cm-count {
+    min-width: 18px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.08);
+    color: #495057;
+    font-size: 12px;
+    text-align: center;
+}
+
+.cm-chip.active .cm-count {
+    background: #0d6efd;
+    color: #fff;
+}
+
+.cm-side {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.cm-counter {
+    font-size: 13px;
+    color: #868e96;
+}
+
+.cm-counter b {
+    color: #495057;
+}
+
+.cm-select {
+    padding: 5px 8px;
+    border: 1px solid #ced4da;
+    border-radius: 6px;
+    background: #fff;
+    color: #495057;
+    font-size: 13px;
+}
+
+.cm-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 999px;
+    background: #fff;
+    color: #495057;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.cm-toggle.active {
+    background: #e7f1ff;
+    border-color: #0d6efd;
+    color: #0d6efd;
+}
+
+.cm-toggle-danger.active {
+    background: #fdecec;
+    border-color: #dc3545;
+    color: #dc3545;
+}
+
+.cm-table-wrap {
+    overflow-x: auto;
+    background: #fff;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+}
+
+.cm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.cm-table th,
+.cm-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e9ecef;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.cm-table th {
+    background: #f8f9fa;
+    color: #868e96;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.cm-table tbody tr:hover {
+    background: #f8f9fa;
+}
+
+.cm-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.cm-key-cell {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.cm-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.cm-badge-ok {
+    background: #e6f6ec;
+    color: #28a745;
+}
+
+.cm-badge-fail {
+    background: #fdecec;
+    color: #dc3545;
+}
+
+.cm-badge-muted {
+    background: #f1f3f5;
+    color: #868e96;
+}
+
+.cm-code {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.cm-code-ok {
+    background: #e6f6ec;
+    color: #28a745;
+}
+
+.cm-code-warn {
+    background: #fff4e5;
+    color: #e6a23c;
+}
+
+.cm-code-fail {
+    background: #fdecec;
+    color: #dc3545;
+}
+
+.cm-code-muted {
+    background: #f1f3f5;
+    color: #868e96;
+}
+
+.cm-rate-ok {
+    color: #28a745;
+}
+
+.cm-rate-warn {
+    color: #e6a23c;
+}
+
+.cm-rate-fail {
+    color: #dc3545;
+}
+
+.cm-empty {
+    padding: 60px 20px;
+    text-align: center;
+}
+
+.cm-empty-icon {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 14px;
+}
+
+.cm-empty-text {
+    font-size: 14px;
+    color: #495057;
+    margin-bottom: 8px;
+}
+
+.cm-empty-help {
+    background: none;
+    border: none;
+    color: #0d6efd;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+}
+
+.cm-empty-help:hover {
+    text-decoration: underline;
+}
+
+.cm-help {
+    max-width: 560px;
+    margin: 12px auto 0;
+    padding: 12px 16px;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    text-align: left;
+    font-size: 13px;
+    color: #495057;
+}
+
+.cm-help.hidden {
+    display: none;
+}
+
+.cm-help ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.cm-help li {
+    margin: 4px 0;
+}

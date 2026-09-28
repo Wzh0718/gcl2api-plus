@@ -896,7 +896,7 @@ async def _stream_request_inner(
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
 
-    async def record_billing_once(success: bool):
+    async def record_billing_once(success: bool, status_code: Optional[int] = None):
         nonlocal billing_recorded
         if billing_recorded:
             return
@@ -906,6 +906,9 @@ async def _stream_request_inner(
             await recorder.record(
                 request_id=request_id, credential_name=current_file, model=model_name,
                 usage_metadata=usage_metadata, success=success, api_key_id=api_key_id,
+                task_type="image" if image_request else "chat",
+                status_code=status_code,
+                gateway_seconds=time.monotonic() - gateway_started,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
@@ -1065,7 +1068,7 @@ async def _stream_request_inner(
                                     break  # 跳出内层循环，用降级模型重试
                             # 不重试，直接返回原始错误（上游 403 改写为 503）
                             log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数或不应重试，返回原始错误")
-                            await record_billing_once(False)
+                            await record_billing_once(False, status_code=status_code)
                             await _alert_all_accounts_unavailable_if_needed(
                                 model_name, attempted_credentials
                             )
@@ -1081,7 +1084,7 @@ async def _stream_request_inner(
                             upstream_seconds=time.monotonic() - attempt_started,
                             gateway_seconds=time.monotonic() - gateway_started
                         )
-                        await record_billing_once(False)
+                        await record_billing_once(False, status_code=status_code)
                         await _alert_all_accounts_unavailable_if_needed(
                             model_name, attempted_credentials
                         )
@@ -1107,7 +1110,7 @@ async def _stream_request_inner(
                 if native and usage_remainder:
                     consume_usage_chunk(usage_remainder)
                 log.debug(f"[ANTIGRAVITY STREAM] 流式响应完成，模型: {model_name}")
-                await record_billing_once(True)
+                await record_billing_once(True, status_code=200)
                 return
             elif not need_retry:
                 # 没有收到任何数据（空回复），需要重试
@@ -1303,7 +1306,10 @@ async def _non_stream_image_request_inner(
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     async def record_billing_once(
-        success: bool, credential_name: str, response_payload: Any = None
+        success: bool,
+        credential_name: str,
+        response_payload: Any = None,
+        status_code: Optional[int] = None,
     ) -> None:
         nonlocal billing_recorded
         if billing_recorded:
@@ -1318,6 +1324,9 @@ async def _non_stream_image_request_inner(
                 usage_metadata=extract_usage_metadata(response_payload),
                 success=success,
                 api_key_id=api_key_id,
+                task_type="image",
+                status_code=status_code,
+                gateway_seconds=time.monotonic() - gateway_started,
             )
         except Exception as exc:
             log.warning(
@@ -1429,7 +1438,7 @@ async def _non_stream_image_request_inner(
                 upstream_seconds=elapsed,
                 gateway_seconds=time.monotonic() - gateway_started,
             )
-            await record_billing_once(True, current_file, response_payload)
+            await record_billing_once(True, current_file, response_payload, status_code=200)
             return Response(
                 content=response.content,
                 status_code=200,
@@ -1490,7 +1499,11 @@ async def _non_stream_image_request_inner(
             break
 
     billing_credential = next(iter(attempted_credentials), "unknown")
-    await record_billing_once(False, billing_credential)
+    await record_billing_once(
+        False,
+        billing_credential,
+        status_code=last_response.status_code if last_response is not None else None,
+    )
     if last_response is not None:
         if not last_was_capacity:
             await _alert_all_accounts_unavailable_if_needed(
@@ -1636,7 +1649,11 @@ async def non_stream_request(
     usage_metadata = None
     billing_recorded = False
 
-    async def record_billing_once(success: bool, response_payload: Any = None):
+    async def record_billing_once(
+        success: bool,
+        response_payload: Any = None,
+        status_code: Optional[int] = None,
+    ):
         nonlocal billing_recorded, usage_metadata
         if billing_recorded:
             return
@@ -1652,6 +1669,8 @@ async def non_stream_request(
                 usage_metadata=usage_metadata,
                 success=success,
                 api_key_id=api_key_id,
+                status_code=status_code,
+                gateway_seconds=time.monotonic() - gateway_started,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")
@@ -1739,7 +1758,7 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=time.monotonic() - gateway_started
                     )
-                    await record_billing_once(True, _safe_response_json(response) if response.content else None)
+                    await record_billing_once(True, _safe_response_json(response) if response.content else None, status_code=200)
                     return Response(
                         content=response.content,
                         status_code=200,
@@ -1836,7 +1855,7 @@ async def non_stream_request(
                                 continue
                         # 不重试，直接返回原始错误（上游 403 改写为 503）
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数或不应重试，返回原始错误")
-                        await record_billing_once(False)
+                        await record_billing_once(False, status_code=status_code)
                         await _alert_all_accounts_unavailable_if_needed(
                             model_name, attempted_credentials
                         )
@@ -1851,7 +1870,7 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=time.monotonic() - gateway_started
                     )
-                    await record_billing_once(False, _safe_response_json(response) if response.content else None)
+                    await record_billing_once(False, _safe_response_json(response) if response.content else None, status_code=status_code)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )

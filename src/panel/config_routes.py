@@ -73,6 +73,9 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["keepalive_url"] = await config.get_keepalive_url()
         current_config["keepalive_interval"] = await config.get_keepalive_interval()
 
+        # 调用监控配置
+        current_config["call_records_retention_days"] = await config.get_call_records_retention_days()
+
         # 服务器配置
         current_config["host"] = await config.get_server_host()
         current_config["port"] = await config.get_server_port()
@@ -186,6 +189,16 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             if not isinstance(new_config["keepalive_url"], str):
                 raise HTTPException(status_code=400, detail="保活URL必须是字符串")
 
+        # 验证调用监控配置
+        if "call_records_retention_days" in new_config:
+            try:
+                days = int(new_config["call_records_retention_days"])
+                if days < 1 or days > 365:
+                    raise HTTPException(status_code=400, detail="调用记录保留天数必须在 1-365 之间")
+                new_config["call_records_retention_days"] = days
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="调用记录保留天数必须是有效整数")
+
         if "keepalive_interval" in new_config:
             try:
                 interval = int(new_config["keepalive_interval"])
@@ -249,6 +262,14 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 await recheck_service.restart()
             except Exception as e:
                 log.warning(f"重启403复检服务失败: {e}")
+
+        # 调用记录保留天数变化后，立即按新保留期清理一次
+        if "call_records_retention_days" in new_config:
+            try:
+                from src.call_monitor import get_call_monitor
+                await (await get_call_monitor(storage_adapter)).cleanup()
+            except Exception as e:
+                log.warning(f"按新保留期清理调用记录失败: {e}")
 
         # 验证保存后的结果
         test_api_password = await config.get_api_password()

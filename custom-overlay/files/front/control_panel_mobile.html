@@ -1157,6 +1157,47 @@
         .proxy-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
         .proxy-dialog-actions button { min-height: 34px; padding: 0 12px; border: 1px solid #2867c7; border-radius: 7px; color: #fff; background: #2867c7; font: inherit; font-size: 12px; font-weight: 750; }
         .proxy-dialog-actions .secondary { color: #53657d; border-color: #cbd8e8; background: #fff; }
+
+        /* ==================== 调用监控（账号 / API Key / 实时） ==================== */
+        .cm-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+        .cm-views { display: inline-flex; gap: 2px; padding: 3px; background: #f1f3f5; border-radius: 999px; align-self: flex-start; max-width: 100%; overflow-x: auto; }
+        .cm-chip { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: none; border-radius: 999px; background: transparent; color: #495057; font-size: 12px; white-space: nowrap; cursor: pointer; }
+        .cm-chip.active { background: #e7f1ff; color: #0d6efd; font-weight: 600; }
+        .cm-count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: rgba(0,0,0,.08); color: #495057; font-size: 11px; text-align: center; }
+        .cm-chip.active .cm-count { background: #0d6efd; color: #fff; }
+        .cm-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .cm-counter { font-size: 12px; color: #868e96; }
+        .cm-counter b { color: #495057; }
+        .cm-select { padding: 5px 8px; border: 1px solid #ced4da; border-radius: 6px; background: #fff; color: #495057; font-size: 12px; }
+        .cm-toggle { padding: 5px 11px; border: 1px solid #ced4da; border-radius: 999px; background: #fff; color: #495057; font-size: 12px; cursor: pointer; }
+        .cm-toggle.active { background: #e7f1ff; border-color: #0d6efd; color: #0d6efd; }
+        .cm-toggle-danger.active { background: #fdecec; border-color: #dc3545; color: #dc3545; }
+        .cm-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #e9ecef; border-radius: 8px; -webkit-overflow-scrolling: touch; }
+        .cm-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .cm-table th, .cm-table td { padding: 7px 9px; border-bottom: 1px solid #e9ecef; text-align: left; white-space: nowrap; }
+        .cm-table th { background: #f8f9fa; color: #868e96; font-size: 11px; font-weight: 600; }
+        .cm-table tbody tr:last-child td { border-bottom: none; }
+        .cm-key-cell { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+        .cm-badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .cm-badge-ok { background: #e6f6ec; color: #28a745; }
+        .cm-badge-fail { background: #fdecec; color: #dc3545; }
+        .cm-badge-muted { background: #f1f3f5; color: #868e96; }
+        .cm-code { display: inline-block; padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+        .cm-code-ok { background: #e6f6ec; color: #28a745; }
+        .cm-code-warn { background: #fff4e5; color: #e6a23c; }
+        .cm-code-fail { background: #fdecec; color: #dc3545; }
+        .cm-code-muted { background: #f1f3f5; color: #868e96; }
+        .cm-rate-ok { color: #28a745; }
+        .cm-rate-warn { color: #e6a23c; }
+        .cm-rate-fail { color: #dc3545; }
+        .cm-empty { padding: 44px 14px; text-align: center; }
+        .cm-empty-icon { width: 52px; height: 52px; margin-bottom: 12px; }
+        .cm-empty-text { font-size: 13px; color: #495057; margin-bottom: 6px; }
+        .cm-empty-help { background: none; border: none; color: #0d6efd; font-size: 12px; cursor: pointer; padding: 4px 8px; }
+        .cm-help { margin: 12px auto 0; padding: 10px 14px; background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; text-align: left; font-size: 12px; color: #495057; }
+        .cm-help.hidden { display: none; }
+        .cm-help ul { margin: 0; padding-left: 18px; }
+        .cm-help li { margin: 4px 0; }
     </style>
     <style id="api-key-management-styles">
         .api-key-shell { color: #172033; }
@@ -1236,6 +1277,7 @@
                 <button class="tab" onclick="switchTab('upload')">凭证上传</button>
                 <button class="tab" onclick="switchTab('antigravity-manage')">AG凭证</button>
                 <button class="tab" onclick="switchTab('model-stats')">调用统计</button>
+                <button class="tab" onclick="switchTab('call-monitor')">调用监控</button>
                 <button class="tab" onclick="switchTab('config')">配置管理</button>
                 <button class="tab" onclick="switchTab('billing')">Token计费</button>
                 <button class="tab" onclick="switchTab('logs')">实时日志</button>
@@ -1942,6 +1984,40 @@
                 </div>
             </div>
 
+            <div id="call-monitorTab" class="tab-content">
+                <div class="cm-toolbar">
+                    <div class="cm-views" role="tablist" aria-label="调用监控视图切换">
+                        <button type="button" class="cm-chip active" data-view="account"
+                            onclick="setCallMonitorView('account')">账号 <span class="cm-count"
+                                id="cmCountAccount">0</span></button>
+                        <button type="button" class="cm-chip" data-view="key"
+                            onclick="setCallMonitorView('key')">API Key <span class="cm-count"
+                                id="cmCountKey">0</span></button>
+                        <button type="button" class="cm-chip" data-view="realtime"
+                            onclick="setCallMonitorView('realtime')">实时 <span class="cm-count"
+                                id="cmCountRealtime">0</span></button>
+                    </div>
+                    <div class="cm-side">
+                        <span class="cm-counter">日志: <b id="cmLogsCount">0</b></span>
+                        <span class="cm-counter">失败: <b id="cmFailedCount">0</b></span>
+                        <select id="cmRange" class="cm-select" onchange="onCallMonitorRangeChange(this)"
+                            aria-label="时间范围">
+                            <option value="today" selected>今日</option>
+                            <option value="7d">近 7 天</option>
+                            <option value="30d">近 30 天</option>
+                            <option value="all">全部</option>
+                        </select>
+                        <button type="button" id="cmMaskBtn" class="cm-toggle active"
+                            onclick="toggleCallMonitorMask()">脱敏</button>
+                        <button type="button" id="cmFailedBtn" class="cm-toggle cm-toggle-danger"
+                            onclick="toggleCallMonitorFailedOnly()">失败</button>
+                    </div>
+                </div>
+                <div id="callMonitorContent">
+                    <div class="loading">切换到本页后自动加载调用监控...</div>
+                </div>
+            </div>
+
             <div id="configTab" class="tab-content">
                 <div class="config-hero">
                     <span class="proxy-kicker">CONTROL PLANE</span>
@@ -2299,6 +2375,19 @@
                         </div>
 
                         <div class="card">
+                            <h4 style="margin-top: 0; margin-bottom: 15px;">调用监控</h4>
+
+                            <div class="form-group">
+                                <label for="callRecordsRetentionDays">调用记录保留天数:</label>
+                                <input type="number" id="callRecordsRetentionDays" min="1" max="365"
+                                    placeholder="30" />
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">「调用监控」逐条记录（roll
+                                    range）超过该天数后自动滚动清理，范围 1 - 365 天，默认 30 ✓ 支持热更新</small>
+                            </div>
+                        </div>
+
+                        <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">配置热更新说明</h4>
 
                             <div
@@ -2456,7 +2545,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=quota-overview-v2-20260910"></script>
+    <script src="./front/common.js?v=call-monitor-20260911"></script>
 </body>
 
 </html>

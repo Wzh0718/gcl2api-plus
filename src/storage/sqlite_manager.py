@@ -537,6 +537,41 @@ class SQLiteManager:
             ON credential_model_stats_daily(mode, stat_date)
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS call_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                api_key_id TEXT NOT NULL DEFAULT 'env',
+                credential_name TEXT NOT NULL DEFAULT '',
+                channel TEXT NOT NULL DEFAULT 'antigravity',
+                model_name TEXT NOT NULL DEFAULT '',
+                task_type TEXT NOT NULL DEFAULT 'chat',
+                success INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER,
+                gateway_seconds REAL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_tokens INTEGER NOT NULL DEFAULT 0,
+                thought_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost TEXT NOT NULL DEFAULT '0.00000000',
+                currency TEXT NOT NULL DEFAULT 'CNY'
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_call_records_created
+            ON call_records(created_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_call_records_key_created
+            ON call_records(api_key_id, created_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_call_records_cred_created
+            ON call_records(credential_name, created_at)
+        """)
+
         log.debug("SQLite tables and indexes created")
 
     async def _migrate_api_key_secret_ciphertext(
@@ -2556,6 +2591,260 @@ class SQLiteManager:
                 rows = await cursor.fetchall()
         keys = ("billing_date", "api_key_id", "credential_name", "model", "currency", "input_tokens", "output_tokens", "cache_tokens", "thought_tokens", "total_tokens", "input_cost", "output_cost", "cache_cost", "total_cost", "success_count", "failed_count", "unknown_usage_count")
         return [dict(zip(keys, row)) for row in rows]
+
+    # ==================== 调用监控：逐条调用记录（call_records） ====================
+
+    _CALL_RECORD_COLUMNS = (
+        "request_id", "created_at", "api_key_id", "credential_name", "channel",
+        "model_name", "task_type", "success", "status_code", "gateway_seconds",
+        "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
+        "total_tokens", "total_cost", "currency",
+    )
+
+    @classmethod
+    def _call_record_row(cls, row: Tuple[Any, ...]) -> Dict[str, Any]:
+        item = dict(zip(cls._CALL_RECORD_COLUMNS, row))
+        item["success"] = bool(item["success"])
+        return item
+
+    async def insert_call_record(
+        self,
+        *,
+        request_id: str,
+        created_at: float,
+        api_key_id: str = "env",
+        credential_name: str = "",
+        channel: str = "antigravity",
+        model_name: str = "",
+        task_type: str = "chat",
+        success: bool,
+        status_code: Optional[int] = None,
+        gateway_seconds: Optional[float] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_tokens: int = 0,
+        thought_tokens: int = 0,
+        total_tokens: int = 0,
+        total_cost: str = "0.00000000",
+        currency: str = "CNY",
+    ) -> None:
+        """写入一条逐请求调用记录（由调用监控模块调用，计费去重后才触发）。"""
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """INSERT INTO call_records(
+                        request_id, created_at, api_key_id, credential_name, channel,
+                        model_name, task_type, success, status_code, gateway_seconds,
+                        input_tokens, output_tokens, cache_tokens, thought_tokens,
+                        total_tokens, total_cost, currency
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    request_id, float(created_at), api_key_id or "env",
+                    os.path.basename(credential_name or ""), channel or "antigravity",
+                    model_name or "", task_type or "chat", 1 if success else 0,
+                    status_code, gateway_seconds,
+                    max(int(input_tokens), 0), max(int(output_tokens), 0),
+                    max(int(cache_tokens), 0), max(int(thought_tokens), 0),
+                    max(int(total_tokens), 0), total_cost, currency or "CNY",
+                ),
+            )
+            await db.commit()
+
+    @staticmethod
+    def _call_record_filters(
+        since_ts: float,
+        until_ts: Optional[float],
+        failed_only: bool,
+        api_key_id: Optional[str],
+    ) -> Tuple[str, List[Any]]:
+        clauses = ["created_at >= ?"]
+        params: List[Any] = [float(since_ts)]
+        if until_ts is not None:
+            clauses.append("created_at < ?")
+            params.append(float(until_ts))
+        if failed_only:
+            clauses.append("success = 0")
+        if api_key_id:
+            clauses.append("api_key_id = ?")
+            params.append(api_key_id)
+        return " AND ".join(clauses), params
+
+    async def list_call_records(
+        self,
+        *,
+        since_ts: float = 0.0,
+        until_ts: Optional[float] = None,
+        failed_only: bool = False,
+        api_key_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """按时间倒序返回逐条调用记录（实时视图）。"""
+        self._ensure_initialized()
+        where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
+        columns = ", ".join(self._CALL_RECORD_COLUMNS)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT {columns} FROM call_records
+                    WHERE {where}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?""",
+                (*params, min(max(int(limit), 1), 1000)),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [self._call_record_row(row) for row in rows]
+
+    async def list_recent_call_records(self, *, limit: int = 1000) -> List[Dict[str, Any]]:
+        """启动预热用：取最近 N 条记录（时间正序返回）。"""
+        self._ensure_initialized()
+        columns = ", ".join(self._CALL_RECORD_COLUMNS)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT {columns} FROM call_records
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?""",
+                (min(max(int(limit), 1), 5000),),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        records = [self._call_record_row(row) for row in rows]
+        records.reverse()
+        return records
+
+    async def aggregate_call_records(
+        self,
+        *,
+        group_by: str,
+        since_ts: float,
+        until_ts: Optional[float] = None,
+        failed_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """按 API Key 或账号（凭证）× 模型聚合调用记录。
+
+        group_by 只允许 'api_key_id' 或 'credential_name'。
+        每个分组附带最近一次调用的 success/status_code（由独立的倒序查询合并）。
+        """
+        self._ensure_initialized()
+        if group_by not in ("api_key_id", "credential_name"):
+            raise ValueError(f"不支持的聚合维度: {group_by}")
+        where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT {group_by} AS group_key, model_name,
+                        COUNT(*) AS total,
+                        SUM(success) AS success_count,
+                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_count,
+                        AVG(gateway_seconds) AS avg_gateway_seconds,
+                        MAX(created_at) AS last_called_at,
+                        SUM(input_tokens) AS input_tokens,
+                        SUM(output_tokens) AS output_tokens,
+                        SUM(cache_tokens) AS cache_tokens,
+                        SUM(thought_tokens) AS thought_tokens,
+                        SUM(total_tokens) AS total_tokens,
+                        SUM(CAST(total_cost AS REAL)) AS total_cost,
+                        MAX(currency) AS currency,
+                        MAX(task_type) AS task_type,
+                        MAX(channel) AS channel
+                   FROM call_records
+                   WHERE {where}
+                   GROUP BY {group_by}, model_name
+                   ORDER BY total DESC, group_key ASC, model_name ASC""",
+                tuple(params),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            # 最近状态：倒序扫描有界行数，取每个分组的第一条
+            async with db.execute(
+                f"""SELECT {group_by} AS group_key, model_name, success, status_code
+                   FROM call_records
+                   WHERE {where}
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 5000""",
+                tuple(params),
+            ) as cursor:
+                recent_rows = await cursor.fetchall()
+
+        last_status: Dict[Tuple[Any, Any], Tuple[bool, Optional[int]]] = {}
+        for group_key, model_name, success, status_code in recent_rows:
+            key = (group_key, model_name)
+            if key not in last_status:
+                last_status[key] = (bool(success), status_code)
+
+        result = []
+        for row in rows:
+            (
+                group_key, model_name, total, success_count, failed_count,
+                avg_gateway_seconds, last_called_at,
+                input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens,
+                total_cost, currency, task_type, channel,
+            ) = row
+            last_success, last_status_code = last_status.get((group_key, model_name), (None, None))
+            total = int(total or 0)
+            success_count = int(success_count or 0)
+            result.append({
+                "group_key": group_key,
+                "model_name": model_name,
+                "total": total,
+                "success_count": success_count,
+                "failed_count": int(failed_count or 0),
+                "success_rate": round(100.0 * success_count / total, 1) if total else None,
+                "avg_gateway_seconds": float(avg_gateway_seconds or 0.0),
+                "last_called_at": float(last_called_at or 0.0),
+                "input_tokens": int(input_tokens or 0),
+                "output_tokens": int(output_tokens or 0),
+                "cache_tokens": int(cache_tokens or 0),
+                "thought_tokens": int(thought_tokens or 0),
+                "total_tokens": int(total_tokens or 0),
+                "total_cost": f"{float(total_cost or 0.0):.8f}",
+                "currency": currency or "CNY",
+                "task_type": task_type or "chat",
+                "channel": channel or "antigravity",
+                "last_success": last_success,
+                "last_status_code": last_status_code,
+            })
+        return result
+
+    async def count_call_records(
+        self,
+        *,
+        since_ts: float,
+        until_ts: Optional[float] = None,
+        failed_only: bool = False,
+    ) -> Dict[str, int]:
+        """日志/失败计数与账号、API Key 去重计数（顶部角标）。"""
+        self._ensure_initialized()
+        where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT COUNT(*),
+                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
+                        COUNT(DISTINCT credential_name),
+                        COUNT(DISTINCT api_key_id)
+                   FROM call_records WHERE {where}""",
+                tuple(params),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return {
+            "logs": int(row[0] or 0),
+            "failed": int(row[1] or 0),
+            "accounts": int(row[2] or 0),
+            "keys": int(row[3] or 0),
+        }
+
+    async def get_call_records_min_ts(self) -> Optional[float]:
+        """最早一条调用记录的时间戳（'全部' 范围的 TPS 口径用）。"""
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute("SELECT MIN(created_at) FROM call_records") as cursor:
+                row = await cursor.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    async def delete_call_records_before(self, cutoff_ts: float) -> int:
+        """删除早于截止时间的调用记录（保留期滚动清理），返回删除条数。"""
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            result = await db.execute(
+                "DELETE FROM call_records WHERE created_at < ?", (float(cutoff_ts),)
+            )
+            await db.commit()
+            return int(result.rowcount or 0)
 
     async def list_credentials(self, mode: str = "geminicli") -> List[str]:
         """列出所有凭证文件名（包括禁用的）"""

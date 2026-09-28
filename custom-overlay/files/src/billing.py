@@ -479,7 +479,11 @@ class BillingRecorder:
                     usage_metadata: Optional[Mapping[str, Any]] = None,
                     success: bool, timestamp: Optional[datetime] = None,
                     usage: Optional[UsageMetrics] = None,
-                    api_key_id: str = "env") -> bool:
+                    api_key_id: str = "env",
+                    channel: str = "antigravity",
+                    task_type: Optional[str] = None,
+                    status_code: Optional[int] = None,
+                    gateway_seconds: Optional[float] = None) -> bool:
         if not request_id:
             return False
         metrics = usage or calculate_usage_metrics(usage_metadata)
@@ -519,6 +523,31 @@ class BillingRecorder:
                     credential=credential_name, model=model, currency=currency,
                     metrics=metrics, costs=costs, success=success, unknown_usage=metrics.unknown_usage,
                 )
+            # 计费去重通过后，同步写入一条调用监控逐条记录（失败不影响主流程）
+            try:
+                from src.call_monitor import get_call_monitor
+
+                monitor = await get_call_monitor(self.storage)
+                await monitor.record(
+                    request_id=request_id,
+                    api_key_id=api_key_id,
+                    credential_name=credential_name,
+                    channel=channel,
+                    model_name=model,
+                    task_type=task_type or ("image" if "image" in (model or "").lower() else "chat"),
+                    success=success,
+                    status_code=status_code,
+                    gateway_seconds=gateway_seconds,
+                    input_tokens=metrics.input_tokens,
+                    output_tokens=metrics.output_tokens,
+                    cache_tokens=metrics.cache_tokens,
+                    thought_tokens=metrics.thought_tokens,
+                    total_tokens=metrics.total_tokens,
+                    total_cost=f"{costs['total_cost']:.8f}",
+                    currency=currency,
+                )
+            except Exception as exc:
+                log.warning(f"[CALL MONITOR] failed to record call: {type(exc).__name__}")
         return first
 
     async def rebuild_redis(self, days: int = 45) -> int:

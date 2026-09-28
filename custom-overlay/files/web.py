@@ -136,6 +136,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"403复检服务启动失败: {e}")
 
+    # 调用监控：预热内存缓冲并按保留期执行一次启动清理
+    try:
+        from src.call_monitor import get_call_monitor
+
+        call_monitor = await get_call_monitor()
+        await call_monitor.preload()
+        await call_monitor.cleanup()
+    except Exception as e:
+        log.error(f"调用监控初始化失败: {e}")
+
     # 启动内存回收任务（定期 GC + malloc_trim）
     global _memory_trim_task
     _memory_trim_task = asyncio.create_task(

@@ -1394,6 +1394,7 @@ function switchTab(tabName, sourceTab = null) {
 
     if (tabName !== 'billing') stopBillingAutoRefresh();
     if (tabName !== 'model-stats') stopStatsAutoRefresh();
+    if (tabName !== 'call-monitor') stopCallMonitorAutoRefresh();
     if (currentContent?.id === 'logsTab' && tabName !== 'logs') {
         disconnectWebSocket();
     }
@@ -1491,6 +1492,10 @@ function triggerTabDataLoad(tabName) {
     if (tabName === 'model-stats') {
         loadModelStatsTab();
         startStatsAutoRefresh();
+    }
+    if (tabName === 'call-monitor') {
+        loadCallMonitor();
+        startCallMonitorAutoRefresh();
     }
 }
 
@@ -2271,6 +2276,283 @@ async function downloadAllCreds() {
 
 // Antigravity凭证管理
 function refreshAntigravityCredsList() { AppState.antigravityCreds.refresh(); }
+
+// ==================== 调用监控（账号 / API Key / 实时 三视图） ====================
+
+const callMonitorState = {
+    view: 'account',        // account | key | realtime
+    range: 'today',         // today | 7d | 30d | all
+    failedOnly: false,
+    mask: true,
+    autoRefresh: true,
+    lastData: null,
+};
+
+function _cmEscape(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+// 脱敏：保留首尾少量字符，中间打码
+function _cmMask(value) {
+    const s = String(value ?? '');
+    if (!s) return '-';
+    if (!callMonitorState.mask) return _cmEscape(s);
+    if (s === 'env') return 'env（默认密钥）';
+    if (s.length <= 6) return _cmEscape(s[0] + '****');
+    return _cmEscape(s.slice(0, 4) + '****' + s.slice(-3));
+}
+
+function _cmFormatTime(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function _cmFormatLatency(seconds) {
+    if (seconds === null || seconds === undefined || seconds <= 0) return '-';
+    if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
+    return `${seconds.toFixed(2)}s`;
+}
+
+function _cmFormatTokens(value) {
+    const n = Number(value || 0);
+    return n.toLocaleString('en-US');
+}
+
+function _cmFormatCost(cost, currency) {
+    const n = Number(cost || 0);
+    const symbol = (currency === 'USD') ? '$' : '¥';
+    if (!n) return `${symbol}0`;
+    let text = n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    return `${symbol}${text}`;
+}
+
+function _cmTaskLabel(taskType) {
+    return ({ image: '生图', chat: '对话', embedding: '嵌入' })[taskType] || (taskType || '对话');
+}
+
+function _cmStatusBadge(success) {
+    if (success === null || success === undefined) return '<span class="cm-badge cm-badge-muted">-</span>';
+    return success
+        ? '<span class="cm-badge cm-badge-ok">成功</span>'
+        : '<span class="cm-badge cm-badge-fail">失败</span>';
+}
+
+function _cmStatusCodeChip(code) {
+    if (code === null || code === undefined) return '<span class="cm-code cm-code-muted">-</span>';
+    const cls = code < 300 ? 'cm-code-ok' : code < 500 ? 'cm-code-warn' : 'cm-code-fail';
+    return `<span class="cm-code ${cls}">${code}</span>`;
+}
+
+function _cmRateCell(rate) {
+    if (rate === null || rate === undefined) return '<td>-</td>';
+    const cls = rate >= 95 ? 'cm-rate-ok' : rate >= 80 ? 'cm-rate-warn' : 'cm-rate-fail';
+    return `<td class="${cls}" style="font-weight:600;">${rate}%</td>`;
+}
+
+function setCallMonitorView(view) {
+    if (callMonitorState.view === view) return;
+    callMonitorState.view = view;
+    loadCallMonitor();
+}
+
+function onCallMonitorRangeChange(select) {
+    callMonitorState.range = select.value || 'today';
+    loadCallMonitor();
+}
+
+function toggleCallMonitorMask() {
+    callMonitorState.mask = !callMonitorState.mask;
+    renderCallMonitor(); // 脱敏是纯前端渲染，直接用缓存数据重绘
+}
+
+function toggleCallMonitorFailedOnly() {
+    callMonitorState.failedOnly = !callMonitorState.failedOnly;
+    loadCallMonitor();
+}
+
+function toggleCallMonitorHelp() {
+    const help = document.getElementById('cmHelp');
+    if (help) help.classList.toggle('hidden');
+}
+
+async function loadCallMonitor(options = {}) {
+    const { silent = false } = options;
+    const content = document.getElementById('callMonitorContent');
+    if (!content) return;
+    if (!silent && !callMonitorState.lastData) {
+        content.innerHTML = '<div class="loading">正在加载调用监控数据...</div>';
+    }
+    try {
+        const params = new URLSearchParams({
+            range: callMonitorState.range,
+            failed_only: callMonitorState.failedOnly ? 'true' : 'false',
+        });
+        let url;
+        if (callMonitorState.view === 'realtime') {
+            params.set('limit', '200');
+            url = `./call-monitor/realtime?${params}`;
+        } else {
+            params.set('view', callMonitorState.view);
+            url = `./call-monitor/overview?${params}`;
+        }
+        const response = await fetch(url, { headers: getAuthHeaders() });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        callMonitorState.lastData = data;
+        renderCallMonitor();
+    } catch (error) {
+        if (!silent) {
+            content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(error.message)}</div>`;
+        }
+    }
+}
+
+function _cmUpdateChrome(counters) {
+    const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    set('cmCountAccount', counters.accounts ?? 0);
+    set('cmCountKey', counters.keys ?? 0);
+    set('cmCountRealtime', counters.realtime ?? 0);
+    set('cmLogsCount', counters.logs ?? 0);
+    set('cmFailedCount', counters.failed ?? 0);
+
+    document.querySelectorAll('.cm-chip').forEach(chip => {
+        chip.classList.toggle('active', chip.dataset.view === callMonitorState.view);
+    });
+    const maskBtn = document.getElementById('cmMaskBtn');
+    if (maskBtn) maskBtn.classList.toggle('active', callMonitorState.mask);
+    const failedBtn = document.getElementById('cmFailedBtn');
+    if (failedBtn) failedBtn.classList.toggle('active', callMonitorState.failedOnly);
+    const rangeSelect = document.getElementById('cmRange');
+    if (rangeSelect && rangeSelect.value !== callMonitorState.range) {
+        rangeSelect.value = callMonitorState.range;
+    }
+}
+
+function _cmEmptyState() {
+    return `<div class="cm-empty">
+        <svg class="cm-empty-icon" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+            <path d="M12 26 L20 12 H44 L52 26 V46 C52 49.3 49.3 52 46 52 H18 C14.7 52 12 49.3 12 46 Z"
+                stroke="#c0c4cc" stroke-width="2.5" fill="#f5f7fa"/>
+            <path d="M12 26 H24 C24 31 27.4 34 32 34 C36.6 34 40 31 40 26 H52"
+                stroke="#c0c4cc" stroke-width="2.5"/>
+        </svg>
+        <div class="cm-empty-text">当前筛选范围内暂无可展示的调用数据。</div>
+        <button type="button" class="cm-empty-help" onclick="toggleCallMonitorHelp()">为什么没有数据？&nbsp;›</button>
+        <div id="cmHelp" class="cm-help hidden">
+            <ul>
+                <li>仅统计 <strong>Antigravity 渠道</strong>的逐请求调用（geminicli 聚合计数请见「调用统计」标签页）。</li>
+                <li>逐条记录自本功能启用后开始采集，此前的历史不追溯。</li>
+                <li>超过保留期（默认 30 天，可在「配置管理 → 调用监控」修改）的记录已被自动清理。</li>
+                <li>检查右上角时间范围和「失败」筛选是否把数据过滤掉了。</li>
+                <li>还没有客户端通过本网关发起过请求。</li>
+            </ul>
+        </div>
+    </div>`;
+}
+
+function _cmRenderGrouped(rows, view) {
+    const firstHead = view === 'account' ? '账号' : 'API KEY';
+    const body = rows.map(row => {
+        const name = row.group_key;
+        const title = view === 'account' ? '凭证文件名' : 'API Key ID';
+        const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
+        const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
+        return `<tr>
+            <td class="cm-key-cell" title="${title}: ${_cmEscape(name)}">${_cmMask(name)}</td>
+            <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
+            <td>${taskService}</td>
+            <td>${_cmStatusCodeChip(row.last_status_code)}</td>
+            <td>${_cmStatusBadge(row.last_success)}</td>
+            ${_cmRateCell(row.success_rate)}
+            <td title="成功 ${row.success_count} / 失败 ${row.failed_count}">${row.total}</td>
+            <td>${row.tps ?? 0}</td>
+            <td>${_cmFormatLatency(row.avg_gateway_seconds)}</td>
+            <td>${_cmFormatTime(row.last_called_at)}</td>
+            <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
+            <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
+        </tr>`;
+    }).join('');
+    return `<div class="cm-table-wrap"><table class="cm-table">
+        <thead><tr>
+            <th>${firstHead}</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+function _cmRenderRealtime(records) {
+    const body = records.map(row => {
+        const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
+        const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
+        const statusCell = row.success
+            ? `<span class="cm-badge cm-badge-ok">成功</span>`
+            : `<span class="cm-badge cm-badge-fail">失败</span>`;
+        return `<tr>
+            <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmMask(row.api_key_id)}</td>
+            <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
+            <td>${taskService}</td>
+            <td>${_cmStatusCodeChip(row.status_code)}</td>
+            <td>${statusCell}</td>
+            <td>${_cmFormatLatency(row.gateway_seconds)}</td>
+            <td>${_cmFormatTime(row.created_at)}</td>
+            <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
+            <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
+            <td class="cm-key-cell" title="账号: ${_cmEscape(row.credential_name)}">${_cmMask(row.credential_name)}</td>
+        </tr>`;
+    }).join('');
+    return `<div class="cm-table-wrap"><table class="cm-table">
+        <thead><tr>
+            <th>API KEY</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+function renderCallMonitor() {
+    const content = document.getElementById('callMonitorContent');
+    const data = callMonitorState.lastData;
+    if (!content || !data) return;
+    const counters = data.counters || {};
+    _cmUpdateChrome(counters);
+
+    let note = '';
+    if (data.degraded) {
+        note = '<div class="status info" style="margin-bottom:10px;">当前存储后端不支持持久化调用记录，仅展示内存中的最近数据。</div>';
+    }
+    if (callMonitorState.view === 'realtime') {
+        const records = data.records || [];
+        content.innerHTML = note + (records.length ? _cmRenderRealtime(records) : _cmEmptyState());
+    } else {
+        const rows = data.rows || [];
+        content.innerHTML = note + (rows.length ? _cmRenderGrouped(rows, callMonitorState.view) : _cmEmptyState());
+    }
+}
+
+function stopCallMonitorAutoRefresh() {
+    if (AppState.callMonitorRefreshInterval) {
+        clearInterval(AppState.callMonitorRefreshInterval);
+        AppState.callMonitorRefreshInterval = null;
+    }
+}
+
+function startCallMonitorAutoRefresh() {
+    stopCallMonitorAutoRefresh();
+    AppState.callMonitorRefreshInterval = setInterval(() => {
+        const tab = document.getElementById('call-monitorTab');
+        if (document.visibilityState !== 'visible' || !tab?.classList.contains('active')) return;
+        if (!callMonitorState.autoRefresh) return;
+        loadCallMonitor({ silent: true });
+    }, 10000);
+}
 
 // ==================== 调用统计（独立 Tab，凭证 × 模型 成功率） ====================
 
@@ -4320,6 +4602,7 @@ function populateConfigForm() {
 
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
+    setConfigField('callRecordsRetentionDays', c.call_records_retention_days || 30);
 
     // 配置加载/保存后，同步 Refresh Token 导入面板的代理地址
     syncAntigravityRefreshTokenProxy();
@@ -4377,7 +4660,8 @@ async function saveConfig() {
             antigravity_model_fallback_chain: getValue('antigravityModelFallbackChain'),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
             keepalive_url: getValue('keepaliveUrl'),
-            keepalive_interval: getInt('keepaliveInterval', 60)
+            keepalive_interval: getInt('keepaliveInterval', 60),
+            call_records_retention_days: getInt('callRecordsRetentionDays', 30)
         };
 
         const response = await fetch('./config/save', {
