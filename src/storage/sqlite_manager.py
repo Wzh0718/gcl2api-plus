@@ -2677,8 +2677,9 @@ class SQLiteManager:
         failed_only: bool = False,
         api_key_id: Optional[str] = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """按时间倒序返回逐条调用记录（实时视图）。"""
+        """按时间倒序返回逐条调用记录（实时视图，支持 offset 分页）。"""
         self._ensure_initialized()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
         columns = ", ".join(self._CALL_RECORD_COLUMNS)
@@ -2687,8 +2688,8 @@ class SQLiteManager:
                 f"""SELECT {columns} FROM call_records
                     WHERE {where}
                     ORDER BY created_at DESC, id DESC
-                    LIMIT ?""",
-                (*params, min(max(int(limit), 1), 1000)),
+                    LIMIT ? OFFSET ?""",
+                (*params, min(max(int(limit), 1), 1000), max(int(offset), 0)),
             ) as cursor:
                 rows = await cursor.fetchall()
         return [self._call_record_row(row) for row in rows]
@@ -2807,10 +2808,11 @@ class SQLiteManager:
         since_ts: float,
         until_ts: Optional[float] = None,
         failed_only: bool = False,
+        api_key_id: Optional[str] = None,
     ) -> Dict[str, int]:
-        """日志/失败计数与账号、API Key 去重计数（顶部角标）。"""
+        """日志/失败计数与账号、API Key 去重计数（顶部角标 / 分页总数）。"""
         self._ensure_initialized()
-        where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT COUNT(*),

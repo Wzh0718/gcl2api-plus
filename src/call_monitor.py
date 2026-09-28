@@ -150,6 +150,62 @@ class CallMonitor:
             "keys": len({row.get("api_key_id") for row in rows}),
         }
 
+    async def realtime_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        since_ts: float = 0.0,
+        until_ts: Optional[float] = None,
+        failed_only: bool = False,
+        api_key_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """实时视图服务端分页：优先从 SQLite 按页查询（不受内存缓冲上限限制）。
+
+        返回 {"records", "total", "page", "page_size", "degraded"}；
+        total 为同筛选条件下的总条数（分页器用）。
+        """
+        page = max(int(page), 1)
+        page_size = min(max(int(page_size), 1), 200)
+        offset = (page - 1) * page_size
+        list_fn = self._backend_method("list_call_records")
+        count_fn = self._backend_method("count_call_records")
+        if list_fn is not None and count_fn is not None:
+            records = await list_fn(
+                since_ts=since_ts,
+                until_ts=until_ts,
+                failed_only=failed_only,
+                api_key_id=api_key_id,
+                limit=page_size,
+                offset=offset,
+            )
+            counters = await count_fn(
+                since_ts=since_ts,
+                until_ts=until_ts,
+                failed_only=failed_only,
+                api_key_id=api_key_id,
+            )
+            return {
+                "records": records,
+                "total": int(counters.get("logs", 0)),
+                "page": page,
+                "page_size": page_size,
+                "degraded": False,
+            }
+        # 非 SQLite 后端降级：内存缓冲切片
+        rows = [
+            row
+            for row in reversed(self._buffer)
+            if self._matches(row, since_ts=since_ts, failed_only=failed_only, api_key_id=api_key_id)
+        ]
+        return {
+            "records": rows[offset : offset + page_size],
+            "total": len(rows),
+            "page": page,
+            "page_size": page_size,
+            "degraded": True,
+        }
+
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------

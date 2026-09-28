@@ -183,6 +183,107 @@ async def test_monitor_cleanup_respects_retention_days(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_call_records_offset_pagination(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    backend = adapter._backend
+    now = time.time()
+    for i in range(5):
+        await backend.insert_call_record(**_record_kwargs(f"p{i}", created_at=now + i))
+
+    page1 = await backend.list_call_records(since_ts=0, limit=2)
+    page2 = await backend.list_call_records(since_ts=0, limit=2, offset=2)
+    page3 = await backend.list_call_records(since_ts=0, limit=2, offset=4)
+    page4 = await backend.list_call_records(since_ts=0, limit=2, offset=6)
+    assert [r["request_id"] for r in page1] == ["p4", "p3"]
+    assert [r["request_id"] for r in page2] == ["p2", "p1"]
+    assert [r["request_id"] for r in page3] == ["p0"]
+    assert page4 == []
+    # offset 与筛选条件叠加
+    await backend.insert_call_record(
+        **_record_kwargs("p5", created_at=now + 5, api_key_id="key-2")
+    )
+    key_rows = await backend.list_call_records(since_ts=0, api_key_id="key-2", limit=10, offset=0)
+    assert [r["request_id"] for r in key_rows] == ["p5"]
+    counters = await backend.count_call_records(since_ts=0, api_key_id="key-1")
+    assert counters["logs"] == 5 and counters["keys"] == 1
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_monitor_realtime_page(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    from src.call_monitor import CallMonitor
+
+    monitor = CallMonitor(adapter)
+    now = time.time()
+    for i in range(7):
+        await monitor.record(**_record_kwargs(f"rp{i}", created_at=now + i))
+
+    page1 = await monitor.realtime_page(page=1, page_size=3)
+    assert [r["request_id"] for r in page1["records"]] == ["rp6", "rp5", "rp4"]
+    assert page1["total"] == 7 and page1["page"] == 1 and page1["page_size"] == 3
+    assert page1["degraded"] is False
+
+    page3 = await monitor.realtime_page(page=3, page_size=3)
+    assert [r["request_id"] for r in page3["records"]] == ["rp0"]
+
+    # 越界页返回空但 total 不变
+    page99 = await monitor.realtime_page(page=99, page_size=3)
+    assert page99["records"] == [] and page99["total"] == 7
+
+    # 失败筛选下的分页
+    await monitor.record(**_record_kwargs("rp-fail", success=False, created_at=now + 10))
+    failed = await monitor.realtime_page(page=1, page_size=20, failed_only=True)
+    assert [r["request_id"] for r in failed["records"]] == ["rp-fail"]
+    assert failed["total"] == 1
+
+    # 降级模式：无 _backend 的对象走内存缓冲切片
+    class _BareStorage:
+        pass
+
+    bare = CallMonitor(_BareStorage())
+    await bare.record(**_record_kwargs("b1"))
+    await bare.record(**_record_kwargs("b2"))
+    degraded = await bare.realtime_page(page=2, page_size=1)
+    assert degraded["degraded"] is True
+    assert degraded["total"] == 2
+    assert [r["request_id"] for r in degraded["records"]] == ["b1"]
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_realtime_endpoint_pagination_shape(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    import src.storage_adapter as sa
+    from src.call_monitor import get_call_monitor
+
+    monkeypatch.setattr(sa, "_storage_adapter", adapter)
+    monitor = await get_call_monitor(adapter)
+    now = time.time()
+    for i in range(45):
+        await monitor.record(**_record_kwargs(f"ep{i:02d}", created_at=now + i))
+
+    from src.panel.call_monitor import call_monitor_realtime
+
+    resp = await call_monitor_realtime(
+        page=2, page_size=20, range="all", failed_only=False, api_key_id=None, _token=None
+    )
+    assert resp["page"] == 2 and resp["page_size"] == 20
+    assert resp["total"] == 45 and resp["total_pages"] == 3
+    assert len(resp["records"]) == 20
+    assert resp["records"][0]["request_id"] == "ep24"
+    assert resp["counters"]["realtime"] == 45
+    assert resp["degraded"] is False
+
+    last = await call_monitor_realtime(
+        page=3, page_size=20, range="all", failed_only=False, api_key_id=None, _token=None
+    )
+    assert len(last["records"]) == 5
+    assert last["records"][-1]["request_id"] == "ep00"
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_billing_record_feeds_call_monitor_exactly_once(tmp_path, monkeypatch):
     adapter = await _make_adapter(tmp_path, monkeypatch)
     from src.billing import get_billing_recorder

@@ -2285,6 +2285,8 @@ const callMonitorState = {
     failedOnly: false,
     mask: true,
     autoRefresh: true,
+    page: 1,
+    pageSize: 20,
     lastData: null,
 };
 
@@ -2356,11 +2358,13 @@ function _cmRateCell(rate) {
 function setCallMonitorView(view) {
     if (callMonitorState.view === view) return;
     callMonitorState.view = view;
+    callMonitorState.page = 1;
     loadCallMonitor();
 }
 
 function onCallMonitorRangeChange(select) {
     callMonitorState.range = select.value || 'today';
+    callMonitorState.page = 1;
     loadCallMonitor();
 }
 
@@ -2371,7 +2375,40 @@ function toggleCallMonitorMask() {
 
 function toggleCallMonitorFailedOnly() {
     callMonitorState.failedOnly = !callMonitorState.failedOnly;
+    callMonitorState.page = 1;
     loadCallMonitor();
+}
+
+// 当前视图的总页数：实时视图用服务端 total_pages，聚合视图按缓存行数折算
+function _cmTotalPages() {
+    const data = callMonitorState.lastData;
+    if (!data) return 1;
+    if (callMonitorState.view === 'realtime') {
+        return Math.max(1, parseInt(data.total_pages, 10) || 1);
+    }
+    return Math.max(1, Math.ceil((data.rows || []).length / callMonitorState.pageSize));
+}
+
+function setCallMonitorPage(page) {
+    const totalPages = _cmTotalPages();
+    const next = Math.min(Math.max(1, parseInt(page, 10) || 1), totalPages);
+    if (next === callMonitorState.page) return;
+    callMonitorState.page = next;
+    if (callMonitorState.view === 'realtime') {
+        loadCallMonitor();
+    } else {
+        renderCallMonitor(); // 聚合视图是前端分页，直接重绘
+    }
+}
+
+function onCallMonitorPageSizeChange(select) {
+    callMonitorState.pageSize = parseInt(select.value, 10) || 20;
+    callMonitorState.page = 1;
+    if (callMonitorState.view === 'realtime') {
+        loadCallMonitor();
+    } else {
+        renderCallMonitor();
+    }
 }
 
 function toggleCallMonitorHelp() {
@@ -2393,7 +2430,8 @@ async function loadCallMonitor(options = {}) {
         });
         let url;
         if (callMonitorState.view === 'realtime') {
-            params.set('limit', '200');
+            params.set('page', String(callMonitorState.page));
+            params.set('page_size', String(callMonitorState.pageSize));
             url = `./call-monitor/realtime?${params}`;
         } else {
             params.set('view', callMonitorState.view);
@@ -2517,6 +2555,39 @@ function _cmRenderRealtime(records) {
     </table></div>`;
 }
 
+// 分页条：上一页/页码窗口/下一页 + 每页条数（20/50/100）
+function _cmPaginationBar(total, totalPages) {
+    if (!total || totalPages <= 1) return '';
+    const page = Math.min(callMonitorState.page, totalPages);
+    const btn = (p, label, disabled, active = false) =>
+        `<button type="button" class="cm-page-btn${active ? ' active' : ''}"${disabled ? ' disabled' : ''} onclick="setCallMonitorPage(${p})">${label}</button>`;
+
+    const wanted = new Set([1, totalPages]);
+    for (let p = page - 2; p <= page + 2; p++) {
+        if (p >= 1 && p <= totalPages) wanted.add(p);
+    }
+    const pages = [...wanted].sort((a, b) => a - b);
+    let nums = '';
+    let prev = 0;
+    for (const p of pages) {
+        if (p - prev > 1) nums += '<span class="cm-page-ellipsis">…</span>';
+        nums += btn(p, String(p), false, p === page);
+        prev = p;
+    }
+
+    return `<div class="cm-pagination">
+        <span class="cm-page-info">共 ${total} 条 · 第 ${page} / ${totalPages} 页</span>
+        <div class="cm-page-controls">
+            ${btn(page - 1, '‹ 上一页', page <= 1)}
+            ${nums}
+            ${btn(page + 1, '下一页 ›', page >= totalPages)}
+        </div>
+        <select class="cm-select" onchange="onCallMonitorPageSizeChange(this)" aria-label="每页条数">
+            ${[20, 50, 100].map(n => `<option value="${n}"${n === callMonitorState.pageSize ? ' selected' : ''}>${n} 条/页</option>`).join('')}
+        </select>
+    </div>`;
+}
+
 function renderCallMonitor() {
     const content = document.getElementById('callMonitorContent');
     const data = callMonitorState.lastData;
@@ -2530,10 +2601,20 @@ function renderCallMonitor() {
     }
     if (callMonitorState.view === 'realtime') {
         const records = data.records || [];
-        content.innerHTML = note + (records.length ? _cmRenderRealtime(records) : _cmEmptyState());
+        const total = data.total ?? records.length;
+        const totalPages = Math.max(1, parseInt(data.total_pages, 10) || 1);
+        content.innerHTML = note
+            + (records.length ? _cmRenderRealtime(records) : _cmEmptyState())
+            + _cmPaginationBar(total, totalPages);
     } else {
         const rows = data.rows || [];
-        content.innerHTML = note + (rows.length ? _cmRenderGrouped(rows, callMonitorState.view) : _cmEmptyState());
+        const totalPages = Math.max(1, Math.ceil(rows.length / callMonitorState.pageSize));
+        const page = Math.min(callMonitorState.page, totalPages);
+        const start = (page - 1) * callMonitorState.pageSize;
+        const pageRows = rows.slice(start, start + callMonitorState.pageSize);
+        content.innerHTML = note
+            + (pageRows.length ? _cmRenderGrouped(pageRows, callMonitorState.view) : _cmEmptyState())
+            + _cmPaginationBar(rows.length, totalPages);
     }
 }
 

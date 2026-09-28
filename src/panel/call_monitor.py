@@ -180,7 +180,7 @@ async def call_monitor_overview(
             "failed": counters.get("failed", 0),
             "accounts": counters.get("accounts", 0),
             "keys": counters.get("keys", 0),
-            "realtime": monitor.buffer_counters()["logs"],
+            "realtime": counters.get("logs", 0),
         },
         "rows": _enrich_rows(rows, range_secs),
     }
@@ -188,33 +188,52 @@ async def call_monitor_overview(
 
 @router.get("/realtime")
 async def call_monitor_realtime(
-    limit: int = 200,
+    page: int = 1,
+    page_size: int = 20,
     range: str = "today",
     failed_only: bool = False,
     api_key_id: Optional[str] = None,
     _token: str = Depends(verify_panel_token),
 ):
-    """实时视图：内存缓冲中的最新逐条调用记录（时间倒序）。"""
+    """实时视图：逐条调用记录（时间倒序），服务端分页（SQLite 按页查询）。"""
     range_name = _range(range)
     since_ts = _since_ts(range_name)
     storage = await get_storage_adapter()
     monitor = await get_call_monitor(storage)
     await monitor.preload()
 
-    records = monitor.realtime(
-        limit=limit, since_ts=since_ts, failed_only=failed_only, api_key_id=api_key_id
+    paged = await monitor.realtime_page(
+        page=page,
+        page_size=page_size,
+        since_ts=since_ts,
+        failed_only=failed_only,
+        api_key_id=api_key_id,
     )
-    counters = monitor.buffer_counters(since_ts=since_ts)
+
+    count_records = getattr(getattr(storage, "_backend", None), "count_call_records", None)
+    if count_records is not None:
+        counters = await count_records(since_ts=since_ts)
+    else:
+        counters = monitor.buffer_counters(since_ts=since_ts)
+
+    total = int(paged["total"])
+    page_size = int(paged["page_size"])
+    total_pages = max(1, -(-total // page_size))
     return {
         "range": range_name,
         "failed_only": failed_only,
+        "degraded": bool(paged["degraded"]),
         "retention_days": await config.get_call_records_retention_days(),
+        "page": int(paged["page"]),
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
         "counters": {
             "logs": counters.get("logs", 0),
             "failed": counters.get("failed", 0),
             "accounts": counters.get("accounts", 0),
             "keys": counters.get("keys", 0),
-            "realtime": monitor.buffer_counters()["logs"],
+            "realtime": counters.get("logs", 0),
         },
-        "records": records,
+        "records": paged["records"],
     }

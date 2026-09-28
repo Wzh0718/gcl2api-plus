@@ -215,12 +215,13 @@ pre,
     grid-template-columns: 224px minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     gap: 20px 24px;
+    /* 固定外壳高度：只有标签栏/内容列内部滚动，避免内容从吸顶头部下方穿过被遮挡 */
+    height: calc(100vh - clamp(12px, 1.8vw, 30px) * 2);
+    height: calc(100dvh - clamp(12px, 1.8vw, 30px) * 2);
+    overflow: hidden;
 }
 
 .app-header {
-    position: sticky;
-    top: 12px;
-    z-index: var(--ui-z-sticky);
     grid-column: 1 / -1;
     display: flex;
     align-items: center;
@@ -315,11 +316,10 @@ pre,
 }
 
 .tabs {
-    position: sticky;
-    top: 104px;
     grid-column: 1;
     grid-row: 2;
-    align-self: start;
+    align-self: stretch;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -327,7 +327,7 @@ pre,
     margin: 0;
     padding: 12px;
     gap: 4px;
-    overflow: visible;
+    overflow-y: auto;
     border: 1px solid var(--ui-border);
     border-radius: var(--ui-radius-md);
     background: var(--ui-surface);
@@ -428,9 +428,10 @@ pre,
     grid-column: 2;
     grid-row: 2;
     width: 100%;
-    min-height: calc(100vh - 152px);
+    min-height: 0;
     padding: clamp(20px, 2vw, 30px);
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     border: 1px solid var(--ui-border);
     border-radius: var(--ui-radius-lg);
     background: var(--ui-surface);
@@ -1375,22 +1376,24 @@ textarea:disabled,
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: auto auto minmax(0, 1fr);
         gap: 12px;
+        height: calc(100vh - 28px);
+        height: calc(100dvh - 28px);
     }
 
     .app-header {
-        top: 8px;
         grid-column: 1;
         grid-row: 1;
     }
 
     .tabs {
-        top: 92px;
         grid-column: 1;
         grid-row: 2;
         flex-direction: row;
+        align-self: auto;
         width: 100%;
         padding: 8px;
         overflow-x: auto;
+        overflow-y: hidden;
     }
 
     .tabs-heading {
@@ -1406,7 +1409,7 @@ textarea:disabled,
     .tab-content.active {
         grid-column: 1;
         grid-row: 3;
-        min-height: calc(100vh - 174px);
+        min-height: 0;
     }
 
     #configForm:not(.hidden) {
@@ -2126,4 +2129,80 @@ textarea:disabled,
 
 .cm-help li {
     margin: 4px 0;
+}
+
+/* 分页条 */
+.cm-pagination {
+    /* 吸底：内容列内部滚动时分页条始终可见 */
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-md);
+    background: var(--ui-surface);
+    box-shadow: 0 -6px 16px -10px rgba(23, 32, 51, 0.25);
+}
+
+.cm-page-info {
+    margin-right: auto;
+    color: var(--ui-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.cm-page-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.cm-page-btn {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0 9px;
+    border: 1px solid var(--ui-border-strong);
+    border-radius: var(--ui-radius-sm);
+    color: var(--ui-ink);
+    background: var(--ui-surface);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+.cm-page-btn:hover:not(:disabled):not(.active) {
+    border-color: var(--ui-accent);
+    color: var(--ui-accent-strong);
+    background: var(--ui-accent-soft);
+}
+
+.cm-page-btn.active {
+    border-color: var(--ui-accent);
+    color: #fff;
+    background: var(--ui-accent);
+    font-weight: 700;
+}
+
+.cm-page-btn:disabled {
+    color: var(--ui-faint);
+    background: var(--ui-surface-subtle);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.cm-page-ellipsis {
+    padding: 0 3px;
+    color: var(--ui-faint);
+    font-size: 12px;
+}
+
+.cm-pagination .cm-select {
+    min-height: 30px;
 }
