@@ -50,6 +50,10 @@ async def get_config(token: str = Depends(verify_panel_token)):
         # 抗截断配置
         current_config["anti_truncation_max_attempts"] = await config.get_anti_truncation_max_attempts()
 
+        # 敏感词替换配置
+        current_config["sensitive_word_replace_enabled"] = await config.get_sensitive_word_replace_enabled()
+        current_config["sensitive_word_replace_rules"] = await config.get_sensitive_word_replace_rules()
+
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
 
@@ -146,6 +150,17 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "compatibility_mode_enabled" in new_config:
             if not isinstance(new_config["compatibility_mode_enabled"], bool):
                 raise HTTPException(status_code=400, detail="兼容性模式开关必须是布尔值")
+
+        if "sensitive_word_replace_enabled" in new_config:
+            if not isinstance(new_config["sensitive_word_replace_enabled"], bool):
+                raise HTTPException(status_code=400, detail="敏感词替换开关必须是布尔值")
+
+        if "sensitive_word_replace_rules" in new_config:
+            rules_value = new_config["sensitive_word_replace_rules"]
+            if not isinstance(rules_value, str):
+                raise HTTPException(status_code=400, detail="敏感词替换规则必须是字符串")
+            if len(rules_value) > 20000:
+                raise HTTPException(status_code=400, detail="敏感词替换规则过长（最多 20000 字符）")
 
         if "return_thoughts_to_frontend" in new_config:
             if not isinstance(new_config["return_thoughts_to_frontend"], bool):

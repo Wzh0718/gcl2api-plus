@@ -57,6 +57,8 @@ ENV_MAPPINGS = {
     "RETRY_429_ENABLED": "retry_429_enabled",
     "RETRY_429_INTERVAL": "retry_429_interval",
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
+    "SENSITIVE_WORD_REPLACE_ENABLED": "sensitive_word_replace_enabled",
+    "SENSITIVE_WORD_REPLACE_RULES": "sensitive_word_replace_rules",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
@@ -230,6 +232,43 @@ async def get_anti_truncation_max_attempts() -> int:
             pass
 
     return int(await get_config_value("anti_truncation_max_attempts", 3))
+
+
+async def get_sensitive_word_replace_enabled() -> bool:
+    """
+    Get sensitive word replacement enabled setting.
+
+    启用后，上行请求的 system prompt 会按规则替换敏感词（如客户端指纹字样），
+    避免上游特征匹配触发伪 429。
+
+    Environment variable: SENSITIVE_WORD_REPLACE_ENABLED
+    Database config key: sensitive_word_replace_enabled
+    Default: False
+    """
+    env_value = os.getenv("SENSITIVE_WORD_REPLACE_ENABLED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+
+    return bool(await get_config_value("sensitive_word_replace_enabled", False))
+
+
+async def get_sensitive_word_replace_rules() -> str:
+    """
+    Get sensitive word replacement rules text.
+
+    每行一条规则，格式为 "查找词=>替换词"；无 "=>" 时替换为空（即删除）；
+    以 "#" 开头的行为注释；匹配区分大小写。
+
+    Environment variable: SENSITIVE_WORD_REPLACE_RULES
+    Database config key: sensitive_word_replace_rules
+    Default: "" (空，不替换)
+    """
+    env_value = os.getenv("SENSITIVE_WORD_REPLACE_RULES")
+    if env_value:
+        return env_value
+
+    rules = await get_config_value("sensitive_word_replace_rules", "")
+    return rules if isinstance(rules, str) else ""
 
 
 async def get_stream_idle_timeout() -> float:

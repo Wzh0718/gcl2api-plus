@@ -3104,6 +3104,34 @@
                         </div>
 
                         <div class="config-group">
+                            <h4>敏感词替换配置</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="sensitiveWordReplaceEnabled" class="config-checkbox" />
+                                    启用敏感词替换
+                                </label>
+                                <small class="config-note">请求上行前替换 system prompt 中的敏感词（如 Claude Code 等客户端指纹字样），避免上游特征匹配触发伪
+                                    429；对 GeminiCLI 与 Antigravity 双通道生效 <span style="color: #28a745;">✓
+                                        支持热更新</span></small>
+                                <div class="config-info"
+                                    style="background-color: #e8f5e9; border: 1px solid #66bb6a; color: #1b5e20;">
+                                    <strong>🛡️ 说明：</strong>仅处理 system prompt，不影响消息正文；匹配区分大小写。
+                                    <br><strong>适用场景：</strong>使用 Claude Code 等第三方客户端反代 Gemini 时，其系统提示中的特征字样可能触发上游风控限流。
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sensitiveWordReplaceRules">替换规则（每行一条）:</label>
+                                <textarea id="sensitiveWordReplaceRules" class="config-input" rows="6"
+                                    style="resize: vertical; font-family: monospace;"
+                                    placeholder="Claude Code=>Antigravity&#10;Claude Agent SDK=>&#10;# 以 # 开头为注释行"></textarea>
+                                <small class="config-note">格式：<code>查找词=>替换词</code>；不写 <code>=></code>
+                                    表示删除该词；以 <code>#</code> 开头为注释；留空则不进行任何替换</small>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
                             <h4>抗截断配置</h4>
 
                             <div class="form-group">

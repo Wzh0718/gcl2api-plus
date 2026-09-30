@@ -813,6 +813,11 @@ async def normalize_gemini_request(
 
     result = request.copy()
     model = result.get("model", "")
+
+    # 敏感词替换（仅 system prompt；对 geminicli / antigravity 双通道生效）
+    if mode in ("geminicli", "antigravity"):
+        from src.converter.sensitive_words import filter_request_system_instruction
+        await filter_request_system_instruction(result, mode=mode)
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象
     tools = result.get("tools")
     system_instruction = result.get("systemInstruction") or result.get("system_instructions")
