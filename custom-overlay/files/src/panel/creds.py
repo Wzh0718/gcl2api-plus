@@ -22,7 +22,7 @@ from src.models import (
     CredFileBatchActionRequest
 )
 from src.storage_adapter import get_storage_adapter
-from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, ANTIGRAVITY_USER_AGENT
+from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, get_antigravity_user_agent
 from src.api.antigravity import fetch_quota_info
 from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from src.proxy_groups import proxy_argument_from_network
@@ -600,7 +600,7 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
     # 重新获取project id（仅 antigravity 模式请求积分）
     if mode == "antigravity":
         api_base_url = await get_antigravity_api_url()
-        user_agent = ANTIGRAVITY_USER_AGENT
+        user_agent = get_antigravity_user_agent()
         project_id, subscription_tier, credit_amount = await fetch_project_id_and_tier(
             access_token=credentials.access_token,
             user_agent=user_agent,

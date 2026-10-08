@@ -26,12 +26,13 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-# Antigravity CLI 客户端标识。默认值需与真实 AGY CLI 版本保持一致：
-# 上游按 User-Agent 中的版本号下发模型列表（1.1.8 只有 27 个模型且无 3.8 系，
-# 1.1.28 起返回 gemini-3.7/3.8-flash 等共 33 个；默认值 1.2.7 与当前真实
-# agy cli 一致，实测同为 33 个），版本过旧会导致 /models 列表比真实
-# agy cli 少。CLI 更新后可通过环境变量调整。
-ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.2.7")
+# Antigravity CLI 客户端标识。ANTIGRAVITY_CLI_VERSION 是 env 保底值（只托底、
+# 不封顶）：上游按 User-Agent 中的版本号下发模型列表（1.1.8 只有 27 个模型且无
+# 3.8 系，1.1.28 起返回 gemini-3.7/3.8-flash 等共 33 个），版本过旧会导致
+# /models 列表比真实 agy cli 少。实际生效版本 = max(env 保底, 已验证采纳版本)，
+# 由 src/antigravity_cli_version.py 动态追踪官方 auto-updater manifest 维护；
+# 保底默认值需与当前真实 AGY CLI 版本保持一致。
+ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.3.1")
 ANTIGRAVITY_CLI_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
 ANTIGRAVITY_CLI_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
 ANTIGRAVITY_CLI_AUTH_METHOD = os.getenv(
@@ -40,12 +41,19 @@ ANTIGRAVITY_CLI_AUTH_METHOD = os.getenv(
 
 
 def build_antigravity_user_agent(
-    version: str = ANTIGRAVITY_CLI_VERSION,
+    version: Optional[str] = None,
     os_type: str = ANTIGRAVITY_CLI_OS_TYPE,
     arch: str = ANTIGRAVITY_CLI_ARCH,
     auth_method: str = ANTIGRAVITY_CLI_AUTH_METHOD,
 ) -> str:
-    """Build the AGY-compatible User-Agent without per-request randomization."""
+    """Build the AGY-compatible User-Agent without per-request randomization.
+
+    version 为 None 时使用 src/antigravity_cli_version 的动态生效版本。
+    """
+    if version is None:
+        from src.antigravity_cli_version import get_effective_version
+
+        version = get_effective_version()
     return (
         f"antigravity/cli/{version} "
         f"(aidev_client; os_type={os_type}; arch={arch}; "
@@ -53,15 +61,37 @@ def build_antigravity_user_agent(
     )
 
 
-ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent()
+def get_antigravity_user_agent() -> str:
+    """按当前动态生效版本构建 Antigravity CLI User-Agent。"""
+    return build_antigravity_user_agent()
+
+
+# 兼容别名：导入期快照，版本不会随后续动态采纳热切换；新代码请用
+# get_antigravity_user_agent()。
+ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent(ANTIGRAVITY_CLI_VERSION)
 
 # Antigravity OAuth token 端点（exchange/refresh）使用的 User-Agent，
 # 对齐 Antigravity-Manager 的 NATIVE_OAUTH_USER_AGENT（vscode 部分固定为字面量 1.X.X）。
-# Antigravity 版本可通过环境变量覆盖，默认跟随 ANTIGRAVITY_CLI_VERSION。
-ANTIGRAVITY_OAUTH_UA_VERSION = os.getenv("ANTIGRAVITY_OAUTH_UA_VERSION", ANTIGRAVITY_CLI_VERSION)
+# ANTIGRAVITY_OAUTH_UA_VERSION / ANTIGRAVITY_OAUTH_USER_AGENT env 可单独钉死；
+# 未钉死时版本跟随动态生效的 CLI 版本。
+ANTIGRAVITY_OAUTH_UA_VERSION = os.getenv("ANTIGRAVITY_OAUTH_UA_VERSION", "")
+
+
+def get_antigravity_oauth_user_agent() -> str:
+    """按当前动态生效版本构建 OAuth 端 User-Agent（env 可覆盖）。"""
+    explicit = os.getenv("ANTIGRAVITY_OAUTH_USER_AGENT", "").strip()
+    if explicit:
+        return explicit
+    from src.antigravity_cli_version import get_effective_version
+
+    pinned = ANTIGRAVITY_OAUTH_UA_VERSION.strip()
+    return f"vscode/1.X.X (Antigravity/{pinned or get_effective_version()})"
+
+
+# 兼容别名：导入期快照；新代码请用 get_antigravity_oauth_user_agent()。
 ANTIGRAVITY_OAUTH_USER_AGENT = os.getenv(
     "ANTIGRAVITY_OAUTH_USER_AGENT",
-    f"vscode/1.X.X (Antigravity/{ANTIGRAVITY_OAUTH_UA_VERSION})",
+    f"vscode/1.X.X (Antigravity/{os.getenv('ANTIGRAVITY_OAUTH_UA_VERSION', ANTIGRAVITY_CLI_VERSION)})",
 )
 
 # OAuth Configuration - 标准模式

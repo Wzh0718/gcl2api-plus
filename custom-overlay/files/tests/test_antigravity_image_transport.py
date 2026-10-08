@@ -49,6 +49,7 @@ async def test_image_wrapper_uses_image_generation_credit_contract():
 
 def test_image_headers_match_native_cli_without_quota_project_headers():
     from src.api import antigravity
+    from src.utils import get_antigravity_user_agent
 
     headers = antigravity.build_antigravity_headers(
         "redacted",
@@ -57,7 +58,7 @@ def test_image_headers_match_native_cli_without_quota_project_headers():
     )
 
     assert headers == {
-        "User-Agent": antigravity.ANTIGRAVITY_USER_AGENT,
+        "User-Agent": get_antigravity_user_agent(),
         "Authorization": "Bearer redacted",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",

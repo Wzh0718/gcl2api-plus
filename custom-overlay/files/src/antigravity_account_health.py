@@ -8,7 +8,7 @@ from typing import Any, Mapping, Optional, Tuple
 from src.antigravity_error_classifier import classify_antigravity_403
 from src.httpx_client import get_async, post_async
 from src.proxy_groups import proxy_argument_from_network
-from src.utils import ANTIGRAVITY_USER_AGENT
+from src.utils import get_antigravity_user_agent
 
 
 def _first_value(payload: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
@@ -141,7 +141,7 @@ async def check_antigravity_account_health(
         proxy_url = proxy_argument_from_network(network)
         ip_response = await get_async(
             ip_check_url,
-            headers={"User-Agent": ANTIGRAVITY_USER_AGENT},
+            headers={"User-Agent": get_antigravity_user_agent()},
             timeout=15.0,
             proxy_url=proxy_url,
         )
@@ -182,7 +182,7 @@ async def check_antigravity_account_health(
         )
 
     headers = {
-        "User-Agent": ANTIGRAVITY_USER_AGENT,
+        "User-Agent": get_antigravity_user_agent(),
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",

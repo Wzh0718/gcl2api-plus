@@ -32,6 +32,7 @@ from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
 from src.keeplive import keepalive_service
 from src.antigravity_403_recheck import recheck_service
+from src.antigravity_cli_version import cli_version_service
 
 # 全局凭证管理器
 global_credential_manager = None
@@ -136,6 +137,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"403复检服务启动失败: {e}")
 
+    # 启动 AGY CLI 版本动态追踪服务（常开，探测验证后热切换 User-Agent）
+    try:
+        await cli_version_service.start()
+    except Exception as e:
+        log.error(f"CLI版本追踪服务启动失败: {e}")
+
     # 调用监控：预热内存缓冲并按保留期执行一次启动清理
     try:
         from src.call_monitor import get_call_monitor
@@ -172,6 +179,12 @@ async def lifespan(app: FastAPI):
         await recheck_service.stop()
     except Exception as e:
         log.error(f"关闭403复检服务时出错: {e}")
+
+    # 停止 CLI 版本追踪服务
+    try:
+        await cli_version_service.stop()
+    except Exception as e:
+        log.error(f"关闭CLI版本追踪服务时出错: {e}")
 
     # 停止内存回收任务
     if _memory_trim_task and not _memory_trim_task.done():

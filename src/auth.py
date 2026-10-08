@@ -30,12 +30,12 @@ from .utils import (
     ANTIGRAVITY_CLIENT_ID,
     ANTIGRAVITY_CLIENT_SECRET,
     ANTIGRAVITY_SCOPES,
-    ANTIGRAVITY_USER_AGENT,
     CALLBACK_HOST,
     CLIENT_ID,
     CLIENT_SECRET,
     SCOPES,
     TOKEN_URL,
+    get_antigravity_user_agent,
 )
 
 
@@ -666,7 +666,7 @@ async def asyncio_complete_auth_flow(
                     antigravity_url = await get_antigravity_api_url()
                     project_id, subscription_tier = await fetch_project_id_and_tier(
                         credentials.access_token,
-                        ANTIGRAVITY_USER_AGENT,
+                        get_antigravity_user_agent(),
                         antigravity_url
                     )
                     if project_id:
@@ -819,7 +819,7 @@ async def complete_auth_flow_from_callback_url(
                 antigravity_url = await get_antigravity_api_url()
                 project_id, subscription_tier = await fetch_project_id_and_tier(
                     credentials.access_token,
-                    ANTIGRAVITY_USER_AGENT,
+                    get_antigravity_user_agent(),
                     antigravity_url
                 )
                 if project_id:
@@ -964,7 +964,7 @@ async def add_antigravity_account_by_refresh_token(
         antigravity_url = await get_antigravity_api_url()
         project_id, subscription_tier = await fetch_project_id_and_tier(
             credentials.access_token,
-            ANTIGRAVITY_USER_AGENT,
+            get_antigravity_user_agent(),
             antigravity_url,
             proxy_url=proxy_url,
         )

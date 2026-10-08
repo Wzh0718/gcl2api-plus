@@ -29,7 +29,7 @@ from src.httpx_client import stream_post_async, post_async
 from src.stream_guard import aclose_quietly
 from src.models import Model, model_to_dict
 from src.redis_config import create_redis_client_from_env
-from src.utils import ANTIGRAVITY_USER_AGENT
+from src.utils import build_antigravity_user_agent
 from src.antigravity_error_classifier import (
     Antigravity403Decision,
     classify_antigravity_403,
@@ -303,10 +303,14 @@ def build_antigravity_headers(
     *,
     image_request: bool = False,
     project_id: Optional[str] = None,
+    version_override: Optional[str] = None,
 ) -> Dict[str, str]:
-    """构建 Antigravity CLI API 请求头。"""
+    """构建 Antigravity CLI API 请求头。
+
+    version_override 供版本探测等场景指定候选版本；默认使用动态生效版本。
+    """
     return {
-        "User-Agent": ANTIGRAVITY_USER_AGENT,
+        "User-Agent": build_antigravity_user_agent(version_override),
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",

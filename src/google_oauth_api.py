@@ -21,7 +21,7 @@ from log import log
 
 from src.httpx_client import get_async, post_async
 from src.oauth_clients import get_candidates, is_client_mismatch_error, list_clients
-from src.utils import ANTIGRAVITY_OAUTH_USER_AGENT
+from src.utils import get_antigravity_oauth_user_agent
 
 
 class TokenError(Exception):
@@ -65,7 +65,7 @@ async def refresh_access_token_with_clients(
                 data=data,
                 headers={
                     "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": ANTIGRAVITY_OAUTH_USER_AGENT,
+                    "User-Agent": get_antigravity_oauth_user_agent(),
                 },
                 proxy_url=proxy_url,
             )

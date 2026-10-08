@@ -1480,6 +1480,7 @@ function triggerTabDataLoad(tabName) {
     if (tabName === 'antigravity-manage') AppState.antigravityCreds.refresh();
     if (tabName === 'config') {
         loadConfig();
+        loadCliVersionStatus();
         loadProxyGroups({ silent: true });
     }
     if (tabName === 'antigravity') syncAntigravityRefreshTokenProxy();
@@ -4618,6 +4619,91 @@ async function clearEnvCredentials() {
 // =====================================================================
 // 配置管理
 // =====================================================================
+
+// ==================== AGY CLI 版本自动追踪状态 ====================
+
+const CLI_VERSION_SOURCE_LABELS = {
+    'auto-adopted': '自动采纳',
+    'env-fallback': 'env 保底',
+    'default-fallback': '默认保底',
+};
+
+function formatCliVersionTime(ts) {
+    if (!ts) return '从未';
+    try {
+        return new Date(ts * 1000).toLocaleString();
+    } catch (e) {
+        return '-';
+    }
+}
+
+function renderCliVersionStatus(data) {
+    const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    set('cliVersionCurrent', data.current_version || '-');
+    set('cliVersionSource', CLI_VERSION_SOURCE_LABELS[data.source] || data.source || '-');
+    let latest = data.latest_known || '-';
+    if (data.pending_version) latest += `（${data.pending_version} 待验证）`;
+    set('cliVersionLatest', latest);
+    let check = formatCliVersionTime(data.last_check_at);
+    if (data.last_check_ok === false) check += `（失败：${data.last_check_error || '未知错误'}）`;
+    set('cliVersionLastCheck', check);
+    let probe = '从未';
+    if (data.last_probe_at) {
+        probe = formatCliVersionTime(data.last_probe_at);
+        probe += data.last_probe_result === 'verified' ? '（通过）' : '（未通过）';
+    }
+    set('cliVersionLastProbe', probe);
+}
+
+async function loadCliVersionStatus() {
+    try {
+        const response = await fetch('./cli-version/status', { headers: getAuthHeaders() });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data && data.success) renderCliVersionStatus(data);
+    } catch (e) {
+        // 静默失败，不影响面板其他功能
+    }
+}
+
+async function checkCliVersion() {
+    const btn = document.getElementById('cliVersionCheckBtn');
+    if (btn) btn.disabled = true;
+    try {
+        const response = await fetch('./cli-version/check', { method: 'POST', headers: getAuthHeaders() });
+        const data = await response.json();
+        if (data && data.success) {
+            renderCliVersionStatus(data);
+            showStatus('CLI 版本检查完成', 'success');
+        } else {
+            showStatus(`CLI 版本检查失败: ${(data && data.error) || '未知错误'}`, 'error');
+        }
+    } catch (e) {
+        showStatus(`CLI 版本检查失败: ${e.message}`, 'error');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function resetCliVersion() {
+    if (!confirm('确定清除已采纳的动态版本，回退到保底版本吗？')) return;
+    try {
+        const response = await fetch('./cli-version/reset', { method: 'POST', headers: getAuthHeaders() });
+        const data = await response.json();
+        if (data && data.success) {
+            renderCliVersionStatus(data);
+            showStatus('已回退到保底版本', 'success');
+        } else {
+            showStatus(`重置失败: ${(data && data.error) || '未知错误'}`, 'error');
+        }
+    } catch (e) {
+        showStatus(`重置失败: ${e.message}`, 'error');
+    }
+}
+
 async function loadConfig() {
     const loading = document.getElementById('configLoading');
     const form = document.getElementById('configForm');

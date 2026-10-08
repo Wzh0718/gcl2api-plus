@@ -2336,6 +2336,28 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">逗号分隔；模型配额耗尽且号池无可用凭证时按顺序降级，留空关闭
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
+
+                            <div class="form-group">
+                                <label>AGY CLI 版本（自动追踪）:</label>
+                                <div
+                                    style="background-color: #e8f5e9; border: 1px solid #66bb6a; color: #1b5e20; border-radius: 4px; padding: 10px; font-size: 13px;">
+                                    <div>当前生效版本：<strong id="cliVersionCurrent">-</strong>（<span
+                                            id="cliVersionSource">-</span>）</div>
+                                    <div>官方最新版本：<span id="cliVersionLatest">-</span></div>
+                                    <div>上次检查：<span id="cliVersionLastCheck">-</span></div>
+                                    <div>上次探测：<span id="cliVersionLastProbe">-</span></div>
+                                    <div style="margin-top: 8px;">
+                                        <button type="button" class="btn" id="cliVersionCheckBtn"
+                                            onclick="checkCliVersion()">立即检查</button>
+                                        <button type="button" class="btn" id="cliVersionResetBtn"
+                                            style="margin-left: 8px;" onclick="resetCliVersion()">重置为保底版本</button>
+                                    </div>
+                                </div>
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">自动追踪官方
+                                    auto-updater manifest；新版本经真实凭证探测验证通过才切换
+                                    User-Agent。保底版本由环境变量 ANTIGRAVITY_CLI_VERSION 提供。</small>
+                            </div>
                         </div>
 
                         <div class="card">
