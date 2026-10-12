@@ -6,6 +6,7 @@ OpenAI Transfer Module - Handles conversion between OpenAI and Gemini API format
 import json
 import time
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pypinyin import Style, lazy_pinyin
@@ -19,6 +20,27 @@ from src.converter.thoughtSignature_fix import (
 from src.converter.utils import merge_system_messages
 
 from log import log
+
+#: 流式响应里每个 response_id 已分配到的工具调用序号。
+#: Gemini 的并行 functionCall 是「一个 chunk 一个 part」，若用 chunk 内 parts
+#: 下标当 OpenAI 的 tool_calls[].index，每个调用都会拿到 0；而按 OpenAI 流式规范
+#: 归并分片的客户端会把它们并进同一个 slot，arguments 拼成 `{"a":1}{"b":2}` 这种
+#: 非法 JSON。这里改按流内递增序号分配。
+_STREAM_TOOL_INDEX: "OrderedDict[str, int]" = OrderedDict()
+
+#: 上限：流被中途放弃（客户端断开、没有带 finishReason 的收尾块）时不会回收，
+#: 用 LRU 淘汰兜底，避免长期运行的实例无界增长。
+_STREAM_TOOL_INDEX_MAX_ENTRIES = 512
+
+
+def _next_stream_tool_call_indices(response_id: str, count: int) -> List[int]:
+    """为本 chunk 内的 count 个工具调用分配连续的流内序号。"""
+    base = _STREAM_TOOL_INDEX.get(response_id, 0)
+    _STREAM_TOOL_INDEX[response_id] = base + count
+    _STREAM_TOOL_INDEX.move_to_end(response_id)
+    while len(_STREAM_TOOL_INDEX) > _STREAM_TOOL_INDEX_MAX_ENTRIES:
+        _STREAM_TOOL_INDEX.popitem(last=False)
+    return list(range(base, base + count))
 
 def _convert_usage_metadata(usage_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
@@ -560,7 +582,16 @@ def _clean_schema_for_gemini(schema: Any, root_schema: Optional[Dict[str, Any]] 
     # 10. 去重 required 数组
     if "required" in result and isinstance(result["required"], list):
         result["required"] = list(dict.fromkeys(result["required"]))  # 保持顺序去重
-    
+
+    # Gemini OpenAPI 规范要求：enum 元素必须为 TYPE_STRING
+    if "enum" in result:
+        enum_val = result.get("enum")
+        if isinstance(enum_val, list):
+            if result.get("type") == "BOOLEAN" or any(isinstance(x, bool) for x in enum_val):
+                result.pop("enum", None)
+            else:
+                result["enum"] = [str(x) for x in enum_val]
+
     return result
 
 
@@ -746,6 +777,15 @@ def _clean_schema_for_parameters_json_schema(
             result["required"] = required
         else:
             result.pop("required", None)
+
+    # Gemini OpenAPI 规范要求：enum 元素必须为 TYPE_STRING
+    if "enum" in result:
+        enum_val = result.get("enum")
+        if isinstance(enum_val, list):
+            if result.get("type") == "boolean" or any(isinstance(x, bool) for x in enum_val):
+                result.pop("enum", None)
+            else:
+                result["enum"] = [str(x) for x in enum_val]
 
     return result
 
@@ -1355,8 +1395,52 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
 
                     parts.append(function_call_part)
                 except (json.JSONDecodeError, KeyError) as e:
-                    log.error(f"Failed to parse tool call: {e}")
-                    continue
+                    # 不能直接丢掉这个 functionCall：历史里它后面必然跟着一条
+                    # functionResponse，父调用一消失它就成了孤儿，Gemini 会返回
+                    # 空 candidate（0 completion token、finishReason=STOP）。
+                    # 降级保留：能救出第一个 JSON 对象就用它，否则用空参数。
+                    degraded_name = ""
+                    try:
+                        degraded_name = tool_call["function"]["name"]
+                    except (KeyError, TypeError):
+                        degraded_name = ""
+                    if not degraded_name:
+                        log.error(f"Failed to parse tool call (dropped, no name): {e}")
+                        continue
+
+                    try:
+                        raw_args = tool_call["function"]["arguments"]
+                    except (KeyError, TypeError):
+                        raw_args = ""
+                    degraded_args = {}
+                    if isinstance(raw_args, str) and raw_args:
+                        try:
+                            recovered, _ = json.JSONDecoder().raw_decode(raw_args.lstrip())
+                        except ValueError:
+                            recovered = None
+                        if isinstance(recovered, dict):
+                            degraded_args = recovered
+                    if degraded_args and degraded_name in tool_schemas:
+                        degraded_args = fix_tool_call_args_types(
+                            degraded_args, tool_schemas[degraded_name]
+                        )
+
+                    original_id, _signature = decode_tool_id_and_signature(
+                        tool_call.get("id", "")
+                    )
+                    log.warning(
+                        f"Failed to parse tool call: {e} - keeping degraded functionCall "
+                        f"name={degraded_name} "
+                        f"args={'partial' if degraded_args else 'empty'}"
+                    )
+                    parts.append({
+                        "functionCall": {
+                            "id": original_id,
+                            "name": degraded_name,
+                            "args": degraded_args,
+                        },
+                        "thoughtSignature": SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+                    })
 
             if parts:
                 contents.append({"role": role, "parts": parts})
@@ -1391,6 +1475,17 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
     # 循环结束后，flush 剩余的 tool parts（如果消息列表以 tool 消息结尾）
     flush_pending_tool_parts()
     _sanitize_openai_roundtrip_signatures(contents)
+
+    # 强化修复: 合并相邻相同 role 的 contents (Gemini 强制要求交替角色，避免多轮 tool 后紧跟 user 导致 0-token 空回)
+    merged_contents = []
+    for c in contents:
+        if not c.get("parts"):
+            continue
+        if merged_contents and merged_contents[-1]["role"] == c["role"]:
+            merged_contents[-1]["parts"].extend(c["parts"])
+        else:
+            merged_contents.append(c)
+    contents = merged_contents
 
     # 构建生成配置
     generation_config = {}
@@ -1722,6 +1817,14 @@ def convert_gemini_to_openai_stream(
         # 提取工具调用和文本内容 (流式需要 index)
         tool_calls, text_content = extract_tool_calls_from_parts(parts, is_streaming=True)
 
+        # extract_tool_calls_from_parts 给出的 index 是 chunk 内 parts 下标，
+        # 对并行调用恒为 0。改用流内递增序号，客户端才能把它们归并成独立调用。
+        if tool_calls:
+            for tool_call, stream_index in zip(
+                tool_calls, _next_stream_tool_call_indices(response_id, len(tool_calls))
+            ):
+                tool_call["index"] = stream_index
+
         # 提取多种类型的内容
         content_parts = []
         reasoning_parts = []
@@ -1790,11 +1893,21 @@ def convert_gemini_to_openai_stream(
 
         # 获取 Gemini 的 finishReason
         gemini_finish_reason = candidate.get("finishReason")
-        finish_reason = _map_finish_reason(gemini_finish_reason)
+        # 流式响应中，Gemini 仅在最后一个 chunk 设置 finishReason；
+        # 中间 chunk（思考/工具调用）的 finishReason 为 None，此时必须返回 null，
+        # 否则 OpenAI 兼容客户端（如 DeepSeek Harness）会在第一个 chunk 后提前停止，
+        # 导致只输出思考内容或只返回第一个工具调用就结束。
+        if gemini_finish_reason:
+            finish_reason = _map_finish_reason(gemini_finish_reason)
+        else:
+            finish_reason = None
         
         # 只有在正常停止（STOP）且有工具调用时才设为 tool_calls
         # 避免在 SAFETY、MAX_TOKENS 等情况下仍然返回 tool_calls 导致循环
-        if tool_calls and gemini_finish_reason == "STOP":
+        # 注意: 流式响应中 tool_calls 通常在前序 chunk，收尾 chunk 的 tool_calls 为空，
+        # 需检查当前流 (response_id) 之前是否分配过工具调用序号 (_STREAM_TOOL_INDEX > 0)。
+        had_tools = bool(tool_calls or _STREAM_TOOL_INDEX.get(response_id, 0) > 0)
+        if had_tools and gemini_finish_reason == "STOP":
             finish_reason = "tool_calls"
 
         choices.append({
@@ -1802,6 +1915,10 @@ def convert_gemini_to_openai_stream(
             "delta": delta,
             "finish_reason": finish_reason,
         })
+
+    # 流已收尾，回收该 response_id 占用的工具调用序号
+    if any(choice.get("finish_reason") for choice in choices):
+        _STREAM_TOOL_INDEX.pop(response_id, None)
 
     # 转换 usageMetadata (只在流结束时存在)
     usage = _convert_usage_metadata(gemini_response.get("usageMetadata"))
