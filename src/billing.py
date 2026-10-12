@@ -91,6 +91,25 @@ def extract_usage_metadata(payload: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def extract_model_version(payload: Any) -> Optional[str]:
+    """Find the upstream modelVersion（上游真实执行模型），不保留响应体。
+
+    与 extract_usage_metadata 同构：兼容顶层与 ``response`` 包装层。
+    上游把不同请求模型归一到同一物理后端时，该字段是唯一可信来源。
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    version = payload.get("modelVersion")
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    nested = payload.get("response")
+    if isinstance(nested, Mapping):
+        version = nested.get("modelVersion")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+    return None
+
+
 class _RedisBillingMirror:
     def __init__(self, redis_client: Any = None):
         self.client = redis_client
@@ -483,7 +502,8 @@ class BillingRecorder:
                     channel: str = "antigravity",
                     task_type: Optional[str] = None,
                     status_code: Optional[int] = None,
-                    gateway_seconds: Optional[float] = None) -> bool:
+                    gateway_seconds: Optional[float] = None,
+                    upstream_model: Optional[str] = None) -> bool:
         if not request_id:
             return False
         metrics = usage or calculate_usage_metrics(usage_metadata)
@@ -534,6 +554,7 @@ class BillingRecorder:
                     credential_name=credential_name,
                     channel=channel,
                     model_name=model,
+                    upstream_model=upstream_model or "",
                     task_type=task_type or ("image" if "image" in (model or "").lower() else "chat"),
                     success=success,
                     status_code=status_code,

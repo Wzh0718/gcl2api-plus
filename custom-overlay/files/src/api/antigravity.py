@@ -45,7 +45,7 @@ from src.api.utils import (
     parse_and_log_cooldown,
     collect_streaming_response,
 )
-from src.billing import extract_usage_metadata, get_billing_recorder
+from src.billing import extract_model_version, extract_usage_metadata, get_billing_recorder
 from src.dingtalk_alert import (
     all_accounts_are_unavailable,
     send_all_accounts_unavailable_alert,
@@ -873,12 +873,13 @@ async def _stream_request_inner(
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     usage_metadata = None
+    upstream_model = None  # 上游响应 modelVersion：真实执行模型（归一后的物理模型）
     usage_remainder = ""
     billing_recorded = False
 
     def consume_usage_chunk(chunk: Any) -> None:
         """Parse only complete SSE lines; retain at most one small partial line."""
-        nonlocal usage_metadata, usage_remainder
+        nonlocal usage_metadata, upstream_model, usage_remainder
         if isinstance(chunk, bytes):
             text = chunk.decode("utf-8", errors="ignore")
         elif isinstance(chunk, str):
@@ -896,9 +897,11 @@ async def _stream_request_inner(
             if not raw or raw == "[DONE]":
                 continue
             try:
-                usage_metadata = extract_usage_metadata(json.loads(raw)) or usage_metadata
+                payload = json.loads(raw)
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
+            usage_metadata = extract_usage_metadata(payload) or usage_metadata
+            upstream_model = extract_model_version(payload) or upstream_model
 
     async def record_billing_once(success: bool, status_code: Optional[int] = None):
         nonlocal billing_recorded
@@ -913,6 +916,7 @@ async def _stream_request_inner(
                 task_type="image" if image_request else "chat",
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
+                upstream_model=upstream_model,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
@@ -1331,6 +1335,7 @@ async def _non_stream_image_request_inner(
                 task_type="image",
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
+                upstream_model=extract_model_version(response_payload),
             )
         except Exception as exc:
             log.warning(
@@ -1651,6 +1656,7 @@ async def non_stream_request(
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     usage_metadata = None
+    upstream_model = None  # 上游响应 modelVersion：真实执行模型
     billing_recorded = False
 
     async def record_billing_once(
@@ -1658,12 +1664,13 @@ async def non_stream_request(
         response_payload: Any = None,
         status_code: Optional[int] = None,
     ):
-        nonlocal billing_recorded, usage_metadata
+        nonlocal billing_recorded, usage_metadata, upstream_model
         if billing_recorded:
             return
         billing_recorded = True
         if response_payload is not None:
             usage_metadata = extract_usage_metadata(response_payload) or usage_metadata
+            upstream_model = extract_model_version(response_payload) or upstream_model
         try:
             recorder = await get_billing_recorder()
             await recorder.record(
@@ -1675,6 +1682,7 @@ async def non_stream_request(
                 api_key_id=api_key_id,
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
+                upstream_model=upstream_model,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")

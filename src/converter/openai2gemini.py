@@ -1641,6 +1641,12 @@ def convert_gemini_to_openai_response(
     if usage:
         response_data["usage"] = usage
 
+    # 透传上游真实执行模型（modelVersion）：model 字段按协议回显请求名，
+    # 上游把请求归一到其他物理后端时，客户端可从该字段感知真实模型。
+    model_version = gemini_response.get("modelVersion")
+    if isinstance(model_version, str) and model_version:
+        response_data["modelVersion"] = model_version
+
     return response_data
 
 
@@ -1814,6 +1820,11 @@ def convert_gemini_to_openai_stream(
         has_finish_reason = any(choice.get("finish_reason") for choice in choices)
         if has_finish_reason:
             response_data["usage"] = usage
+
+    # 透传上游真实执行模型（modelVersion），与非流式响应保持一致
+    model_version = gemini_response.get("modelVersion")
+    if isinstance(model_version, str) and model_version:
+        response_data["modelVersion"] = model_version
 
     # 转换为 SSE 格式: "data: {json}\n\n"
     return f"data: {json.dumps(response_data)}\n\n"

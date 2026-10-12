@@ -41,7 +41,7 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
     calls = []
     responses = [
         httpx.Response(429, content=b'{"error":"retry"}'),
-        httpx.Response(200, json={"response": {"usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}}}),
+        httpx.Response(200, json={"response": {"usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}, "modelVersion": "gemini-3.8-flash-n"}}),
     ]
 
     async def fake_post_async(**kwargs):
@@ -99,6 +99,8 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
         "request_id": "request-1", "credential_name": "two.json", "model": "gemini-test",
         "usage_metadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}, "success": True,
         "api_key_id": "env",
+        # 上游真实执行模型从 response 包装层的 modelVersion 提取
+        "upstream_model": "gemini-3.8-flash-n",
     }
 
 

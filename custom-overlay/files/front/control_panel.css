@@ -2036,6 +2036,15 @@ textarea:disabled,
     color: #868e96;
 }
 
+/* 调用监控：上游真实执行模型（modelVersion）高亮，标识请求被归一 */
+.cm-upstream-model {
+    color: #b7791f;
+    background: #fdf3e0;
+    border-radius: 4px;
+    padding: 0 4px;
+    font-weight: 600;
+}
+
 .cm-code {
     display: inline-block;
     padding: 1px 6px;

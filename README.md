@@ -132,6 +132,16 @@ ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3
 
 <img width="1831" height="931" alt="Token statistics" src="https://github.com/user-attachments/assets/2eec6103-190a-4237-803b-3c619abcb0c8" />
 
+### 调用监控：请求模型 vs 实际执行模型
+
+上游 Antigravity 会把不同请求模型归一到同一物理后端（实测 gemini-3.6/3.7/3.8 各档位、pro-agent 等请求实际均由 `gemini-3.8-flash-n` 执行，响应中的 `modelVersion` 是唯一可信来源）。本仓库在三个层面透出真实执行模型：
+
+- 调用监控「实时」视图逐条显示 `请求模型 → 实际模型`，不一致时高亮实际模型，一致或上游未返回时保持原样；
+- OpenAI 兼容（流式/非流式）与 Anthropic Messages 响应附加顶层 `modelVersion` 字段（`model` 仍按协议回显请求名，客户端兼容性不受影响）；
+- 每条调用记录（`call_records.upstream_model`）持久化实际上游模型，重启不丢。
+
+<img width="1812" height="823" alt="Request model vs actual upstream model" src="docs/assets/call-monitor-model-compare.jpg" />
+
 ### 日志模块优化
 
 <img width="1832" height="920" alt="Logs" src="https://github.com/user-attachments/assets/05593f22-7c89-4021-b7de-bd70d53d4222" />

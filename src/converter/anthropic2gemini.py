@@ -909,7 +909,7 @@ def gemini_to_anthropic_response(
     # 构建 Anthropic 响应
     message_id = f"msg_{uuid.uuid4().hex}"
 
-    return {
+    result = {
         "id": message_id,
         "type": "message",
         "role": "assistant",
@@ -919,6 +919,16 @@ def gemini_to_anthropic_response(
         "stop_sequence": None,
         "usage": usage,
     }
+
+    # 透传上游真实执行模型（modelVersion）：model 按协议回显请求名，
+    # 上游归一路由时客户端可从该字段感知真实物理模型。兼容 response 包装层。
+    model_version = gemini_response.get("modelVersion")
+    if not model_version and isinstance(gemini_response.get("response"), dict):
+        model_version = gemini_response["response"].get("modelVersion")
+    if isinstance(model_version, str) and model_version:
+        result["modelVersion"] = model_version
+
+    return result
 
 
 async def gemini_stream_to_anthropic_stream(
