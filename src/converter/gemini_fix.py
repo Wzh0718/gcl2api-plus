@@ -199,6 +199,7 @@ def _clean_parameters_json_schema(
         "allOf", "anyOf", "oneOf", "$defs", "definitions", "example",
         "examples", "readOnly", "writeOnly", "const", "additionalItems",
         "contains", "patternProperties", "dependencies", "propertyNames",
+        "dependentRequired", "dependentSchemas",
         "if", "then", "else", "contentEncoding", "contentMediaType",
     }
     for key in list(result.keys()):
@@ -330,11 +331,12 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str, mode: str 
 
             # For ALL Claude models, try outputting functionDeclarations with parameters!
             # If Google's backend expects parameters to translate to input_schema, this will fix the Field required error.
+            # custom input_schema 未经清洗，统一过一遍，避免 Google 前端因未知 schema 关键字报 400
             normalized_tools.append({
                 "functionDeclarations": [{
                     "name": name,
                     "description": description,
-                    "parameters": schema
+                    "parameters": _clean_parameters_json_schema(schema)
                 }]
             })
 
@@ -361,7 +363,8 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str, mode: str 
             declaration = {
                 "name": custom_tool.get("name", ""),
                 "description": custom_tool.get("description", ""),
-                "parameters": schema
+                # custom input_schema 未经清洗，统一过一遍，避免 Google 前端因未知 schema 关键字报 400
+                "parameters": _clean_parameters_json_schema(schema)
             }
             normalized_tools.append({
                 "functionDeclarations": [declaration]
@@ -389,7 +392,8 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str, mode: str 
                     schema = {"type": "object", "properties": {}}
 
                 # 只保留 parameters 字段，防止与 parametersJsonSchema 冲突
-                normalized_declaration["parameters"] = schema
+                # 兜底再过一遍清洗，防御未经 _normalize 处理的 schema 携带 Google 不支持的关键字
+                normalized_declaration["parameters"] = _clean_parameters_json_schema(schema)
                 normalized_declaration.pop("parametersJsonSchema", None)
                 normalized_declaration.pop("parameters_json_schema", None)
 

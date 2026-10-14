@@ -561,6 +561,7 @@ def _clean_schema_for_gemini(schema: Any, root_schema: Optional[Dict[str, Any]] 
         "$defs", "definitions", "example", "examples", "readOnly",
         "writeOnly", "const", "additionalItems", "contains",
         "patternProperties", "dependencies", "propertyNames",
+        "dependentRequired", "dependentSchemas",
         "if", "then", "else", "contentEncoding", "contentMediaType"
     }
     
@@ -741,6 +742,7 @@ def _clean_schema_for_parameters_json_schema(
         "allOf", "anyOf", "oneOf", "$defs", "definitions", "example",
         "examples", "readOnly", "writeOnly", "const", "additionalItems",
         "contains", "patternProperties", "dependencies", "propertyNames",
+        "dependentRequired", "dependentSchemas",
         "if", "then", "else", "contentEncoding", "contentMediaType",
     }
     for key in list(result.keys()):

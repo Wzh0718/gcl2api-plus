@@ -1,7 +1,123 @@
 from src.converter.gemini_fix import (
+    _clean_parameters_json_schema,
     _ensure_empty_tool_schema_for_claude,
+    _normalize_tools_for_internal_api,
     map_antigravity_gemini_model,
 )
+from src.converter.openai2gemini import (
+    _clean_schema_for_gemini,
+    _clean_schema_for_parameters_json_schema,
+)
+from src.converter.anthropic2gemini import clean_json_schema
+
+
+# Google 前端严格校验 Schema proto，遇到未知关键字直接 400
+# （线上事故：tools[0].function_declarations[105].parameters 携带 dependentRequired）
+_GOOGLE_UNSUPPORTED_KEYS = {"dependentRequired", "dependentSchemas"}
+
+
+def _assert_no_unsupported_keys(schema):
+    """递归断言清洗结果中不含 Google 不支持的 schema 关键字。"""
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            assert key not in _GOOGLE_UNSUPPORTED_KEYS, f"未清洗掉的关键字: {key}"
+            _assert_no_unsupported_keys(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _assert_no_unsupported_keys(item)
+
+
+def _schema_with_dependent_keys():
+    return {
+        "type": "object",
+        "dependentRequired": {"a": ["b"]},
+        "properties": {
+            "a": {"type": "string"},
+            "b": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "dependentSchemas": {"x": {"required": ["y"]}},
+                "properties": {
+                    "x": {"type": "string"},
+                    "y": {"type": "string"},
+                },
+            },
+            "items_prop": {
+                "type": "array",
+                "items": {"type": "object", "dependentRequired": {"m": ["n"]}},
+            },
+        },
+    }
+
+
+def test_clean_parameters_json_schema_strips_dependent_keys():
+    cleaned = _clean_parameters_json_schema(_schema_with_dependent_keys())
+    _assert_no_unsupported_keys(cleaned)
+    assert cleaned["properties"]["a"]["type"] == "string"
+
+
+def test_openai2gemini_cleaners_strip_dependent_keys():
+    _assert_no_unsupported_keys(
+        _clean_schema_for_parameters_json_schema(_schema_with_dependent_keys())
+    )
+    _assert_no_unsupported_keys(_clean_schema_for_gemini(_schema_with_dependent_keys()))
+
+
+def test_anthropic2gemini_cleaner_strips_dependent_keys():
+    _assert_no_unsupported_keys(clean_json_schema(_schema_with_dependent_keys()))
+
+
+def test_normalize_tools_for_internal_api_strips_dependent_keys():
+    tools = [
+        {
+            "function_declarations": [
+                {
+                    "name": "test_tool",
+                    "description": "A test tool.",
+                    "parameters": _schema_with_dependent_keys(),
+                }
+            ]
+        }
+    ]
+    result = _normalize_tools_for_internal_api(tools)
+    declaration = result[0]["functionDeclarations"][0]
+    _assert_no_unsupported_keys(declaration["parametersJsonSchema"])
+
+
+def test_ensure_tool_schema_gemini_parameters_strip_dependent_keys():
+    """复现线上 400：Gemini 模型最终 parameters 不得携带 dependent* 关键字。"""
+    tools = [
+        {
+            "functionDeclarations": [
+                {
+                    "name": "test_tool",
+                    "description": "A test tool.",
+                    "parametersJsonSchema": _schema_with_dependent_keys(),
+                }
+            ]
+        }
+    ]
+    result = _ensure_empty_tool_schema_for_claude(tools, "gemini-2.5-flash", "antigravity")
+    declaration = result[0]["functionDeclarations"][0]
+    assert "parametersJsonSchema" not in declaration
+    _assert_no_unsupported_keys(declaration["parameters"])
+
+
+def test_ensure_tool_schema_custom_tool_strip_dependent_keys():
+    """Anthropic 原生 custom 工具格式此前绕过清洗，也需覆盖。"""
+    tools = [
+        {
+            "custom": {
+                "name": "test_tool",
+                "description": "A test tool.",
+                "input_schema": _schema_with_dependent_keys(),
+            }
+        }
+    ]
+    for model in ("gemini-2.5-flash", "claude-opus-4-6-thinking"):
+        result = _ensure_empty_tool_schema_for_claude(tools, model, "antigravity")
+        declaration = result[0]["functionDeclarations"][0]
+        _assert_no_unsupported_keys(declaration["parameters"])
 
 
 def test_antigravity_claude_tools_keep_schema_in_parameters():

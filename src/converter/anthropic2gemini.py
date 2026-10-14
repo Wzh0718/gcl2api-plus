@@ -277,7 +277,8 @@ def clean_json_schema(schema: Any) -> Any:
         "example", "examples", "readOnly", "writeOnly", "default",
         "exclusiveMaximum", "exclusiveMinimum", "oneOf", "anyOf", "allOf",
         "const", "additionalItems", "contains", "patternProperties",
-        "dependencies", "propertyNames", "if", "then", "else",
+        "dependencies", "dependentRequired", "dependentSchemas",
+        "propertyNames", "if", "then", "else",
         "contentEncoding", "contentMediaType", "nullable",
     }
 
