@@ -704,6 +704,7 @@ async def fetch_project_id_and_tier(
             )
 
         if project_id:
+            await warm_antigravity_environment(api_base_url, headers, project_id, proxy_url=proxy_url)
             if include_credits:
                 return project_id, subscription_tier, credit_amount
             return project_id, subscription_tier
@@ -718,6 +719,7 @@ async def fetch_project_id_and_tier(
     try:
         project_id = await _try_onboard_user(api_base_url, headers, proxy_url=proxy_url)
         if project_id:
+            await warm_antigravity_environment(api_base_url, headers, project_id, proxy_url=proxy_url)
             if include_credits:
                 return project_id, subscription_tier, credit_amount
             return project_id, subscription_tier
@@ -734,6 +736,40 @@ async def fetch_project_id_and_tier(
         if include_credits:
             return None, subscription_tier, credit_amount
         return None, subscription_tier
+
+
+async def warm_antigravity_environment(
+    api_base_url: str,
+    headers: dict,
+    project_id: Optional[str],
+    *,
+    proxy_url: Any = ...,
+) -> None:
+    """按官方客户端环境形状补发 fetchUserInfo / listExperiments。
+
+    官方客户端（antigravity-re/run/capture.log）在账号激活后会调用这两个
+    环境端点；此处仅在登录/检验等低频路径补发，不进热路径。
+    任何失败只记 debug，不影响主流程。
+    """
+    if not project_id:
+        return
+    for path, body in (
+        ("/v1internal:fetchUserInfo", {"project": project_id}),
+        ("/v1internal:listExperiments", {"project": project_id, "metadata": {"updateChannel": "stable"}}),
+    ):
+        try:
+            await post_async(
+                f"{api_base_url.rstrip('/')}{path}",
+                json=body,
+                headers=headers,
+                timeout=15.0,
+                proxy_url=proxy_url,
+            )
+        except Exception as e:
+            log.debug(
+                f"[warm_antigravity_environment] {path} 补环境调用失败（忽略）: "
+                f"{type(e).__name__}: {e}"
+            )
 
 
 def _map_tier(

@@ -66,7 +66,45 @@ def test_image_headers_match_native_cli_without_quota_project_headers():
 
 
 @pytest.mark.asyncio
-async def test_agent_wrapper_keeps_google_one_credit_contract():
+async def test_chat_wrapper_matches_official_capture_shape():
+    """非图片请求走官方聊天通道（antigravity-re/run/capture.log 抓包形状）：
+    requestType=chat、requestId=chat/<uuid>、无 labels/enabledCreditTypes、
+    恒发 systemInstruction 与 sessionId；无 tools 时不注入 toolConfig。"""
+    from src.api import antigravity
+
+    state = antigravity.AntigravitySessionState(
+        conversation_id="conv",
+        trajectory_id="traj",
+        session_id="sess",
+        step_index=0,
+        created_at=0.0,
+        last_used_at=0.0,
+    )
+    with patch.object(antigravity, "_get_session_state", AsyncMock(return_value=state)):
+        payload, request_id = await antigravity.wrap_cli_request(
+            {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
+            "gemini-3.1-pro-preview",
+            "project-1",
+            user_email="agent@example.com",
+        )
+
+    assert payload["requestType"] == "chat"
+    assert request_id.startswith("chat/")
+    assert payload["requestId"] == request_id
+    assert "enabledCreditTypes" not in payload
+    assert "labels" not in payload["request"]
+    assert "toolConfig" not in payload["request"]
+    assert payload["request"]["sessionId"] == "sess"
+    assert payload["request"]["systemInstruction"] == {
+        "role": "user",
+        "parts": [{"text": ""}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_wrapper_keeps_tool_config_only_with_tools():
+    """请求携带 tools 时才补 toolConfig.functionCallingConfig.mode=VALIDATED；
+    客户端已给 systemInstruction 时原样保留。"""
     from src.api import antigravity
 
     state = antigravity.AntigravitySessionState(
@@ -79,14 +117,19 @@ async def test_agent_wrapper_keeps_google_one_credit_contract():
     )
     with patch.object(antigravity, "_get_session_state", AsyncMock(return_value=state)):
         payload, _ = await antigravity.wrap_cli_request(
-            {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
+            {
+                "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                "tools": [{"functionDeclarations": [{"name": "f"}]}],
+                "systemInstruction": {"parts": [{"text": "sys"}]},
+            },
             "gemini-3.1-pro-preview",
             "project-1",
-            user_email="agent@example.com",
         )
 
-    assert payload["requestType"] == "agent"
-    assert payload["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+    assert payload["request"]["toolConfig"] == {
+        "functionCallingConfig": {"mode": "VALIDATED"}
+    }
+    assert payload["request"]["systemInstruction"] == {"parts": [{"text": "sys"}]}
 
 
 def test_dynamic_image_model_candidates_stay_in_requested_tier():

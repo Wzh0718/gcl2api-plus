@@ -199,6 +199,17 @@ async def check_antigravity_account_health(
         reason = _safe_reason(response, payload)
         decision = classify_antigravity_403(reason)
 
+        if response.status_code == 200 and isinstance(payload, Mapping):
+            # 按官方客户端环境形状补发 fetchUserInfo / listExperiments（低频检查路径）
+            warmup_project = payload.get("cloudaicompanionProject") or payload.get("projectId")
+            if isinstance(warmup_project, Mapping):
+                warmup_project = warmup_project.get("id")
+            from src.google_oauth_api import warm_antigravity_environment
+
+            await warm_antigravity_environment(
+                api_base_url, headers, warmup_project, proxy_url=proxy_url
+            )
+
         if decision.category == "geo_blocked":
             eligibility_status = "geo_blocked"
         elif response.status_code == 200 and isinstance(payload, Mapping) and (

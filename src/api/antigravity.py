@@ -228,17 +228,6 @@ def _generate_request_id(conversation_id: str, trajectory_id: str, step: int) ->
     return f"agent/{conversation_id}/{unix_ms}/{trajectory_id}/{step}"
 
 
-def _build_labels(model: str, trajectory_id: str, step: int) -> Dict[str, str]:
-    used_claude = "claude" in model.lower()
-    return {
-        "last_step_index": str(step),
-        "model_enum": model,
-        "trajectory_id": trajectory_id,
-        "used_claude": str(used_claude).lower(),
-        "used_claude_conservative": str(used_claude).lower(),
-    }
-
-
 async def wrap_cli_request(
     gemini_request: Dict[str, Any],
     model: str,
@@ -249,6 +238,13 @@ async def wrap_cli_request(
     将 Gemini 格式请求包装成 Antigravity CLI 格式。
     返回 (payload, request_id)。
 
+    包装层形状对齐官方客户端抓包（antigravity-re/run/capture.log）：
+    - 非图片请求走官方聊天通道：requestType="chat" + requestId="chat/<uuid>"，
+      不带 labels / enabledCreditTypes（官方 chat 抓包均无此二字段）；
+    - 官方 chat 恒发 sessionId 与 systemInstruction（空也发），缺省时按此补齐；
+    - 仅在请求确实携带 tools 时补 toolConfig.functionCallingConfig.mode=VALIDATED
+      （官方无工具抓包不含此字段；带工具时的官方形状暂无样本，保守保留注入）。
+
     user_email 为 None 或 gmail/googlemail 邮箱时保持 antigravity 指纹；
     其他邮箱（如企业/教育账号）改用 jetski 指纹（对齐 Antigravity-Manager）。
     """
@@ -258,23 +254,25 @@ async def wrap_cli_request(
     inner.pop("safetySettings", None)
     is_image_request = is_antigravity_image_request(model, inner)
 
-    # 获取/更新会话状态
+    # 获取/更新会话状态（sessionId 来源，官方 chat 恒发）
     state = await _get_session_state(inner, model)
 
     if not is_image_request:
-        # Agent 请求沿用 CLI 会话字段；原生图片请求不携带这些字段。
         if not inner.get("sessionId"):
             inner["sessionId"] = state.session_id
-        inner["labels"] = _build_labels(model, state.trajectory_id, state.step_index)
-
-        tool_config = inner.get("toolConfig") or {}
-        func_config = tool_config.get("functionCallingConfig") or {}
-        if "mode" not in func_config:
-            func_config["mode"] = "VALIDATED"
-        tool_config["functionCallingConfig"] = func_config
-        inner["toolConfig"] = tool_config
-
-    request_id = _generate_request_id(state.conversation_id, state.trajectory_id, state.step_index)
+        if inner.get("systemInstruction") is None:
+            inner["systemInstruction"] = {"role": "user", "parts": [{"text": ""}]}
+        if inner.get("tools"):
+            tool_config = inner.get("toolConfig") or {}
+            func_config = tool_config.get("functionCallingConfig") or {}
+            if "mode" not in func_config:
+                func_config["mode"] = "VALIDATED"
+            tool_config["functionCallingConfig"] = func_config
+            inner["toolConfig"] = tool_config
+        request_id = f"chat/{uuid.uuid4()}"
+    else:
+        # 原生图片请求沿用会话型 requestId（官方 image_gen 形状暂无抓包样本）。
+        request_id = _generate_request_id(state.conversation_id, state.trajectory_id, state.step_index)
 
     # 非 gmail 账号使用 jetski 指纹
     email = (user_email or "").strip().lower()
@@ -289,14 +287,24 @@ async def wrap_cli_request(
         "request": inner,
         "model": model,
         "userAgent": user_agent,
-        "requestType": "image_gen" if is_image_request else "agent",
+        "requestType": "image_gen" if is_image_request else "chat",
     }
-    if not is_image_request:
-        payload["enabledCreditTypes"] = ["GOOGLE_ONE_AI"]
     return payload, request_id
 
 
+
+def _upstream_trace_id(headers: Any) -> str:
+    """从上游响应头提取 x-cloudaicompanion-trace-id（排障对齐官方抓包字段）。"""
+    if not headers:
+        return ""
+    try:
+        return headers.get("x-cloudaicompanion-trace-id", "") or ""
+    except AttributeError:
+        return ""
+
+
 # ==================== 辅助函数 ====================
+
 
 def build_antigravity_headers(
     access_token: str,
@@ -995,7 +1003,7 @@ async def _stream_request_inner(
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
+                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}, 响应: {error_body[:500] if error_body else '无'}")
                         last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_body)
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
@@ -1086,7 +1094,7 @@ async def _stream_request_inner(
                             return
                     else:
                         # 错误码不在禁用码当中，直接返回，无需重试
-                        log.error(f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
+                        log.error(f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}, 响应: {error_body[:500] if error_body else '无'}")
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
                             None, mode="antigravity", model_name=model_name,
@@ -1799,7 +1807,7 @@ async def non_stream_request(
                     pass
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
+                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}, 响应: {error_text[:500] if error_text else '无'}")
                     last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_text)
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
@@ -1879,7 +1887,7 @@ async def non_stream_request(
                         return _upstream_403_to_503(last_error_response)
                 else:
                     # 错误码不在禁用码当中，直接返回，无需重试
-                    log.error(f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
+                    log.error(f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}, 响应: {error_text[:500] if error_text else '无'}")
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
                         None, mode="antigravity", model_name=model_name,
