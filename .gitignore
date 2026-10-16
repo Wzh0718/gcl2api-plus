@@ -109,6 +109,8 @@ reports/banana-stress-*.json
 tools/
 aicode/
 
+streamchat/
+
 # Local agent / debug artifacts
 .playwright-mcp/
 gcli2api_logs_*.txt

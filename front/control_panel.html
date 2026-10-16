@@ -2476,12 +2476,6 @@
                         <strong style="color: #0c5460;">✅ 检验成功可以恢复403错误</strong>，让凭证重新正常工作。<br>
                         建议在遇到403错误时使用此功能。
                     </p>
-                    <strong>💡 设置预览功能说明：</strong>
-                    <p style="margin: 10px 0;">
-                        点击每个凭证的"设置预览"按钮可以配置Preview通道。<br>
-                        <strong style="color: #0c5460;">✅ 设置预览可以解决部分凭证调用preview模型时404的问题</strong>。<br>
-                        建议在调用gemini-3-pro-preview等模型遇到404错误时使用此功能。
-                    </p>
                 </div>
 
                 <!-- 状态统计 -->
@@ -2523,8 +2517,6 @@
                             disabled>批量删除</button>
                         <button class="batch-btn" id="batchVerifyBtn" onclick="batchVerifyProjectIds()"
                             disabled>批量检验</button>
-                        <button class="batch-btn" id="batchPreviewBtn" onclick="batchConfigurePreview()"
-                            disabled>批量设置预览</button>
                         <button class="batch-btn batch-email" onclick="refreshAllEmails()">刷新所有邮箱</button>
                         <button class="batch-btn" onclick="deduplicateByEmail()">凭证一键去重</button>
                     </div>
@@ -2554,13 +2546,6 @@
                         <option value="all">全部</option>
                         <option value="in_cooldown">CD中</option>
                         <option value="no_cooldown">未CD</option>
-                    </select>
-
-                    <label for="previewFilter" style="margin-left: 20px;">Preview：</label>
-                    <select id="previewFilter" class="filter-select" onchange="applyStatusFilter()">
-                        <option value="all">全部</option>
-                        <option value="preview">支持</option>
-                        <option value="no_preview">不支持</option>
                     </select>
 
                     <label for="tierFilter" style="margin-left: 20px;">Tier：</label>
@@ -3067,7 +3052,8 @@
 
                             <div class="form-group">
                                 <label>
-                                    <input type="checkbox" id="antigravitySwitchCredentialEnabled" class="config-checkbox" />
+                                    <input type="checkbox" id="antigravitySwitchCredentialEnabled"
+                                        class="config-checkbox" />
                                     Antigravity切换凭证
                                 </label>
                                 <small class="config-note">启用后重试时切换凭证；禁用时保持当前凭证，直到该凭证对当前模型进入CD或被禁用 <span
@@ -3166,9 +3152,9 @@
                                 <div class="config-info">
                                     <strong>注意：</strong>抗截断功能现在通过模型名控制：
                                     <ul style="margin: 5px 0; padding-left: 20px;">
-                                        <li>选择带有 "-流式抗截断" 后缀的模型即可启用</li>
-                                        <li>该功能仅在流式传输时生效</li>
-                                        <li>例如: "gemini-2.5-pro-流式抗截断"</li>
+                                        <li>选择带有 "抗截断/" 前缀的模型即可启用</li>
+                                        <li>流式和非流式请求均有效</li>
+                                        <li>例如: "抗截断/gemini-2.5-pro"</li>
                                     </ul>
                                 </div>
                             </div>
