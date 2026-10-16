@@ -12,6 +12,14 @@ SCRIPT = REPO_ROOT / "scripts" / "build-and-push.sh"
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 WORKFLOW_FILE = REPO_ROOT / ".github" / "workflows" / "ghcr-release.yml"
 
+# 端到端执行发布脚本的用例只在本机 git 检出中有效：
+# 发布门禁会在 git archive 导出的源码树里再跑一遍 pytest，
+# 导出树没有 .git，脚本无法解析 BUILD_REF，这些用例必须跳过。
+requires_git_checkout = pytest.mark.skipif(
+    not (REPO_ROOT / ".git").exists(),
+    reason="发布脚本端到端测试需要 git 检出（git archive 依赖 .git）",
+)
+
 
 def run(command, cwd, *, env=None, check=True):
     result = subprocess.run(
@@ -103,6 +111,7 @@ def untracked_artifact():
         artifact.unlink(missing_ok=True)
 
 
+@requires_git_checkout
 def test_release_exports_committed_tree_and_pushes_date_and_latest(tmp_path, untracked_artifact):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
@@ -121,6 +130,7 @@ def test_release_exports_committed_tree_and_pushes_date_and_latest(tmp_path, unt
     assert "发布完成" in result.stdout
 
 
+@requires_git_checkout
 def test_release_defaults_to_github_container_registry(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
@@ -136,6 +146,7 @@ def test_release_defaults_to_github_container_registry(tmp_path):
     assert " --push " in commands
 
 
+@requires_git_checkout
 def test_release_honors_platforms_override_for_single_arch(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
@@ -167,6 +178,7 @@ def test_image_description_label_and_manifest_annotation_stay_in_sync():
     assert f"IMAGE_DESCRIPTION:-{label.group(1)}" in script
 
 
+@requires_git_checkout
 def test_release_labels_image_source_with_repository_and_revision(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
@@ -184,6 +196,7 @@ def test_release_labels_image_source_with_repository_and_revision(tmp_path):
     assert "--label org.opencontainers.image.revision=" in commands
 
 
+@requires_git_checkout
 def test_release_stops_before_docker_build_when_tests_fail(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
@@ -198,6 +211,7 @@ def test_release_stops_before_docker_build_when_tests_fail(tmp_path):
     assert "docker push" not in commands
 
 
+@requires_git_checkout
 def test_release_rejects_unresolvable_build_ref(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
