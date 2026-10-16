@@ -5,20 +5,18 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-readonly UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/su-kaka/gcli2api.git}"
-readonly UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-master}"
-readonly CUSTOM_OVERLAY_DIR="${CUSTOM_OVERLAY_DIR:-${REPO_ROOT}/custom-overlay/files}"
 readonly IMAGE_NAME="${IMAGE_NAME:-ghcr.io/wzh0718/gcl2api-plus}"
 readonly IMAGE_REGISTRY="${IMAGE_NAME%%/*}"
-# org.opencontainers.image.source 标签：指向真正构建并发布镜像的仓库（本 fork）。
-# 不要用 UPSTREAM_URL —— 那是代码基线仓库，GitHub 会用该标签做「包 → 仓库」关联。
-# 上游代码基线仍记录在 revision 标签（上游 commit sha）中。
+# org.opencontainers.image.source 标签：指向真正构建并发布镜像的仓库（本仓库）。
+# GitHub 会用该标签做「包 → 仓库」关联。
 readonly SOURCE_URL="${SOURCE_URL:-https://github.com/Wzh0718/gcl2api-plus}"
 readonly RELEASE_DATE="${RELEASE_DATE:-$(TZ=Asia/Shanghai date +%Y%m%d)}"
 readonly VERSION_TAG="v${RELEASE_DATE}"
 readonly DATE_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
 readonly LATEST_IMAGE="${IMAGE_NAME}:latest"
 readonly PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+# 构建引用，默认为当前分支 HEAD；也可指定任意 commit/分支/tag。
+readonly BUILD_REF="${BUILD_REF:-HEAD}"
 # GitHub Container Registry 包描述；与 Dockerfile 的 description 标签保持一致。
 # 多架构镜像还需写入 manifest index 注释，GHCR 包页面才会显示描述。
 readonly IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION:-gcli2api-plus —— GeminiCLI / Antigravity 反向代理增强镜像：Token 计费看板、账号额度总览、403 自动复检、模型降级链；多架构 amd64 + arm64。Custom multi-arch build of su-kaka/gcli2api.}"
@@ -32,19 +30,18 @@ usage() {
   ./scripts/build-and-push.sh
 
 执行流程:
-  1. 从 GitHub 拉取最新 master 到临时目录
-  2. 使用 custom-overlay/files 覆盖定制文件
-  3. 运行专项测试、完整测试和静态检查
-  4. 用 Docker Buildx 一次性构建多架构镜像并推送（默认 amd64 + arm64）
-  5. 推送 vYYYYMMDD 和 latest 两个多架构 Tag 到 GitHub Container Registry
+  1. 从本仓库当前 HEAD（可用 BUILD_REF 指定其它引用）导出干净源码到临时目录
+  2. 运行专项测试、完整测试和静态检查
+  3. 用 Docker Buildx 一次性构建多架构镜像并推送（默认 amd64 + arm64）
+  4. 推送 vYYYYMMDD 和 latest 两个多架构 Tag 到 GitHub Container Registry
+
+注意: 只构建已提交进 Git 的内容，未提交改动不会进入镜像。
 
 首次使用前请登录镜像仓库（GitHub Container Registry）:
   echo "\$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 
 可选环境变量:
-  UPSTREAM_URL        上游 Git 地址
-  UPSTREAM_BRANCH     上游分支，默认 master
-  CUSTOM_OVERLAY_DIR  定制覆盖目录
+  BUILD_REF           构建引用的 commit/分支/tag，默认 HEAD
   IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
   SOURCE_URL          镜像 source 标签指向的仓库，默认 https://github.com/Wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
@@ -90,31 +87,8 @@ require_command() {
 validate_configuration() {
     [[ "${RELEASE_DATE}" =~ ^[0-9]{8}$ ]] \
         || die "RELEASE_DATE 必须是 YYYYMMDD，例如 20260727。"
-    [[ -d "${CUSTOM_OVERLAY_DIR}" ]] \
-        || die "定制覆盖目录不存在: ${CUSTOM_OVERLAY_DIR}"
-    [[ -n "$(find "${CUSTOM_OVERLAY_DIR}" -type f -print -quit)" ]] \
-        || die "定制覆盖目录为空: ${CUSTOM_OVERLAY_DIR}"
-
-    local forbidden_file
-    forbidden_file="$(find "${CUSTOM_OVERLAY_DIR}" -type f \( \
-        -name '.env' -o \
-        -name '*.db' -o \
-        -name '*.db-shm' -o \
-        -name '*.db-wal' -o \
-        -name '*.sqlite' -o \
-        -name '*.sqlite3' \
-        \) -print -quit)"
-    [[ -z "${forbidden_file}" ]] \
-        || die "定制覆盖目录包含禁止文件: ${forbidden_file}"
-
-    local forbidden_dir
-    forbidden_dir="$(find "${CUSTOM_OVERLAY_DIR}" -type d \( \
-        -name '.git' -o \
-        -name '.codegraph' -o \
-        -name 'creds' \
-        \) -print -quit)"
-    [[ -z "${forbidden_dir}" ]] \
-        || die "定制覆盖目录包含禁止目录: ${forbidden_dir}"
+    git -C "${REPO_ROOT}" rev-parse --verify "${BUILD_REF}^{commit}" >/dev/null 2>&1 \
+        || die "BUILD_REF 无法解析为 commit: ${BUILD_REF}"
 }
 
 run_quality_gates() {
@@ -135,7 +109,7 @@ run_quality_gates() {
         export PYTHONPATH="${SOURCE_DIR}"
         export UV_CACHE_DIR="${UV_CACHE_DIR:-${verify_tmp}/uv-cache}"
 
-        printf '\n[1/6] SQLite 计费与 Proxy 专项测试\n'
+        printf '\n[1/5] SQLite 计费与 Proxy 专项测试\n'
         uv run --with pytest --with pytest-asyncio pytest \
             tests/test_antigravity_403_recheck.py \
             tests/test_antigravity_account_health.py \
@@ -144,20 +118,18 @@ run_quality_gates() {
             tests/test_proxy_groups.py \
             tests/test_sqlite_billing_schema.py -q
 
-        printf '\n[2/6] 完整 pytest\n'
+        printf '\n[2/5] 完整 pytest\n'
         uv run --with pytest --with pytest-asyncio pytest -q
 
-        printf '\n[3/6] Python 编译检查\n'
+        printf '\n[3/5] Python 编译检查\n'
         python3 -m compileall -q src tests web.py config.py
 
-        printf '\n[4/6] JavaScript 语法检查\n'
+        printf '\n[4/5] JavaScript 语法检查\n'
         node --check front/common.js
 
-        printf '\n[5/6] 将新覆盖文件加入差异检查范围\n'
-        git add -N .
-
-        printf '\n[6/6] 覆盖层差异空白检查\n'
-        git diff --check
+        printf '\n[5/5] 导出源码合并标记检查\n'
+        ! grep -rn --include='*.py' --include='*.js' --include='*.html' --include='*.css' \
+            -E '^(<{7}|={7}|>{7})( |$)' src front web.py config.py
     )
 }
 
@@ -168,9 +140,12 @@ require_command python3
 require_command node
 require_command docker
 
+BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse "${BUILD_REF}^{commit}")"
+BUILD_BRANCH="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
+
 printf '发布目标:\n'
-printf '  上游: %s (%s)\n' "${UPSTREAM_URL}" "${UPSTREAM_BRANCH}"
-printf '  覆盖层: %s\n' "${CUSTOM_OVERLAY_DIR}"
+printf '  仓库: %s\n' "${REPO_ROOT}"
+printf '  构建引用: %s (%s, 分支 %s)\n' "${BUILD_REF}" "${BUILD_COMMIT}" "${BUILD_BRANCH}"
 printf '  平台: %s\n' "${PLATFORMS}"
 printf '  日期镜像: %s\n' "${DATE_IMAGE}"
 printf '  最新镜像: %s\n' "${LATEST_IMAGE}"
@@ -193,17 +168,11 @@ fi
 RELEASE_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gcli2api-release.XXXXXX")"
 SOURCE_DIR="${RELEASE_WORK_DIR}/source"
 
-printf '\n==> 拉取最新 GitHub 源码\n'
-git clone --depth 1 --single-branch --branch "${UPSTREAM_BRANCH}" \
-    "${UPSTREAM_URL}" "${SOURCE_DIR}"
-
-UPSTREAM_COMMIT="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
-printf '上游提交: %s\n' "${UPSTREAM_COMMIT}"
-
-printf '\n==> 覆盖定制插件文件\n'
-cp -a "${CUSTOM_OVERLAY_DIR}/." "${SOURCE_DIR}/"
-[[ -f "${SOURCE_DIR}/Dockerfile" ]] || die "覆盖后的源码缺少 Dockerfile。"
-printf '已覆盖 %s 个文件。\n' "$(find "${CUSTOM_OVERLAY_DIR}" -type f | wc -l | tr -d ' ')"
+printf '\n==> 导出本仓库源码（%s）\n' "${BUILD_COMMIT}"
+mkdir -p "${SOURCE_DIR}"
+git -C "${REPO_ROOT}" archive "${BUILD_COMMIT}" | tar -x -C "${SOURCE_DIR}"
+[[ -f "${SOURCE_DIR}/Dockerfile" ]] || die "导出的源码缺少 Dockerfile。"
+printf '已导出 %s 个文件。\n' "$(find "${SOURCE_DIR}" -type f | wc -l | tr -d ' ')"
 
 printf '\n==> 运行发布质量检查\n'
 run_quality_gates
@@ -223,7 +192,7 @@ docker buildx build \
     --provenance=false \
     "${ANNOTATION_ARGS[@]+"${ANNOTATION_ARGS[@]}"}" \
     --label "org.opencontainers.image.source=${SOURCE_URL}" \
-    --label "org.opencontainers.image.revision=${UPSTREAM_COMMIT}" \
+    --label "org.opencontainers.image.revision=${BUILD_COMMIT}" \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
     -t "${DATE_IMAGE}" \
     -t "${LATEST_IMAGE}" \
@@ -234,4 +203,4 @@ docker buildx build \
 printf '\n发布完成:\n'
 printf '  %s (%s)\n' "${DATE_IMAGE}" "${PLATFORMS}"
 printf '  %s (%s)\n' "${LATEST_IMAGE}" "${PLATFORMS}"
-printf '  上游提交: %s\n' "${UPSTREAM_COMMIT}"
+printf '  构建提交: %s\n' "${BUILD_COMMIT}"
