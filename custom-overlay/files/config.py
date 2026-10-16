@@ -492,11 +492,8 @@ async def get_antigravity_switch_credential_enabled() -> bool:
     return bool(await get_config_value("antigravity_switch_credential_enabled", False))
 
 
-# 配额耗尽时的默认模型降级链（逗号分隔）
-DEFAULT_ANTIGRAVITY_MODEL_FALLBACK_CHAIN = (
-    "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,"
-    "gemini-3.6-flash-tiered,gemini-3.7-flash-tiered"
-)
+# 配额耗尽时的默认模型降级链（逗号分隔），默认空 = 关闭自动降级
+DEFAULT_ANTIGRAVITY_MODEL_FALLBACK_CHAIN = ""
 
 
 async def get_antigravity_model_fallback_chain() -> list:
@@ -508,7 +505,7 @@ async def get_antigravity_model_fallback_chain() -> list:
 
     Environment variable: ANTIGRAVITY_MODEL_FALLBACK_CHAIN
     Database config key: antigravity_model_fallback_chain
-    Default: gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered
+    Default: 空（关闭降级；如需启用请显式配置，如 gemini-3.8-flash,gemini-3.8-flash-tiered）
     """
     env_value = os.getenv("ANTIGRAVITY_MODEL_FALLBACK_CHAIN")
     if env_value is not None:

@@ -2331,9 +2331,9 @@
                             <div class="form-group">
                                 <label for="antigravityModelFallbackChain">模型配额降级链:</label>
                                 <input type="text" id="antigravityModelFallbackChain"
-                                    placeholder="gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered" />
+                                    placeholder="留空关闭降级，如：gemini-3.8-flash,gemini-3.8-flash-tiered" />
                                 <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">逗号分隔；模型配额耗尽且号池无可用凭证时按顺序降级，留空关闭
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">逗号分隔；模型配额耗尽且号池无可用凭证时按顺序降级。默认留空 = 关闭降级
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
 

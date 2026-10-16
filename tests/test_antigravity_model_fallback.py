@@ -61,16 +61,10 @@ async def test_fallback_chain_config_parsing(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_MODEL_FALLBACK_CHAIN", "")
     assert await get_antigravity_model_fallback_chain() == []
 
-    # 未配置时使用默认链
+    # 未配置时默认关闭降级（默认链为空）
     monkeypatch.delenv("ANTIGRAVITY_MODEL_FALLBACK_CHAIN")
     default_chain = await get_antigravity_model_fallback_chain()
-    assert default_chain == [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.6-flash-tiered",
-        "gemini-3.7-flash-tiered",
-    ]
+    assert default_chain == []
 
 
 class _FakeResponse:

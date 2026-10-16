@@ -101,6 +101,8 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
         "api_key_id": "env",
         # 上游真实执行模型从 response 包装层的 modelVersion 提取
         "upstream_model": "gemini-3.8-flash-n",
+        # 客户端原始请求模型（未发生降级时与 model 一致）
+        "request_model": "gemini-test",
     }
 
 

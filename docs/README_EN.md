@@ -98,8 +98,10 @@ Configuration precedence is: explicit environment variables > `.env` > SQLite co
 
 ### Model fallback chain example
 
+Disabled by default (empty). Configure it explicitly to enable, for example:
+
 ```dotenv
-ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered
+ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 ```
 
 Only an explicitly recognized quota-exhaustion 429 triggers fallback. Image requests do not switch models automatically. See [`config.py`](../config.py) and the control-panel settings page for the complete mapping.

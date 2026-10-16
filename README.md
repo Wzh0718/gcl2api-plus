@@ -100,8 +100,10 @@ cp .env.example .env
 
 ### 模型降级链示例
 
+默认关闭（留空）。需要启用时显式配置，例如：
+
 ```dotenv
-ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash-tiered,gemini-3.7-flash-tiered
+ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 ```
 
 只有明确的配额耗尽型 429 才会触发降级；图片请求不会自动切换模型。具体配置映射见 [`config.py`](config.py) 和控制面板设置页。

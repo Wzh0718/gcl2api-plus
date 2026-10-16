@@ -6,7 +6,10 @@
 - extract_model_version 提取（顶层 / response 包装层 / 缺失）；
 - OpenAI 非流式与流式响应、Anthropic 响应附加 modelVersion；
 - call_records.upstream_model 列写入、读取与旧库迁移；
-- BillingRecorder.record 将 upstream_model 透传到调用监控记录。
+- BillingRecorder.record 将 upstream_model 透传到调用监控记录；
+- call_records.request_model（客户端原始请求模型）列写入、读取、旧库迁移
+  与 BillingRecorder 透传——配合执行模型可呈现
+  「原始请求 → 网关执行（降级后）→ 上游物理模型」三段对比。
 """
 
 import time
@@ -282,4 +285,128 @@ async def test_billing_record_passes_upstream_model_to_call_monitor(tmp_path, mo
     buffered = monitor.realtime()
     assert len(buffered) == 1
     assert buffered[0]["upstream_model"] == "gemini-3.8-flash-n"
+    await adapter.close()
+
+
+# ==================== call_records.request_model（原始请求模型） ====================
+
+@pytest.mark.asyncio
+async def test_call_record_request_model_roundtrip(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    backend = adapter._backend
+    now = time.time()
+
+    await backend.insert_call_record(
+        request_id="r1", created_at=now,
+        model_name="gemini-3.6-flash-tiered",
+        request_model="gemini-2.5-flash-lite",
+        success=False, status_code=404,
+    )
+    await backend.insert_call_record(
+        request_id="r2", created_at=now + 1,
+        model_name="gemini-3.1-flash-lite",
+        success=True,
+    )
+
+    rows = await backend.list_call_records(since_ts=0)
+    by_id = {row["request_id"]: row for row in rows}
+    # 降级场景：执行模型是链上下一档，原始请求模型独立保留
+    assert by_id["r1"]["model_name"] == "gemini-3.6-flash-tiered"
+    assert by_id["r1"]["request_model"] == "gemini-2.5-flash-lite"
+    # 未提供时为空字符串而非 NULL/缺失
+    assert by_id["r2"]["request_model"] == ""
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_call_records_request_model_migration(tmp_path, monkeypatch):
+    """旧库无 request_model 列时，初始化后自动补列且历史行默认为 ''。"""
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    import os
+
+    os.makedirs(tmp_path, exist_ok=True)
+    db_path = os.path.join(str(tmp_path), "credentials.db")
+
+    # 手工建一份「旧版」call_records（含 upstream_model、无 request_model 列）
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("""
+            CREATE TABLE call_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                api_key_id TEXT NOT NULL DEFAULT 'env',
+                credential_name TEXT NOT NULL DEFAULT '',
+                channel TEXT NOT NULL DEFAULT 'antigravity',
+                model_name TEXT NOT NULL DEFAULT '',
+                upstream_model TEXT NOT NULL DEFAULT '',
+                task_type TEXT NOT NULL DEFAULT 'chat',
+                success INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER,
+                gateway_seconds REAL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_tokens INTEGER NOT NULL DEFAULT 0,
+                thought_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost TEXT NOT NULL DEFAULT '0.00000000',
+                currency TEXT NOT NULL DEFAULT 'CNY'
+            )
+        """)
+        await db.execute(
+            "INSERT INTO call_records(request_id, created_at, model_name, success) VALUES ('legacy', 1.0, 'gemini-3-pro', 1)"
+        )
+        await db.commit()
+
+    from src.storage_adapter import StorageAdapter
+
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    backend = adapter._backend
+
+    rows = await backend.list_call_records(since_ts=0)
+    assert rows[0]["request_id"] == "legacy"
+    assert rows[0]["request_model"] == ""
+
+    # 迁移后新行可以带 request_model
+    await backend.insert_call_record(
+        request_id="new", created_at=time.time(),
+        model_name="gemini-3.6-flash-tiered",
+        request_model="gemini-2.5-flash-lite",
+        success=True,
+    )
+    rows = await backend.list_call_records(since_ts=0)
+    by_id = {row["request_id"]: row for row in rows}
+    assert by_id["new"]["request_model"] == "gemini-2.5-flash-lite"
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_billing_record_passes_request_model_to_call_monitor(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    from src.billing import get_billing_recorder
+    from src.call_monitor import get_call_monitor
+
+    recorder = await get_billing_recorder(adapter)
+    monitor = await get_call_monitor(adapter)
+
+    ok = await recorder.record(
+        request_id="req-fallback",
+        credential_name="acc-a.json",
+        model="gemini-3.6-flash-tiered",
+        usage_metadata={"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15},
+        success=False,
+        api_key_id="key-1",
+        status_code=404,
+        request_model="gemini-2.5-flash-lite",
+    )
+    assert ok is True
+
+    rows = await adapter._backend.list_call_records(since_ts=0)
+    assert len(rows) == 1
+    assert rows[0]["model_name"] == "gemini-3.6-flash-tiered"
+    assert rows[0]["request_model"] == "gemini-2.5-flash-lite"
+
+    buffered = monitor.realtime()
+    assert len(buffered) == 1
+    assert buffered[0]["request_model"] == "gemini-2.5-flash-lite"
     await adapter.close()

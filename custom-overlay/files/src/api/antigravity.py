@@ -791,6 +791,7 @@ async def _stream_request_inner(
         Response对象（错误时）或 bytes流/str流（成功时）
     """
     model_name = body.get("model", "")
+    original_model = model_name  # 客户端原始请求模型；降级链切换后用于记录对比
     inner_request = body.get("request", body)
     image_request = is_antigravity_image_request(model_name, inner_request)
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
@@ -917,6 +918,7 @@ async def _stream_request_inner(
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
+                request_model=original_model,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
@@ -1336,6 +1338,7 @@ async def _non_stream_image_request_inner(
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=extract_model_version(response_payload),
+                request_model=requested_model,
             )
         except Exception as exc:
             log.warning(
@@ -1561,6 +1564,7 @@ async def non_stream_request(
         Response对象
     """
     model_name = body.get("model", "")
+    original_model = model_name  # 客户端原始请求模型；降级链切换后用于记录对比
     inner_request = body.get("request", body)
     if is_antigravity_image_request(model_name, inner_request):
         return await _non_stream_image_request(body, headers, api_key_id)
@@ -1683,6 +1687,7 @@ async def non_stream_request(
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
+                request_model=original_model,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")

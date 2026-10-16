@@ -164,6 +164,10 @@ class SQLiteManager:
                     # 用于「请求模型 vs 实际模型」逐条对比。
                     await self._migrate_call_records_upstream_model(db)
 
+                    # 逐请求记录补充客户端原始请求模型列，用于
+                    # 「原始请求 → 网关执行（降级后）→ 上游物理模型」三段对比。
+                    await self._migrate_call_records_request_model(db)
+
                     # 修复可能包含路径的凭证文件名
                     await self._repair_credential_filenames(db)
 
@@ -550,6 +554,7 @@ class SQLiteManager:
                 credential_name TEXT NOT NULL DEFAULT '',
                 channel TEXT NOT NULL DEFAULT 'antigravity',
                 model_name TEXT NOT NULL DEFAULT '',
+                request_model TEXT NOT NULL DEFAULT '',
                 upstream_model TEXT NOT NULL DEFAULT '',
                 task_type TEXT NOT NULL DEFAULT 'chat',
                 success INTEGER NOT NULL DEFAULT 0,
@@ -602,6 +607,18 @@ class SQLiteManager:
                 "ALTER TABLE call_records ADD COLUMN upstream_model TEXT NOT NULL DEFAULT ''"
             )
             log.info("Added upstream_model column to call_records")
+
+    async def _migrate_call_records_request_model(
+        self, db: aiosqlite.Connection
+    ) -> None:
+        """Add the original-request-model column for降级前三段对比。"""
+        async with db.execute("PRAGMA table_info(call_records)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if columns and "request_model" not in columns:
+            await db.execute(
+                "ALTER TABLE call_records ADD COLUMN request_model TEXT NOT NULL DEFAULT ''"
+            )
+            log.info("Added request_model column to call_records")
 
     async def _migrate_billing_daily_api_keys(self, db: aiosqlite.Connection) -> None:
         """Upgrade the legacy billing primary key without losing aggregates."""
@@ -2613,7 +2630,7 @@ class SQLiteManager:
 
     _CALL_RECORD_COLUMNS = (
         "request_id", "created_at", "api_key_id", "credential_name", "channel",
-        "model_name", "upstream_model", "task_type", "success", "status_code", "gateway_seconds",
+        "model_name", "request_model", "upstream_model", "task_type", "success", "status_code", "gateway_seconds",
         "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
         "total_tokens", "total_cost", "currency",
     )
@@ -2633,6 +2650,7 @@ class SQLiteManager:
         credential_name: str = "",
         channel: str = "antigravity",
         model_name: str = "",
+        request_model: str = "",
         upstream_model: str = "",
         task_type: str = "chat",
         success: bool,
@@ -2652,14 +2670,14 @@ class SQLiteManager:
             await db.execute(
                 """INSERT INTO call_records(
                         request_id, created_at, api_key_id, credential_name, channel,
-                        model_name, upstream_model, task_type, success, status_code, gateway_seconds,
+                        model_name, request_model, upstream_model, task_type, success, status_code, gateway_seconds,
                         input_tokens, output_tokens, cache_tokens, thought_tokens,
                         total_tokens, total_cost, currency
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id, float(created_at), api_key_id or "env",
                     os.path.basename(credential_name or ""), channel or "antigravity",
-                    model_name or "", upstream_model or "", task_type or "chat", 1 if success else 0,
+                    model_name or "", request_model or "", upstream_model or "", task_type or "chat", 1 if success else 0,
                     status_code, gateway_seconds,
                     max(int(input_tokens), 0), max(int(output_tokens), 0),
                     max(int(cache_tokens), 0), max(int(thought_tokens), 0),

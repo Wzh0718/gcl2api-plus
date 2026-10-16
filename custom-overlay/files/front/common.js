@@ -2496,16 +2496,30 @@ function _cmEmptyState() {
     </div>`;
 }
 
-// 模型单元格：请求模型 vs 上游真实执行模型（modelVersion）逐条对比。
-// 上游把不同请求归一到同一物理后端时，实际模型与请求名不同，此时高亮实际模型。
+// 模型单元格：原始请求模型 → 网关执行模型（降级链切换后）→ 上游真实执行模型（modelVersion）逐条对比。
+// 发生降级或上游归一时，与原始请求不同的段会高亮，悬停显示完整链路。
 function _cmModelCell(row) {
-    const requested = row.model_name || '';
+    const executed = row.model_name || '';
+    const requested = (row.request_model || '').trim() || executed; // 历史记录无 request_model，回落到执行模型
     const upstream = (row.upstream_model || '').trim();
-    if (!upstream || upstream === requested) {
-        return `<td title="${_cmEscape(requested)}">${_cmEscape(requested) || '-'}</td>`;
+
+    const fellBack = requested !== executed;
+    const normalized = !!upstream && upstream !== executed;
+    if (!fellBack && !normalized) {
+        return `<td title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</td>`;
     }
-    const tip = `请求: ${requested}\n实际: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`;
-    return `<td title="${_cmEscape(tip)}">${_cmEscape(requested) || '-'} → <span class="cm-upstream-model">${_cmEscape(upstream)}</span></td>`;
+
+    const segments = [_cmEscape(requested) || '-'];
+    const tips = [`原始请求: ${requested || '-'}`];
+    if (fellBack) {
+        segments.push(`<span class="cm-upstream-model">${_cmEscape(executed) || '-'}</span>`);
+        tips.push(`网关执行: ${executed || '-'}（配额降级链切换后的实际请求模型）`);
+    }
+    if (normalized) {
+        segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
+        tips.push(`上游物理: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`);
+    }
+    return `<td title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</td>`;
 }
 
 function _cmRenderGrouped(rows, view) {
