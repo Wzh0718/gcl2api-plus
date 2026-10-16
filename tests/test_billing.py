@@ -726,7 +726,7 @@ def test_panel_defaults_to_key_distribution_and_hides_gcli_navigation(filename):
             'onclick="switchTab(\'api-keys\', this)">密钥分发</button>'
         ) in html
     else:
-        assert '<button class="tab active" onclick="switchTab(\'api-keys\')">密钥分发管理</button>' in html
+        assert '<button class="tab active" onclick="switchTab(\'api-keys\')">密钥分发</button>' in html
     assert "switchTab('oauth')" not in html
     assert "switchTab('manage')" not in html
     assert 'id="api-keysTab" class="tab-content active"' in html

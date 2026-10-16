@@ -1384,6 +1384,61 @@ window.addEventListener('resize', () => {
     if (activeTab) updateTabSlider(activeTab, false);
 });
 
+// ==================== 导航分组下拉 ====================
+
+// 打开/关闭某个分组的下拉菜单（PC 控制面板导航）
+function toggleTabDropdown(toggle) {
+    const group = toggle.closest('.tab-group');
+    if (!group) return;
+    const isOpen = group.classList.contains('open');
+    closeTabDropdowns();
+    if (!isOpen) {
+        positionTabDropdown(group);
+        group.classList.add('open');
+        toggle.setAttribute('aria-expanded', 'true');
+    }
+}
+
+// 关闭全部分组下拉
+function closeTabDropdowns() {
+    document.querySelectorAll('.tab-group.open').forEach(group => {
+        group.classList.remove('open');
+        group.querySelector('.tab-group-toggle')?.setAttribute('aria-expanded', 'false');
+    });
+}
+
+// 下拉用 fixed 定位，避免被 .tabs 的 overflow-x 裁剪
+function positionTabDropdown(group) {
+    const toggle = group.querySelector('.tab-group-toggle');
+    const dropdown = group.querySelector('.tab-dropdown');
+    if (!toggle || !dropdown) return;
+    const rect = toggle.getBoundingClientRect();
+    dropdown.style.left = `${rect.left}px`;
+    dropdown.style.top = `${rect.bottom + 6}px`;
+}
+
+// 分组开关标签：有子项激活时显示「分组 · 子项」，否则只显示分组名
+function updateGroupToggleLabel(group, itemText = null) {
+    const toggle = group.querySelector('.tab-group-toggle');
+    if (!toggle) return;
+    const base = toggle.dataset.groupLabel || toggle.textContent;
+    const caret = '<span class="tab-caret">▾</span>';
+    toggle.innerHTML = (itemText ? `${base} · ${itemText}` : base) + caret;
+}
+
+function resetTabGroupLabels() {
+    document.querySelectorAll('.tab-group').forEach(group => updateGroupToggleLabel(group, null));
+}
+
+document.addEventListener('click', (event) => {
+    if (!event.target.closest('.tab-group')) closeTabDropdowns();
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeTabDropdowns();
+});
+// 滚动时下拉与开关脱离，直接关闭
+window.addEventListener('scroll', closeTabDropdowns, true);
+
 function switchTab(tabName, sourceTab = null) {
     // 获取当前活动的内容区域
     const currentContent = document.querySelector('.tab-content.active');
@@ -1399,21 +1454,37 @@ function switchTab(tabName, sourceTab = null) {
         disconnectWebSocket();
     }
 
-    // 找到目标标签按钮
-    const targetTab = sourceTab || document.querySelector(`.tab[onclick*="'${tabName}'"]`);
+    // 找到目标标签按钮（顶层 .tab 或分组下拉项 .tab-dropdown-item）
+    const targetTab = sourceTab || document.querySelector(`.tab[onclick*="'${tabName}'"], .tab-dropdown-item[onclick*="'${tabName}'"]`);
 
-    // 移除所有标签页的active状态
+    // 移除所有标签页与下拉项的active状态
     document.querySelectorAll('.tab').forEach(tab => {
         tab.classList.remove('active');
         tab.removeAttribute('aria-current');
     });
+    document.querySelectorAll('.tab-dropdown-item').forEach(item => item.classList.remove('active'));
+    resetTabGroupLabels();
 
     // 添加当前点击标签的active状态
     if (targetTab) {
-        targetTab.classList.add('active');
-        targetTab.setAttribute('aria-current', 'page');
-        // 更新滑块位置（带动画）
-        updateTabSlider(targetTab, true);
+        const group = targetTab.closest('.tab-group');
+        if (group && targetTab.classList.contains('tab-dropdown-item')) {
+            // 分组子项：高亮子项，滑块定位到分组开关，开关标签显示当前子项
+            targetTab.classList.add('active');
+            const toggle = group.querySelector('.tab-group-toggle');
+            if (toggle) {
+                toggle.classList.add('active');
+                toggle.setAttribute('aria-current', 'page');
+                updateGroupToggleLabel(group, targetTab.textContent.trim());
+                updateTabSlider(toggle, true);
+            }
+            closeTabDropdowns();
+        } else {
+            targetTab.classList.add('active');
+            targetTab.setAttribute('aria-current', 'page');
+            // 更新滑块位置（带动画）
+            updateTabSlider(targetTab, true);
+        }
     }
 
     // 淡出当前内容

@@ -229,6 +229,80 @@
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
         }
 
+        /* 导航分组下拉 */
+        .tab-group {
+            display: inline-flex;
+            flex-shrink: 0;
+            /* 不设 position：分组开关需以 .tabs 为 offsetParent，滑块定位才正确 */
+        }
+
+        .tab-caret {
+            font-size: 8px;
+            margin-left: 4px;
+            opacity: 0.5;
+            display: inline-block;
+            transition: transform 0.2s ease;
+        }
+
+        .tab-group.open .tab-caret {
+            transform: rotate(180deg);
+            opacity: 0.8;
+        }
+
+        .tab-dropdown {
+            display: none;
+            position: fixed;
+            min-width: 150px;
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(8px);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16),
+                0 2px 8px rgba(0, 0, 0, 0.1);
+            padding: 6px;
+            z-index: 1000;
+        }
+
+        .tab-group.open .tab-dropdown {
+            display: block;
+            animation: tabDropdownIn 0.16s ease-out;
+        }
+
+        @keyframes tabDropdownIn {
+            from {
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .tab-dropdown-item {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 11px 14px;
+            border: none;
+            background: transparent;
+            border-radius: 8px;
+            color: #555;
+            font-size: 14px;
+            font-weight: 450;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .tab-dropdown-item:active {
+            background: #f2f2f5;
+        }
+
+        .tab-dropdown-item.active {
+            background: #eef3fe;
+            color: #1a56db;
+            font-weight: 550;
+        }
+
         .tab-content {
             display: none;
             padding: 10px 0;
@@ -1279,16 +1353,31 @@
             <!-- 移动端优化的标签页 -->
             <div class="tabs">
                 <div class="tab-slider"></div>
-                <button class="tab active" onclick="switchTab('api-keys')">密钥分发管理</button>
-                <button class="tab" onclick="switchTab('antigravity')">Antigravity认证</button>
-                <button class="tab" onclick="switchTab('upload')">凭证上传</button>
-                <button class="tab" onclick="switchTab('antigravity-manage')">AG凭证</button>
-                <button class="tab" onclick="switchTab('model-stats')">调用统计</button>
-                <button class="tab" onclick="switchTab('call-monitor')">调用监控</button>
-                <button class="tab" onclick="switchTab('config')">配置管理</button>
-                <button class="tab" onclick="switchTab('billing')">Token计费</button>
-                <button class="tab" onclick="switchTab('logs')">实时日志</button>
-                <button class="tab" onclick="switchTab('about')">项目信息</button>
+                <button class="tab active" onclick="switchTab('api-keys')">密钥分发</button>
+                <div class="tab-group">
+                    <button type="button" class="tab tab-group-toggle" data-group-label="账号管理" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">账号管理<span class="tab-caret">▾</span></button>
+                    <div class="tab-dropdown" role="menu">
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('antigravity')">Antigravity认证</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('upload')">凭证上传</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('antigravity-manage')">AG凭证</button>
+                    </div>
+                </div>
+                <div class="tab-group">
+                    <button type="button" class="tab tab-group-toggle" data-group-label="用量计费" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">用量计费<span class="tab-caret">▾</span></button>
+                    <div class="tab-dropdown" role="menu">
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('model-stats')">调用统计</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('call-monitor')">调用监控</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('billing')">Token计费</button>
+                    </div>
+                </div>
+                <div class="tab-group">
+                    <button type="button" class="tab tab-group-toggle" data-group-label="系统" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">系统<span class="tab-caret">▾</span></button>
+                    <div class="tab-dropdown" role="menu">
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('config')">配置管理</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('logs')">实时日志</button>
+                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('about')">项目信息</button>
+                    </div>
+                </div>
             </div>
 
             <div id="api-keysTab" class="tab-content active">
