@@ -10,7 +10,6 @@
 - 使用同一绑定代理执行 IP 回显与 `loadCodeAssist` 地区资格检测。
 - 流式与非流式 403 都先分类，再决定重绑、模型冷却或账号禁用。
 - 管理端账号卡片展示绑定节点、出口 IP 和资格状态，并提供检测与重绑入口。
-- 根目录与 `custom-overlay/files` 保持字节一致。
 
 检测默认关闭，避免在尚未提供可信 IP 回显服务时阻断已有账号。配置
 `ANTIGRAVITY_EGRESS_IP_CHECK_URL` 后，将
@@ -35,7 +34,6 @@ credential -> proxy node -> egress IP -> eligibility check -> API request
 - SQLite 是账号绑定与健康状态的事实来源。
 - Redis 不作为该功能的必需依赖。
 - 代理凭据继续保存在账号凭据 JSON 之外，API 与日志不得暴露代理密码。
-- 根目录定制必须同步至 `custom-overlay/files`。
 - 新功能采用附加式数据库迁移，不破坏已有账号。
 - 检测开关启用后，未完成检测或检测失败的账号不能进入业务请求池。
 - 不随机轮换 User-Agent、版本、平台或认证方式。
@@ -206,7 +204,6 @@ POST /creds/network-health/batch-check
 6. 稳定合格 IP 下的明确账号拒绝会禁用账号。
 7. Token、Project ID、Proxy 和计费归属在重试时整体切换。
 8. 流式与非流式行为一致。
-9. 根目录与 `custom-overlay/files` 字节一致。
-10. 单账号、单代理完成 `loadCodeAssist`、一次最小生成及 10 次串行灰度验证。
+9. 单账号、单代理完成 `loadCodeAssist`、一次最小生成及 10 次串行灰度验证。
 
 未经明确授权，不构建镜像、不推送镜像、不重建或重启容器。

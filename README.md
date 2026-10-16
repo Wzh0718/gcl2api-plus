@@ -22,7 +22,7 @@
 - 账号健康检查、403 复核和额度对账；
 - 代理分组、OAuth 客户端和 Redis 计费镜像；
 - 流式响应守护、模型参数规范化和模型配额降级链；
-- GitHub Actions 自动同步上游并发布到 GitHub Container Registry。
+- 多架构镜像发布到 GitHub Container Registry（手动触发）。
 
 ### 官方镜像
 
@@ -36,7 +36,7 @@ docker pull ghcr.io/wzh0718/gcl2api-plus:latest
 docker pull ghcr.io/wzh0718/gcl2api-plus:v20260910
 ```
 
-发布流程和覆盖层规则见 [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)。
+本仓库为独立完整项目（无覆盖层、无自动上游同步），开发与发布流程见 [docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)。
 
 ## 快速部署
 
@@ -151,7 +151,7 @@ ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 ## 相关文档
 
 - [English README](docs/README_EN.md)
-- [定制覆盖与发布](docs/CUSTOMIZATION.md)
+- [开发与发布指南](docs/CUSTOMIZATION.md)
 - [Antigravity 图片 API](docs/ANTIGRAVITY_IMAGE_API.md)
 - [账号出口与地区检测方案](docs/ANTIGRAVITY_ACCOUNT_IP_BINDING_PLAN.md)
 

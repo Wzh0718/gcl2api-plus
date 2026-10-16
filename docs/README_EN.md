@@ -36,7 +36,7 @@ Date-versioned images use the `vYYYYMMDD` tag, for example:
 docker pull ghcr.io/wzh0718/gcl2api-plus:v20260910
 ```
 
-See [CUSTOMIZATION.md](CUSTOMIZATION.md) for the overlay and release workflow.
+This repository is a standalone project (no overlay, no automatic upstream sync). See [CUSTOMIZATION.md](CUSTOMIZATION.md) for the development and release workflow.
 
 ## Quick deployment
 
@@ -138,7 +138,7 @@ Only an explicitly recognized quota-exhaustion 429 triggers fallback. Image requ
 
 ## Related documentation
 
-- [Customization and release workflow](CUSTOMIZATION.md)
+- [Development and release workflow](CUSTOMIZATION.md)
 - [Antigravity image API](ANTIGRAVITY_IMAGE_API.md)
 - [Account egress and region checks](ANTIGRAVITY_ACCOUNT_IP_BINDING_PLAN.md)
 

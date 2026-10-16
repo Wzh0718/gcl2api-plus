@@ -1,6 +1,7 @@
-# 定制覆盖与 GitHub Container Registry 一键发布
+# 开发与发布指南
 
-本仓库不再通过合并定制分支来同步上游。发布时始终临时拉取 GitHub 最新 `master`，再用 `custom-overlay/files/` 覆盖定制文件，测试通过后构建并推送 GitHub Container Registry。
+本仓库 [Wzh0718/gcl2api-plus](https://github.com/Wzh0718/gcl2api-plus) 是独立维护的完整项目：
+以 `su-kaka/gcli2api` 为代码基线二次开发，所有定制直接落在仓库主树，**不再有 custom-overlay 覆盖层，也不再做每日自动上游同步**（2026-10-16 起，见 `docs/ADR-001-完整项目化与agy-exe补充环境.md`）。
 
 唯一发布入口：
 
@@ -8,7 +9,33 @@
 ./scripts/build-and-push.sh
 ```
 
-脚本不会修改当前 Git 分支、远程或工作区，也不会向 GitHub 推送。
+脚本从本仓库当前 HEAD 用 `git archive` 导出干净源码，跑质量门禁后构建并推送 GitHub Container Registry。**只有已提交进 Git 的内容会进入镜像**，未提交改动不会被打包。
+
+## 日常开发流程
+
+1. 直接修改仓库主树代码（`src/`、`front/`、`web.py`、`config.py`、`tests/` 等）。
+2. 本地验证：
+
+   ```bash
+   .venv/bin/python -m pytest tests/ -q
+   python3 -m compileall -q src tests web.py config.py
+   node --check front/common.js
+   ```
+
+3. 提交后执行 `./scripts/build-and-push.sh` 发布。
+
+## 上游挑拣流程（人工）
+
+上游 remote 保留只读，用于不定期挑拣修复：
+
+```bash
+git fetch upstream
+git log --oneline HEAD..upstream/master        # 看上游新增提交
+git cherry-pick <sha>                          # 按需挑拣，冲突按我方定制为准解决
+```
+
+- 挑拣是**人工、按需**行为，不再有自动同步；挑拣后必须跑全量 pytest。
+- 冲突解决原则：定制功能（计费、调用监控、凭证池、403 复检、模型降级链、敏感词、图像协议等）以我方版本为准；上游在共享函数上的通用修复手工移植。
 
 ## 发布结果
 
@@ -30,19 +57,13 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 
 同一天重复执行会重新推送当天 Tag 和 `latest`。如果仓库启用了不可变 Tag 策略，已经存在的日期 Tag 可能拒绝覆盖，此时应使用新的日期 Tag。
 
-## GitHub Actions 自动发布（ghcr.io）
+## GitHub Actions 发布（ghcr.io）
 
-`.github/workflows/ghcr-sync-release.yml` 每天 09:17（Asia/Shanghai）自动执行与 `build-and-push.sh` 等价的流程：拉上游 `master` → 应用覆盖层 → 质量门禁 → 用 QEMU + Buildx 构建多架构镜像，推送到 GitHub Container Registry：
+`.github/workflows/ghcr-release.yml` 与 `build-and-push.sh` 等价：导出本仓库源码 → 质量门禁 → 用 QEMU + Buildx 构建多架构镜像，推送到 GitHub Container Registry。
 
-```text
-ghcr.io/wzh0718/gcl2api-plus:vYYYYMMDD
-ghcr.io/wzh0718/gcl2api-plus:latest
-```
-
-- 上游无新提交时跳过（`.last-released-upstream-sha` 记录上次发布的上游 SHA）；
+- **仅手动触发**：在 Actions 页面 workflow_dispatch 执行，无定时任务；
 - 认证使用内置 `GITHUB_TOKEN`（`packages: write`），无需配置额外 secret；
-- 也可在 Actions 页面手动触发（workflow_dispatch）；
-- 脚本通过环境变量 `IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus` 复用同一套发布逻辑。
+- 通过环境变量 `IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus` 复用同一套发布逻辑。
 
 ## 首次准备
 
@@ -53,7 +74,7 @@ ghcr.io/wzh0718/gcl2api-plus:latest
 - `python3`
 - `node`
 - 可用的 Docker 服务（含 Docker Buildx 插件；本地构建 arm64 需要 QEMU binfmt，Docker Desktop 自带，普通 Linux 主机执行一次 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）
-- 访问 GitHub、Python 包源、基础镜像仓库和 GitHub Container Registry 的网络
+- 访问 Python 包源、基础镜像仓库和 GitHub Container Registry 的网络
 
 GitHub Container Registry 登录只需要提前执行一次，密码不写入脚本：
 
@@ -65,51 +86,15 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 
 `scripts/build-and-push.sh` 顺序执行：
 
-1. 校验覆盖层中没有 `.env`、`creds/`、`.codegraph/` 或数据库文件。
-2. 检查 Docker 服务可用。
-3. 在 `/tmp` 下创建临时目录。
-4. 从 `https://github.com/su-kaka/gcli2api.git` 拉取最新 `master`。
-5. 将 `custom-overlay/files/` 原样覆盖到最新源码。
-6. 运行计费、Proxy、SQLite 迁移专项测试和完整 pytest。
-7. 运行 Python 编译、JavaScript 语法和差异空白检查。
-8. 使用 Buildx 按 `PLATFORMS`（默认 `linux/amd64,linux/arm64`）构建多架构镜像，同时添加日期 Tag 和 `latest`，并通过 `--push` 直接推送。
-9. 输出镜像名和实际使用的上游 Git Commit，然后删除临时目录。
+1. 校验 `BUILD_REF`（默认 `HEAD`）可解析为 commit。
+2. 检查 Docker 服务与 Buildx 可用。
+3. 在 `/tmp` 下创建临时目录，用 `git archive` 导出 `BUILD_REF` 的干净源码。
+4. 运行计费、Proxy、SQLite 迁移专项测试和完整 pytest。
+5. 运行 Python 编译、JavaScript 语法和合并标记检查。
+6. 使用 Buildx 按 `PLATFORMS`（默认 `linux/amd64,linux/arm64`）构建多架构镜像，同时添加日期 Tag 和 `latest`，并通过 `--push` 直接推送。
+7. 输出镜像名和实际构建的 Git Commit，然后删除临时目录。
 
 任何测试、构建或推送步骤失败，脚本立即退出，不继续后续步骤。
-
-## 定制覆盖层
-
-`custom-overlay/files/` 是发布时的定制插件层，目录结构与上游项目根目录一致。例如：
-
-```text
-custom-overlay/files/
-├── .dockerignore
-├── Dockerfile
-├── config.py
-├── front/
-├── src/
-├── tests/
-└── web.py
-```
-
-覆盖层中的 `Dockerfile` 基于上游版本加入多架构 jemalloc 支持（`LD_PRELOAD` 路径按 amd64/arm64 自适应）；上游若更新 Dockerfile，需要人工同步进覆盖层。
-
-覆盖规则是完整文件替换，不是 Git merge：
-
-- 上游没有改动同名文件时，直接加入定制功能。
-- 上游改动了同名文件时，覆盖层版本优先。
-- 不会产生 Git 冲突，但上游接口变化可能导致测试失败。
-- 测试失败时需要把上游必要变化人工同步到覆盖层文件，再重新执行脚本。
-
-禁止放入覆盖层：
-
-- `.env`
-- `creds/`
-- `.codegraph/`
-- `*.db`、`*.sqlite`、WAL/SHM 文件
-- GitHub、镜像仓库或第三方服务的真实密码和 Token
-
-`.dockerignore` 会阻止 Git 元数据、环境文件、凭证、数据库、缓存和测试目录进入最终镜像。测试会在 Docker 构建前完成。
 
 ## 当前定制功能
 
@@ -150,7 +135,7 @@ custom-overlay/files/
 3. 不在启动时删除表、删除列或清空历史账单。
 4. 新列必须有兼容旧数据的默认值或允许为空。
 5. 修改结构后必须通过 `tests/test_sqlite_billing_schema.py`。
-6. 生产更新前备份 `credentials.db`，数据库文件不得进入覆盖层或镜像。
+6. 生产更新前备份 `credentials.db`，数据库文件不得进入仓库或镜像。
 
 ## 环境变量参考
 
@@ -251,7 +236,7 @@ custom-overlay/files/
 通常不需要传参数。必要时可以通过环境变量覆盖：
 
 ```bash
-UPSTREAM_BRANCH=master \
+BUILD_REF=main \
 IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 ./scripts/build-and-push.sh
 ```
@@ -260,9 +245,7 @@ IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 
 | 变量 | 默认值 |
 | --- | --- |
-| `UPSTREAM_URL` | `https://github.com/su-kaka/gcli2api.git` |
-| `UPSTREAM_BRANCH` | `master` |
-| `CUSTOM_OVERLAY_DIR` | `custom-overlay/files` |
+| `BUILD_REF` | `HEAD`；要构建的 commit/分支/tag，只有已提交内容会进镜像 |
 | `IMAGE_NAME` | `ghcr.io/wzh0718/gcl2api-plus` |
 | `SOURCE_URL` | `https://github.com/Wzh0718/gcl2api-plus`；写入 `org.opencontainers.image.source` 标签 |
 | `PLATFORMS` | `linux/amd64,linux/arm64`；只需 amd64 时设为 `linux/amd64` |
@@ -274,8 +257,8 @@ IMAGE_NAME=ghcr.io/wzh0718/gcl2api-plus \
 
 | 标签 / 注释 | 内容 |
 | --- | --- |
-| `org.opencontainers.image.source` | 本 fork 仓库（真正构建发布方）；GitHub 用它做「包 → 仓库」关联 |
-| `org.opencontainers.image.revision` | 本次构建使用的上游 commit sha |
+| `org.opencontainers.image.source` | 本仓库（真正构建发布方）；GitHub 用它做「包 → 仓库」关联 |
+| `org.opencontainers.image.revision` | 本次构建使用的本仓库 commit sha |
 | `org.opencontainers.image.created` | 构建时间（上海时区） |
 | `org.opencontainers.image.title` / `description` | 来自 `Dockerfile`；多架构时同时写入 manifest index 注释 |
 
@@ -293,4 +276,4 @@ RELEASE_DATE=20260727 ./scripts/build-and-push.sh
 ghcr.io/wzh0718/gcl2api-plus:v20260727
 ```
 
-日期 Tag 提供可追溯的发布锚点；镜像标签中还记录了构建使用的上游 Git Commit。
+日期 Tag 提供可追溯的发布锚点；镜像标签中还记录了构建使用的 Git Commit。

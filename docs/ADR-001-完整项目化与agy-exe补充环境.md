@@ -1,9 +1,14 @@
 # ADR-001：gcli2api 架构演进——完整项目化与 agy exe 补充环境
 
-> 状态：**待评审**
+> 状态：**阶段 1 已落地（2026-10-16）**；阶段 0/2 待评审
 > 日期：2026-10-14
 > 依据：Antigravity IDE v2.23.1（language_server CL 998881661）逆向报告（`/home/libre/project/antigravity-re/REPORT.md`）+ gcli2api 现状代码走读
 > 评审人：libre
+>
+> **落地记录（2026-10-16）**：方案 C 阶段 1「完整项目化」已执行——上游 master（105 commits）合入主干，
+> `custom-overlay/` 删除，`scripts/build-and-push.sh` 改为本仓库 `git archive` 直接构建，
+> CI 每日自动同步改为仅手动触发（`.github/workflows/ghcr-release.yml`），
+> 开发文档见 `docs/CUSTOMIZATION.md`。阶段 0（协议对齐）与阶段 2（sidecar 控制面）尚未执行。
 
 ---
 
