@@ -108,8 +108,8 @@ async def generate_content(
     normalized_dict["model"] = real_model
 
     # 规范化 Gemini 请求 (使用 antigravity 模式)
-    from src.converter.antigravity_fix import normalize_antigravity_request
-    normalized_dict = await normalize_antigravity_request(normalized_dict)
+    from src.converter.gemini_fix import normalize_gemini_request
+    normalized_dict = await normalize_gemini_request(normalized_dict, mode="antigravity")
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {
@@ -179,10 +179,10 @@ async def stream_generate_content(
 
     # ========== 假流式生成器 ==========
     async def fake_stream_generator():
-        from src.converter.antigravity_fix import normalize_antigravity_request
+        from src.converter.gemini_fix import normalize_gemini_request
         from src.api.antigravity import non_stream_request
 
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="antigravity")
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
@@ -242,14 +242,14 @@ async def stream_generate_content(
 
     # ========== 流式抗截断生成器 ==========
     async def anti_truncation_generator():
-        from src.converter.antigravity_fix import normalize_antigravity_request
+        from src.converter.gemini_fix import normalize_gemini_request
         from src.converter.anti_truncation import AntiTruncationStreamProcessor
         from src.converter.anti_truncation import apply_anti_truncation
         from src.api.antigravity import stream_request
         from fastapi import Response
 
         # 先进行基础标准化
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="antigravity")
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
@@ -342,11 +342,11 @@ async def stream_generate_content(
 
     # ========== 普通流式生成器 ==========
     async def normal_stream_generator():
-        from src.converter.antigravity_fix import normalize_antigravity_request
+        from src.converter.gemini_fix import normalize_gemini_request
         from src.api.antigravity import stream_request
         from fastapi import Response
 
-        normalized_req = await normalize_antigravity_request(normalized_dict.copy())
+        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="antigravity")
 
         # 准备API请求格式 - 提取model并将其他字段放入request中
         api_request = {
