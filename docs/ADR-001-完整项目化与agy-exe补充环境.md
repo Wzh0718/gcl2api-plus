@@ -10,10 +10,10 @@
 > CI 每日自动同步改为仅手动触发（`.github/workflows/ghcr-release.yml`），
 > 开发文档见 `docs/CUSTOMIZATION.md`。
 > **阶段 0（协议对齐）已部分执行（2026-10-16，libre 拍板「补齐环境」）**：
-> ① 非图片请求改走官方聊天通道（`requestType:"chat"` + `chat/<uuid>`，去 labels/enabledCreditTypes，
-> 恒发 sessionId/systemInstruction，tools 存在才补 toolConfig）；
-> ② 登录/检验与健康检查链路补发 `fetchUserInfo` + `listExperiments`（`updateChannel:"stable"`）；
-> ③ 上游失败日志带 `x-cloudaicompanion-trace-id`。
+> ① 登录/检验与健康检查链路补发 `fetchUserInfo` + `listExperiments`（`updateChannel:"stable"`）；
+> ② 上游失败日志带 `x-cloudaicompanion-trace-id`。
+> requestType 曾改为 chat，经抓包复核后 **libre 拍板回退维持 agent**（chat/agent 是同一会话模式标记，
+> 服务端均接受，无修改必要；2026-10-16）。
 > UA 维持 cli 面指纹（保 33 模型菜单），hub 面对齐与阶段 2（sidecar 控制面）尚未执行。
 
 ---
