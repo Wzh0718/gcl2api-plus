@@ -1101,6 +1101,10 @@ function createCredCard(credInfo, manager) {
         };
         const [eligibilityLabel, eligibilityColor] = eligibilityLabels[credInfo.eligibility_status] || eligibilityLabels.unchecked;
         statusBadges += `<span class="status-badge" style="background-color: ${eligibilityColor}; color: white;" title="出口 IP 与 Antigravity 地区资格检测结果">${eligibilityLabel}</span>`;
+        // 条款封禁（TOS_VIOLATION）：Google 永久停用该账号，需提交申诉恢复
+        if (credInfo.tos_banned) {
+            statusBadges += `<span class="status-badge" style="background-color: #b71c1c; color: white;" title="Google 以违反服务条款（TOS_VIOLATION）停用了该账号：已自动禁用并停止参与调度。请通过 Google 申诉链接提交申诉，申诉通过后重新启用即可恢复">账号待申诉</span>`;
+        }
         if (credInfo.binding_status === 'proxy_drift' || credInfo.binding_status === 'proxy_failed') {
             statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="绑定代理异常，需要重新检测或重绑">${credInfo.binding_status === 'proxy_drift' ? 'IP 漂移' : '代理失败'}</span>`;
         }

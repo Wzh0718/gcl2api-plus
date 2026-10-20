@@ -322,6 +322,7 @@ async def get_creds_status_common(
                 "eligibility_checked_at"
             )
             cred_info["last_403_category"] = summary.get("last_403_category")
+            cred_info["tos_banned"] = bool(summary.get("tos_banned"))
 
         creds_list.append(cred_info)
 

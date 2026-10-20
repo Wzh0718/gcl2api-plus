@@ -3262,7 +3262,8 @@ class SQLiteManager:
                                a.bound_proxy_node_id, n.name,
                                h.egress_ip, h.egress_country, h.binding_status,
                                h.eligibility_status, h.eligibility_checked_at,
-                               h.last_403_category
+                               h.last_403_category, h.last_403_reason,
+                               h.eligibility_reason
                         FROM {table_name} a
                         LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                         LEFT JOIN antigravity_account_health h
@@ -3336,6 +3337,15 @@ class SQLiteManager:
                             summary["eligibility_status"] = row[16] or "unchecked"
                             summary["eligibility_checked_at"] = row[17]
                             summary["last_403_category"] = row[18]
+                            # 条款封禁（TOS_VIOLATION）：永久停用，需要提交申诉。
+                            tos_text = " ".join(
+                                str(part or "") for part in (row[19], row[20])
+                            ).lower()
+                            summary["tos_banned"] = bool(
+                                row[18] == "account_forbidden"
+                                or "terms of service" in tos_text
+                                or "tos_violation" in tos_text
+                            )
 
                         if mode == "geminicli":
                             summary["preview"] = bool(row[7]) if row[7] is not None else True
