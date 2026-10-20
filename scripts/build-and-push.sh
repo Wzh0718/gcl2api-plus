@@ -174,6 +174,28 @@ git -C "${REPO_ROOT}" archive "${BUILD_COMMIT}" | tar -x -C "${SOURCE_DIR}"
 [[ -f "${SOURCE_DIR}/Dockerfile" ]] || die "导出的源码缺少 Dockerfile。"
 printf '已导出 %s 个文件。\n' "$(find "${SOURCE_DIR}" -type f | wc -l | tr -d ' ')"
 
+printf '\n==> 注入前端资源版本（%s）\n' "${BUILD_COMMIT:0:12}"
+# 发版时把 front/*.html 中的 ?v= 统一重写为 commit 短哈希，
+# 保证每次发布浏览器都会重新拉取 common.js / control_panel.css，
+# 避免 HTML 与 JS 版本错配（典型症状：toggleTabDropdown is not defined）。
+python3 - "${SOURCE_DIR}/front" "${BUILD_COMMIT:0:12}" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+pattern = re.compile(r"\?v=[A-Za-z0-9._-]+")
+count = 0
+for html in sorted(root.glob("*.html")):
+    text = html.read_text(encoding="utf-8")
+    new, n = pattern.subn(f"?v={version}", text)
+    if n:
+        html.write_text(new, encoding="utf-8")
+        count += n
+print(f"前端资源版本串已更新 {count} 处（{version}）。")
+PY
+
 printf '\n==> 运行发布质量检查\n'
 run_quality_gates
 
