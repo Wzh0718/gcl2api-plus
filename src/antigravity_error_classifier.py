@@ -51,6 +51,16 @@ _ACCOUNT_PERMISSION_MARKERS = (
     "access has been revoked",
 )
 
+# 明确的条款封禁：账号被 Google 永久停用（TOS_VIOLATION）。
+# 这类 403 的响应文本本身就是权威结论，不依赖缓存的健康状态，
+# 否则账号会被反复选中又反复 403（曾出现单账号 10 小时吞掉全部流量）。
+_TOS_VIOLATION_MARKERS = (
+    "violation of terms of service",
+    "tos_violation",
+    "service has been disabled in this account",
+    "submit an appeal",
+)
+
 
 def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
@@ -74,6 +84,14 @@ def classify_antigravity_403(
         health.get("eligibility_status") or "unchecked"
     ).lower()
     normalized = " ".join(str(error_text or "").lower().split())
+
+    # 条款封禁（TOS_VIOLATION）是明确的账号级永久停用：
+    # 响应文本已足够权威，不再要求缓存健康状态为 eligible。
+    if _contains_any(normalized, _TOS_VIOLATION_MARKERS):
+        return Antigravity403Decision(
+            category="account_forbidden",
+            disable_account=True,
+        )
 
     if binding_status in {"proxy_drift", "proxy_failed"}:
         return Antigravity403Decision(
