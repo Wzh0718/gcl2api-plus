@@ -66,9 +66,9 @@ services:
         max-file: "3"
     healthcheck:
       # 优先使用分离密码 API_PASSWORD；仅设置通用 PASSWORD 时回退到它
-      test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); pw = os.environ.get('API_PASSWORD') or os.environ.get('PASSWORD', 'pwd'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + pw}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).getcode() == 200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); pw = os.environ.get('API_PASSWORD') or os.environ.get('PASSWORD', 'pwd'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + pw}); sys.exit(0 if urllib.request.urlopen(req, timeout=10).getcode() == 200 else 1)\""]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
       start_period: 40s
 
