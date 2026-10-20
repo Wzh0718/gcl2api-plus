@@ -1071,7 +1071,17 @@ function createCredCard(credInfo, manager) {
     const tier = credInfo.tier ? credInfo.tier.toString().toLowerCase() : 'unknown';
     const tierLabel = tier.toUpperCase();
     const tierColor = tier === 'ultra' ? '#ff9800' : (tier === 'free' ? '#607d8b' : (tier === 'pro' ? '#2e7d32' : '#9e9e9e'));
-    statusBadges += `<span class="status-badge" style="background-color: ${tierColor}; color: white;" title="凭证等级: ${tierLabel}">Tier: ${tierLabel}</span>`;
+    // 实时档位校准（antigravity）：额度查询顺带 loadCodeAssist 拿到的 paidTier。
+    // 检出降档（Starter Quota）时以实时档位为准标红，避免 DB 导入快照误导排查。
+    const livePaidTier = managerType === 'antigravity'
+        ? (AppState.antigravityQuotaOverview.data[filename] || {}).paid_tier
+        : null;
+    if (livePaidTier && livePaidTier.degraded) {
+        const liveName = escapeHtml(livePaidTier.name || 'Antigravity Starter Quota');
+        statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="实时档位: ${liveName}（数据库导入时记录: ${tierLabel}）。Google 已将该账号降为 Starter 配额：仅周限额、无 5 小时窗口，以实时档位为准">已降档: STARTER</span>`;
+    } else {
+        statusBadges += `<span class="status-badge" style="background-color: ${tierColor}; color: white;" title="凭证等级: ${tierLabel}">Tier: ${tierLabel}</span>`;
+    }
 
     // Credit 状态显示（仅 antigravity）
     if (managerType === 'antigravity') {
@@ -1184,7 +1194,7 @@ function createCredCard(credInfo, manager) {
             <div class="cred-status">${statusBadges}</div>
         </div>
         <div class="cred-actions">${actionButtons}</div>
-        ${managerType === 'antigravity' ? buildAntigravityQuotaOverviewInline(filename) : ''}
+        ${managerType === 'antigravity' ? buildAntigravityTierDegradedNotice(filename) + buildAntigravityQuotaOverviewInline(filename) : ''}
         <div class="cred-details" id="details-${pathId}">
             <div class="cred-content" data-filename="${filename}" data-loaded="false">点击"查看内容"按钮加载文件详情...</div>
         </div>
@@ -3735,6 +3745,18 @@ async function toggleAntigravityQuotaDetails(pathId) {
                     const models = data.models || {};
                     const groups = data.groups || null;
 
+                    // 实时付费档位（loadCodeAssist paidTier）：检出降档时红色警示
+                    const paidTier = data.paid_tier || null;
+                    let paidTierHTML = '';
+                    if (paidTier && (paidTier.name || paidTier.id)) {
+                        const ptName = escapeHtml(paidTier.name || paidTier.id);
+                        if (paidTier.degraded) {
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #fff5f5; border: 1px solid #f5c6cb; border-left: 4px solid #c62828; border-radius: 6px; font-size: 12px; color: #c62828;">⚠️ 实时档位：<b>${ptName}</b> —— 该账号已被 Google 降档（仅周限额、无 5 小时窗口；凭证库内导入时的档位快照可能仍为旧值）</div>`;
+                        } else {
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #f0f7f0; border: 1px solid #c8e6c9; border-left: 4px solid #2e7d32; border-radius: 6px; font-size: 12px; color: #2e7d32;">实时档位：<b>${ptName}</b></div>`;
+                        }
+                    }
+
                     // 分组额度（weekly/5h 窗口）区块——来自 retrieveUserQuotaSummary
                     let groupsHTML = '';
                     if (groups && groups.length > 0) {
@@ -3798,6 +3820,7 @@ async function toggleAntigravityQuotaDetails(pathId) {
                                 </h4>
                                 <div style="font-size: 12px; opacity: 0.9; margin-top: 5px;">文件: ${filename}</div>
                             </div>
+                            ${paidTierHTML}
                             ${groupsHTML}
                             <div style="font-size: 12px; color: #888; margin-bottom: 6px;">以下为各模型 5 小时窗口剩余（同组模型共享，来自 fetchAvailableModels）：</div>
                             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;">
@@ -4116,6 +4139,14 @@ function renderAntigravityQuotaSummary() {
             </div>
             ${segments.length > 0 ? `<div style="display:flex;height:8px;background:#e9ecef;border-radius:4px;overflow:hidden;margin-top:6px;">${segments.join('')}</div>` : ''}
         </div>`;
+}
+
+function buildAntigravityTierDegradedNotice(filename) {
+    const entry = AppState.antigravityQuotaOverview.data[filename];
+    const paidTier = entry && entry.paid_tier;
+    if (!paidTier || !paidTier.degraded) return '';
+    const liveName = escapeHtml(paidTier.name || 'Antigravity Starter Quota');
+    return `<div class="quota-inline-bar" style="margin-top:6px;padding:4px 10px;background:#fff5f5;border:1px solid #f5c6cb;border-radius:4px;font-size:11px;color:#c62828;" title="loadCodeAssist 实时返回 paidTier = ${liveName}">⚠️ 该账号已被 Google 降档为 ${liveName}（仅周限额、无 5 小时窗口）</div>`;
 }
 
 function buildAntigravityQuotaOverviewInline(filename) {

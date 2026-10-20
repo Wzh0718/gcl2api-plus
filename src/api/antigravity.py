@@ -2309,6 +2309,59 @@ async def fetch_quota_info(
         }
 
 
+# loadCodeAssist paidTier 的「降档」档位名：付费资格被 Google 回收的账号，
+# paidTier 会显示为该名称（实测表现：仅剩周限额、没有 5h 窗口、Argon 被禁用）。
+ANTIGRAVITY_STARTER_QUOTA_NAME = "Antigravity Starter Quota"
+
+
+async def fetch_paid_tier_info(
+    access_token: str,
+    proxy_url: Any = ...,
+) -> Optional[Dict[str, Any]]:
+    """
+    调用 v1internal:loadCodeAssist 获取账号实时付费档位（paidTier）。
+
+    背景：凭证导入时持久化的 tier 是快照；账号被 Google 降档后（paidTier 变成
+    "Antigravity Starter Quota"）面板仍显示旧档位，会误导排查。额度查询时
+    顺带用本函数校准。
+
+    Returns:
+        {"id": paidTier.id, "name": paidTier.name, "degraded": bool}；
+        请求失败或响应中没有 paidTier 时返回 None（best-effort，不影响额度查询）。
+    """
+    try:
+        headers = build_antigravity_headers(access_token)
+        response = await _post_with_host_fallback(
+            "/v1internal:loadCodeAssist",
+            headers,
+            json_body={"metadata": {"ideType": "ANTIGRAVITY"}},
+            proxy_url=proxy_url,
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            log.warning(
+                f"[ANTIGRAVITY TIER] loadCodeAssist failed ({response.status_code}): {response.text[:200]}"
+            )
+            return None
+
+        data = response.json()
+        paid_tier = data.get("paidTier")
+        if not isinstance(paid_tier, dict):
+            return None
+        tier_id = paid_tier.get("id")
+        name = paid_tier.get("name")
+        if not tier_id and not name:
+            return None
+
+        degraded = name == ANTIGRAVITY_STARTER_QUOTA_NAME
+        if degraded:
+            log.info(f"[ANTIGRAVITY TIER] 账号已被降档为 {ANTIGRAVITY_STARTER_QUOTA_NAME}")
+        return {"id": tier_id, "name": name, "degraded": degraded}
+    except Exception as e:
+        log.warning(f"[ANTIGRAVITY TIER] loadCodeAssist error: {e}")
+        return None
+
+
 async def _fetch_quota_summary_groups(
     headers: Dict[str, str],
     proxy_url: Any = ...,

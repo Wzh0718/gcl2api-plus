@@ -23,7 +23,7 @@ from src.models import (
 )
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, get_antigravity_user_agent
-from src.api.antigravity import fetch_quota_info
+from src.api.antigravity import fetch_quota_info, fetch_paid_tier_info
 from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from src.proxy_groups import proxy_argument_from_network
 from config import get_code_assist_endpoint, get_antigravity_api_url
@@ -1351,11 +1351,16 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
         )
 
         if quota_info.get("success"):
+            # 顺带用 loadCodeAssist 的 paidTier 校准实时档位：凭证库里的 tier 是
+            # 导入时快照，账号被 Google 降档（Starter Quota）后仍显示旧档位会误导排查。
+            # best-effort，失败时为 None，不影响额度返回。
+            paid_tier = await fetch_paid_tier_info(access_token, proxy_url=creds.proxy_url)
             return {
                 "success": True,
                 "filename": filename,
                 "models": quota_info.get("models", {}),
                 "groups": quota_info.get("groups"),
+                "paid_tier": paid_tier,
             }
         return {
             "success": False,
