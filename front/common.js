@@ -1029,17 +1029,12 @@ function getVisibleCredentialErrorCodes(status, modelCooldowns, managerType, now
 }
 
 // =====================================================================
-// 凭证卡片创建（通用）
+// 凭证卡片状态徽章（创建卡片与冷却到期精准更新共用）
 // =====================================================================
-function createCredCard(credInfo, manager) {
-    const div = document.createElement('div');
+function buildCredStatusBadges(credInfo, manager) {
     const { status, filename } = credInfo;
     const managerType = manager.type;
 
-    // 卡片样式
-    div.className = status.disabled ? 'cred-card disabled' : 'cred-card';
-
-    // 状态徽章
     let statusBadges = '';
     statusBadges += status.disabled
         ? '<span class="status-badge disabled">已禁用</span>'
@@ -1147,6 +1142,23 @@ function createCredCard(credInfo, manager) {
             }
         }
     }
+
+    return statusBadges;
+}
+
+// =====================================================================
+// 凭证卡片创建（通用）
+// =====================================================================
+function createCredCard(credInfo, manager) {
+    const div = document.createElement('div');
+    const { status, filename } = credInfo;
+    const managerType = manager.type;
+
+    // 卡片样式
+    div.className = status.disabled ? 'cred-card disabled' : 'cred-card';
+
+    // 状态徽章
+    const statusBadges = buildCredStatusBadges(credInfo, manager);
 
     // 路径ID
     const pathId = (managerType === 'antigravity' ? 'ag_' : '') + btoa(encodeURIComponent(filename)).replace(/[+/=]/g, '_');
@@ -5745,7 +5757,7 @@ function updateCooldownDisplays() {
 
     // 到期后立刻从本地状态移除冷却；Antigravity 的临时 429 同步恢复为无错误。
     managers.forEach(manager => {
-        let needsRender = false;
+        const changedFilenames = [];
         for (const credInfo of Object.values(manager.data)) {
             const cooldowns = credInfo.model_cooldowns || {};
             const expiredModels = Object.entries(cooldowns)
@@ -5758,9 +5770,24 @@ function updateCooldownDisplays() {
                 credInfo.status.error_codes = (credInfo.status.error_codes || [])
                     .filter(code => Number(code) !== 429);
             }
-            needsRender = true;
+            changedFilenames.push(credInfo.filename);
         }
-        if (needsRender) manager.renderList();
+        // 精准更新：只重建受影响卡片的状态徽章区，不做整表 renderList，
+        // 避免冷却到期把用户展开的「查看额度/查看内容/查看报错」面板收回去。
+        if (changedFilenames.length > 0) {
+            const list = document.getElementById(manager.getElementId('CredsList'));
+            if (!list) return;
+            const changed = new Set(changedFilenames);
+            list.querySelectorAll('.cred-card').forEach(card => {
+                const filename = card.querySelector('.cred-filename')?.textContent;
+                if (!filename || !changed.has(filename)) return;
+                const credInfo = manager.data[filename];
+                const statusDiv = card.querySelector('.cred-status');
+                if (credInfo && statusDiv) {
+                    statusDiv.innerHTML = buildCredStatusBadges(credInfo, manager);
+                }
+            });
+        }
     });
 
     // 更新模型级冷却的显示

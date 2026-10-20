@@ -110,27 +110,58 @@ def test_visible_429_error_expires_with_its_short_cooldown():
     assert values == [[429], [], [403], [429]]
 
 
-def test_cooldown_timer_rerenders_antigravity_credentials_after_expiry():
+def test_cooldown_timer_updates_badges_in_place_without_full_rerender():
+    """冷却到期只做受影响卡片的徽章精准更新，不整表 renderList。
+
+    整表重建会把展开的「查看额度/查看内容/查看报错」面板收回去（innerHTML 重建后
+    面板回到 display:none），这里锁定新契约：冷却/429 状态照常清理、受影响卡片的
+    状态徽章就地替换、renderList 不被调用。
+    """
     values = _run_common_js_slice(
         "function updateCooldownDisplays",
         "// 版本信息管理",
         """
+        function buildCredStatusBadges(credInfo, manager) {
+            return 'BADGES<' + manager.type + '>';
+        }
         let normalRenders = 0;
         let antigravityRenders = 0;
+        const statusDiv = {};
+        const listEl = {
+            querySelectorAll() {
+                return [{
+                    querySelector(sel) {
+                        if (sel === '.cred-filename') return {textContent: 'account.json'};
+                        if (sel === '.cred-status') return statusDiv;
+                        return null;
+                    }
+                }];
+            }
+        };
         const AppState = {
-            creds: {type: 'normal', data: {}, renderList() { normalRenders += 1; }},
+            creds: {
+                type: 'normal',
+                data: {},
+                renderList() { normalRenders += 1; },
+                getElementId(s) { return s; }
+            },
             antigravityCreds: {
                 type: 'antigravity',
                 data: {
                     'account.json': {
+                        filename: 'account.json',
                         status: {error_codes: [429]},
                         model_cooldowns: {m: 999}
                     }
                 },
-                renderList() { antigravityRenders += 1; }
+                renderList() { antigravityRenders += 1; },
+                getElementId(s) { return 'antigravity' + s; }
             }
         };
-        const document = {querySelectorAll() { return []; }};
+        const document = {
+            getElementById() { return listEl; },
+            querySelectorAll() { return []; }
+        };
         Date.now = () => 1000 * 1000;
         """,
         """
@@ -139,9 +170,10 @@ def test_cooldown_timer_rerenders_antigravity_credentials_after_expiry():
             normalRenders,
             antigravityRenders,
             AppState.antigravityCreds.data['account.json'].status.error_codes,
-            AppState.antigravityCreds.data['account.json'].model_cooldowns
+            AppState.antigravityCreds.data['account.json'].model_cooldowns,
+            statusDiv.innerHTML || null
         ]));
         """,
     )
 
-    assert values == [0, 1, [], {}]
+    assert values == [0, 0, [], {}, "BADGES<antigravity>"]
