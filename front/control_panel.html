@@ -2207,6 +2207,33 @@
                             <p>为 Antigravity 调用方创建独立密钥，并按金额设置不限额、手动重置或每月自动重置的额度。环境配置密钥继续保留为只读兼容入口。</p>
                         </div>
                     </header>
+                <div
+                    style="background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;">
+                    <strong>📡 API地址（点击复制）：</strong>
+                    <table style="margin-top:6px;border-collapse:collapse;width:100%;">
+                        <tr>
+                            <td style="color:#666;width:90px;">OpenAI格式</td>
+                            <td><code id="antOpenaiUrl" onclick="cpUrl(this)" title="点击复制"
+                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;">Claude格式</td>
+                            <td><code id="antClaudeUrl" onclick="cpUrl(this)" title="点击复制"
+                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="color:#666;">Gemini格式</td>
+                            <td><code id="antGeminiUrl" onclick="cpUrl(this)" title="点击复制"
+                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
+                            </td>
+                        </tr>
+                    </table>
+                    <script>
+                        (function () { var o2 = window.location.origin; document.getElementById('antOpenaiUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antClaudeUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antGeminiUrl').textContent = o2 + '/antigravity'; })();
+                    </script>
+                </div>
                     <form id="apiKeyCreateForm" class="api-key-create" onsubmit="return createApiKey(event)">
                         <label>密钥名称<input id="apiKeyCreateName" type="text" maxlength="100" required placeholder="例如：研发团队"></label>
                         <label>金额额度<input id="apiKeyCreateQuota" type="number" min="0" step="0.01" placeholder="留空为不限额"></label>
@@ -2686,34 +2713,6 @@
                     <h2>Antigravity 凭证管理</h2>
                     <p>查看账号状态、额度、错误码与网络策略，并执行批量运维操作。</p>
                 </header>
-                <div
-                    style="background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;">
-                    <strong>📡 API地址（点击复制）：</strong>
-                    <table style="margin-top:6px;border-collapse:collapse;width:100%;">
-                        <tr>
-                            <td style="color:#666;width:90px;">OpenAI格式</td>
-                            <td><code id="antOpenaiUrl" onclick="cpUrl(this)" title="点击复制"
-                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="color:#666;">Claude格式</td>
-                            <td><code id="antClaudeUrl" onclick="cpUrl(this)" title="点击复制"
-                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
-                            </td>
-                        </tr>
-                        <tr>
-                            <td style="color:#666;">Gemini格式</td>
-                            <td><code id="antGeminiUrl" onclick="cpUrl(this)" title="点击复制"
-                                    style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
-                            </td>
-                        </tr>
-                    </table>
-                    <script>
-                        (function () { var o2 = window.location.origin; document.getElementById('antOpenaiUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antClaudeUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antGeminiUrl').textContent = o2 + '/antigravity'; })();
-                    </script>
-                </div>
-
                 <!-- 检验功能说明 -->
                 <div class="status info" style="margin-bottom: 20px;">
                     <strong>💡 检验功能说明：</strong>

@@ -2703,6 +2703,21 @@ class SQLiteManager:
         if api_key_id:
             clauses.append("api_key_id = ?")
             params.append(api_key_id)
+        # 条款封禁（TOS_VIOLATION）账号的调用记录不计入统计：
+        # 这类账号已被永久停用，历史失败（曾达数十万次）会污染账号/密钥视图。
+        clauses.append(
+            """credential_name NOT IN (
+                SELECT a.filename
+                FROM antigravity_credentials a
+                LEFT JOIN antigravity_account_health h
+                       ON h.credential_name = a.filename
+                WHERE COALESCE(h.last_403_category, '') = 'account_forbidden'
+                   OR lower(COALESCE(h.last_403_reason, '')) LIKE '%terms of service%'
+                   OR lower(COALESCE(h.eligibility_reason, '')) LIKE '%terms of service%'
+                   OR lower(COALESCE(h.last_403_reason, '')) LIKE '%tos_violation%'
+                   OR lower(COALESCE(h.eligibility_reason, '')) LIKE '%tos_violation%'
+            )"""
+        )
         return " AND ".join(clauses), params
 
     async def list_call_records(
