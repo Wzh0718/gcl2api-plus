@@ -1264,6 +1264,20 @@
         .cm-rate-ok { color: #28a745; }
         .cm-rate-warn { color: #e6a23c; }
         .cm-rate-fail { color: #dc3545; }
+        .cm-upstream-model { color: #b7791f; background: #fdf3e0; border-radius: 4px; padding: 0 4px; font-weight: 600; }
+        .cm-group-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+        .cm-group-summary { color: #868e96; font-size: 11px; }
+        .cm-group-actions { display: flex; gap: 5px; }
+        .cm-group-btn { padding: 4px 8px; border: 1px solid #ced4da; border-radius: 6px; background: #fff; color: #495057; font: inherit; font-size: 11px; }
+        .cm-table tbody tr.cm-group-row td { background: #f8fafc; font-weight: 600; }
+        .cm-group-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: none; background: transparent; color: inherit; font: inherit; }
+        .cm-group-toggle .cm-key-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+        .cm-caret { display: inline-block; width: 12px; color: #868e96; font-size: 10px; transition: transform .15s ease; }
+        .cm-caret.expanded { transform: rotate(90deg); }
+        .cm-group-accounts { padding: 1px 5px; border-radius: 999px; background: #eef2f7; color: #6b7684; font-size: 10px; font-weight: 600; }
+        .cm-table tbody tr.cm-child-row td { color: #495057; }
+        .cm-child-cell { padding-left: 24px !important; color: #6b7684; }
+        .cm-table tbody tr.cm-group-more td { text-align: center; color: #868e96; font-size: 11px; background: #fbfcfe; }
         .cm-empty { padding: 44px 14px; text-align: center; }
         .cm-empty-icon { width: 52px; height: 52px; margin-bottom: 12px; }
         .cm-empty-text { font-size: 13px; color: #495057; margin-bottom: 6px; }
@@ -2066,9 +2080,11 @@
                 <div class="cm-toolbar">
                     <div class="cm-views" role="tablist" aria-label="调用监控视图切换">
                         <button type="button" class="cm-chip active" data-view="account"
+                            title="按上游账号 × 模型查看调用明细"
                             onclick="setCallMonitorView('account')">账号 <span class="cm-count"
                                 id="cmCountAccount">0</span></button>
                         <button type="button" class="cm-chip" data-view="key"
+                            title="按密钥 → 账号两级查看：先看每个密钥的汇总，展开看它在各上游账号上的调用"
                             onclick="setCallMonitorView('key')">API Key <span class="cm-count"
                                 id="cmCountKey">0</span></button>
                         <button type="button" class="cm-chip" data-view="realtime"
@@ -2645,7 +2661,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=stability-20261020"></script>
+    <script src="./front/common.js?v=cm-key-account-20261020"></script>
 </body>
 
 </html>

@@ -13,7 +13,8 @@ async def _make_adapter(tmp_path, monkeypatch):
 
 
 def _record_kwargs(request_id, *, created_at=None, success=True, api_key_id="key-1",
-                   credential_name="acc-a.json", model_name="gemini-3-pro", total_tokens=100):
+                   credential_name="acc-a.json", model_name="gemini-3-pro",
+                   request_model="", upstream_model="", total_tokens=100):
     return {
         "request_id": request_id,
         "created_at": created_at if created_at is not None else time.time(),
@@ -21,6 +22,8 @@ def _record_kwargs(request_id, *, created_at=None, success=True, api_key_id="key
         "credential_name": credential_name,
         "channel": "antigravity",
         "model_name": model_name,
+        "request_model": request_model,
+        "upstream_model": upstream_model,
         "task_type": "chat",
         "success": success,
         "status_code": 200 if success else 429,
@@ -114,6 +117,173 @@ async def test_aggregate_call_records_by_key_and_account(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         await backend.aggregate_call_records(group_by="model_name", since_ts=0)
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_aggregate_key_account_usage_nests_by_key_and_account(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    backend = adapter._backend
+    now = time.time()
+
+    await backend.insert_call_record(
+        **_record_kwargs("ka1", created_at=now - 40, upstream_model="gemini-3-pro-high")
+    )
+    await backend.insert_call_record(
+        **_record_kwargs("ka2", created_at=now - 30, success=False,
+                         upstream_model="gemini-3-pro-high")
+    )
+    await backend.insert_call_record(
+        **_record_kwargs("kb1", created_at=now - 20, credential_name="acc-b.json",
+                         model_name="gemini-3-flash", upstream_model="gemini-3-flash-n",
+                         total_tokens=50)
+    )
+    await backend.insert_call_record(
+        **_record_kwargs("kc1", created_at=now - 10, api_key_id="key-2",
+                         upstream_model="gemini-3-pro-high")
+    )
+
+    rows = await backend.aggregate_key_account_usage(since_ts=now - 100)
+    pairs = {(row["api_key_id"], row["credential_name"]): row for row in rows}
+    assert set(pairs) == {
+        ("key-1", "acc-a.json"),
+        ("key-1", "acc-b.json"),
+        ("key-2", "acc-a.json"),
+    }
+
+    acc_a = pairs[("key-1", "acc-a.json")]
+    assert acc_a["group_key"] == "key-1"
+    assert acc_a["total"] == 2
+    assert acc_a["success_count"] == 1 and acc_a["failed_count"] == 1
+    assert acc_a["success_rate"] == 50.0
+    assert acc_a["total_tokens"] == 200
+    # 最近一次调用是失败（ka2）
+    assert acc_a["last_success"] is False and acc_a["last_status_code"] == 429
+    # 模型不拆行，只回填调用量最大的请求模型 / 上游物理模型
+    assert acc_a["top_model"] == "gemini-3-pro"
+    assert acc_a["top_model_calls"] == 2
+    assert acc_a["top_upstream_model"] == "gemini-3-pro-high"
+    assert acc_a["top_upstream_calls"] == 2
+
+    acc_b = pairs[("key-1", "acc-b.json")]
+    assert acc_b["total"] == 1
+    assert acc_b["top_upstream_model"] == "gemini-3-flash-n"
+
+    # 排序：组内按账号调用量降序，组间按调用量降序
+    assert (rows[0]["api_key_id"], rows[0]["credential_name"]) == ("key-1", "acc-a.json")
+    assert (rows[1]["api_key_id"], rows[1]["credential_name"]) == ("key-1", "acc-b.json")
+
+    failed = await backend.aggregate_key_account_usage(since_ts=now - 100, failed_only=True)
+    assert [(row["api_key_id"], row["credential_name"]) for row in failed] == [
+        ("key-1", "acc-a.json")
+    ]
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_overview_key_view_nests_key_and_account(tmp_path, monkeypatch):
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    import src.storage_adapter as sa
+    from src.call_monitor import get_call_monitor
+
+    monkeypatch.setattr(sa, "_storage_adapter", adapter)
+    monitor = await get_call_monitor(adapter)
+    now = time.time()
+    await monitor.record(**_record_kwargs("o1", created_at=now - 20))
+    await monitor.record(**_record_kwargs("o2", created_at=now - 10,
+                                          credential_name="acc-b.json"))
+    await monitor.record(**_record_kwargs("o3", created_at=now - 5, api_key_id="key-2",
+                                          credential_name="acc-b.json"))
+
+    from src.panel.call_monitor import call_monitor_overview
+
+    resp = await call_monitor_overview(
+        view="key", range="all", failed_only=False, _token=None
+    )
+    assert resp["view"] == "key"
+    assert resp["degraded"] is False
+    assert len(resp["rows"]) == 3
+    assert {(row["api_key_id"], row["credential_name"]) for row in resp["rows"]} == {
+        ("key-1", "acc-a.json"),
+        ("key-1", "acc-b.json"),
+        ("key-2", "acc-b.json"),
+    }
+    assert all(row["group_key"] == row["api_key_id"] for row in resp["rows"])
+    assert all("tps" in row for row in resp["rows"])
+
+    # 账号视图继续沿用「账号 × 模型」口径
+    account = await call_monitor_overview(
+        view="account", range="all", failed_only=False, _token=None
+    )
+    assert account["view"] == "account"
+    assert len(account["rows"]) == 2
+    assert all("model_name" in row for row in account["rows"])
+    await adapter.close()
+
+
+def test_aggregate_from_buffer_key_account_dims():
+    from src.panel.call_monitor import _aggregate_from_buffer
+
+    now = time.time()
+
+    def _row(request_id, *, created_at, api_key_id="key-1", credential_name="acc-a.json",
+             model_name="gemini-3-pro", upstream_model="", success=True, total_cost="0.00100000"):
+        return {
+            "request_id": request_id,
+            "created_at": created_at,
+            "api_key_id": api_key_id,
+            "credential_name": credential_name,
+            "channel": "antigravity",
+            "model_name": model_name,
+            "request_model": "",
+            "upstream_model": upstream_model,
+            "task_type": "chat",
+            "success": success,
+            "status_code": 200 if success else 500,
+            "gateway_seconds": 2.0,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_tokens": 0,
+            "thought_tokens": 0,
+            "total_tokens": 15,
+            "total_cost": total_cost,
+            "currency": "CNY",
+        }
+
+    buffer_rows = [
+        _row("b1", created_at=now - 30, upstream_model="gemini-3-pro-high"),
+        _row("b2", created_at=now - 20, upstream_model="gemini-3-pro-high", success=False),
+        _row("b3", created_at=now - 10, credential_name="acc-b.json",
+             model_name="gemini-3-flash", upstream_model="gemini-3-flash-n"),
+    ]
+
+    rows = _aggregate_from_buffer(
+        buffer_rows,
+        dims=("api_key_id", "credential_name"),
+        with_model=False,
+        since_ts=0,
+        failed_only=False,
+    )
+    assert [row["credential_name"] for row in rows] == ["acc-a.json", "acc-b.json"]
+    assert rows[0]["group_key"] == "key-1"
+    assert rows[0]["api_key_id"] == "key-1"
+    assert rows[0]["total"] == 2 and rows[0]["failed_count"] == 1
+    assert rows[0]["top_model"] == "gemini-3-pro"
+    assert rows[0]["top_upstream_model"] == "gemini-3-pro-high"
+    assert rows[0]["last_success"] is False
+
+    # 账号视图仍按模型拆行
+    model_rows = _aggregate_from_buffer(
+        buffer_rows,
+        dims=("credential_name",),
+        with_model=True,
+        since_ts=0,
+        failed_only=False,
+    )
+    assert [(row["group_key"], row["model_name"]) for row in model_rows] == [
+        ("acc-a.json", "gemini-3-pro"),
+        ("acc-b.json", "gemini-3-flash"),
+    ]
+    assert model_rows[0]["total"] == 2
 
 
 @pytest.mark.asyncio

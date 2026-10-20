@@ -2127,7 +2127,7 @@
             .billing-key-filter { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="./front/control_panel.css?v=stability-20261020">
+    <link rel="stylesheet" href="./front/control_panel.css?v=cm-key-account-20261020">
 </head>
 
 <body>
@@ -2865,11 +2865,13 @@
                 <div class="cm-toolbar">
                     <div class="cm-views" role="tablist" aria-label="调用监控视图切换">
                         <button type="button" class="cm-chip active" data-view="account"
+                            title="按上游账号 × 模型查看调用明细"
                             onclick="setCallMonitorView('account')">
                             <svg viewBox="0 0 16 16" class="cm-chip-icon" aria-hidden="true"><path fill="currentColor" d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 1.5c-2.7 0-5.5 1.3-5.5 3.2V14h11v-1.3c0-1.9-2.8-3.2-5.5-3.2Z"/></svg>
                             账号 <span class="cm-count" id="cmCountAccount">0</span>
                         </button>
                         <button type="button" class="cm-chip" data-view="key"
+                            title="按密钥 → 账号两级查看：先看每个密钥的汇总，展开看它在各上游账号上的调用"
                             onclick="setCallMonitorView('key')">
                             <svg viewBox="0 0 16 16" class="cm-chip-icon" aria-hidden="true"><path fill="currentColor" d="M10.5 1a4.5 4.5 0 0 0-4.4 5.5L1 11.6V15h3.4v-2h2v-2h2l1.1-1.1A4.5 4.5 0 1 0 10.5 1Zm1.5 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/></svg>
                             API Key <span class="cm-count" id="cmCountKey">0</span>
@@ -3452,7 +3454,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=stability-20261020"></script>
+    <script src="./front/common.js?v=cm-key-account-20261020"></script>
 
 </body>
 

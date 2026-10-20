@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -66,23 +66,31 @@ def _enrich_rows(rows: List[Dict[str, Any]], range_secs: float) -> List[Dict[str
 def _aggregate_from_buffer(
     buffer_rows: List[Dict[str, Any]],
     *,
-    group_by: str,
+    dims: Sequence[str],
+    with_model: bool,
     since_ts: float,
     failed_only: bool,
 ) -> List[Dict[str, Any]]:
-    """非 SQLite 后端兜底：基于内存缓冲在 Python 侧聚合（仅覆盖最近若干条）。"""
+    """非 SQLite 后端兜底：基于内存缓冲在 Python 侧聚合（仅覆盖最近若干条）。
+
+    dims 是分组维度，例如账号视图用 ("credential_name",)，密钥视图用
+    ("api_key_id", "credential_name")。with_model=False 时不再按模型拆行，
+    改为回填调用量最大的请求模型 / 上游物理模型。
+    """
     grouped: Dict[Any, Dict[str, Any]] = {}
+    model_counts: Dict[Any, Dict[Any, int]] = {}
     for row in buffer_rows:
         if row.get("created_at", 0.0) < since_ts:
             continue
         if failed_only and row.get("success"):
             continue
-        key = (row.get(group_by), row.get("model_name"))
+        dim_values = tuple(row.get(name) for name in dims)
+        key = dim_values + ((row.get("model_name"),) if with_model else ())
         entry = grouped.get(key)
         if entry is None:
-            entry = {
-                "group_key": row.get(group_by),
-                "model_name": row.get("model_name"),
+            entry = {name: value for name, value in zip(dims, dim_values)}
+            entry.update({
+                "group_key": dim_values[0],
                 "total": 0, "success_count": 0, "failed_count": 0,
                 "avg_gateway_seconds": 0.0, "_gw_sum": 0.0, "_gw_n": 0,
                 "last_called_at": 0.0,
@@ -92,7 +100,9 @@ def _aggregate_from_buffer(
                 "task_type": row.get("task_type") or "chat",
                 "channel": row.get("channel") or "antigravity",
                 "last_success": None, "last_status_code": None,
-            }
+            })
+            if with_model:
+                entry["model_name"] = row.get("model_name")
             grouped[key] = entry
         entry["total"] += 1
         if row.get("success"):
@@ -113,8 +123,13 @@ def _aggregate_from_buffer(
             entry["last_called_at"] = row.get("created_at", 0.0)
             entry["last_success"] = bool(row.get("success"))
             entry["last_status_code"] = row.get("status_code")
+        if not with_model:
+            bucket = model_counts.setdefault(key, {})
+            model_key = (row.get("model_name") or "", row.get("upstream_model") or "")
+            bucket[model_key] = bucket.get(model_key, 0) + 1
+
     result = []
-    for entry in grouped.values():
+    for key, entry in grouped.items():
         entry["avg_gateway_seconds"] = (
             round(entry["_gw_sum"] / entry["_gw_n"], 4) if entry["_gw_n"] else 0.0
         )
@@ -124,8 +139,24 @@ def _aggregate_from_buffer(
         entry["total_cost"] = f"{entry['total_cost']:.8f}"
         entry.pop("_gw_sum", None)
         entry.pop("_gw_n", None)
+        if not with_model:
+            top_model, top_model_calls = "", 0
+            top_upstream, top_upstream_calls = "", 0
+            for (model_name, upstream_model), calls in model_counts.get(key, {}).items():
+                if model_name and calls > top_model_calls:
+                    top_model, top_model_calls = model_name, calls
+                if upstream_model and calls > top_upstream_calls:
+                    top_upstream, top_upstream_calls = upstream_model, calls
+            entry["top_model"] = top_model
+            entry["top_model_calls"] = top_model_calls
+            entry["top_upstream_model"] = top_upstream
+            entry["top_upstream_calls"] = top_upstream_calls
         result.append(entry)
-    result.sort(key=lambda item: (-item["total"], str(item["group_key"]), str(item["model_name"])))
+    result.sort(
+        key=lambda item: (-item["total"],)
+        + tuple(str(item.get(name) or "") for name in dims)
+        + ((str(item.get("model_name") or ""),) if with_model else ())
+    )
     return result
 
 
@@ -136,34 +167,57 @@ async def call_monitor_overview(
     failed_only: bool = False,
     _token: str = Depends(verify_panel_token),
 ):
-    """账号 / API Key 维度的聚合调用数据（含成功率、TPS、耗时、用量、花费）。"""
+    """账号 / API Key 维度的聚合调用数据（含成功率、TPS、耗时、用量、花费）。
+
+    account 视图按「账号 × 模型」聚合；key 视图按「密钥 × 账号」聚合（模型不再拆行），
+    由前端折叠成「密钥 → 账号」两级表格。
+    """
     view = _view(view)
     range_name = _range(range)
     since_ts = _since_ts(range_name)
-    group_by = "credential_name" if view == "account" else "api_key_id"
 
     storage = await get_storage_adapter()
     monitor = await get_call_monitor(storage)
     await monitor.preload()
 
-    aggregate = getattr(getattr(storage, "_backend", None), "aggregate_call_records", None)
-    count_records = getattr(getattr(storage, "_backend", None), "count_call_records", None)
-    min_ts_getter = getattr(getattr(storage, "_backend", None), "get_call_records_min_ts", None)
+    backend = getattr(storage, "_backend", None)
+    count_records = getattr(backend, "count_call_records", None)
+    min_ts_getter = getattr(backend, "get_call_records_min_ts", None)
+    aggregate = getattr(backend, "aggregate_call_records", None)
+    aggregate_key_account = getattr(backend, "aggregate_key_account_usage", None)
 
-    degraded = aggregate is None or count_records is None
+    if view == "account":
+        dims: Tuple[str, ...] = ("credential_name",)
+        with_model = True
+        aggregator = aggregate
+    else:
+        dims = ("api_key_id", "credential_name")
+        with_model = False
+        aggregator = aggregate_key_account
+
+    degraded = aggregator is None or count_records is None
     oldest_ts: Optional[float] = None
     if degraded:
         buffer_rows = list(monitor._buffer)
         rows = _aggregate_from_buffer(
-            buffer_rows, group_by=group_by, since_ts=since_ts, failed_only=failed_only
+            buffer_rows,
+            dims=dims,
+            with_model=with_model,
+            since_ts=since_ts,
+            failed_only=failed_only,
         )
         counters = monitor.buffer_counters(since_ts=since_ts)
         if buffer_rows:
             oldest_ts = min(row.get("created_at", 0.0) for row in buffer_rows)
     else:
-        rows = await aggregate(
-            group_by=group_by, since_ts=since_ts, failed_only=failed_only
-        )
+        if view == "account":
+            rows = await aggregate(
+                group_by="credential_name", since_ts=since_ts, failed_only=failed_only
+            )
+        else:
+            rows = await aggregate_key_account(
+                since_ts=since_ts, failed_only=failed_only
+            )
         counters = await count_records(since_ts=since_ts, failed_only=False)
         if min_ts_getter is not None:
             oldest_ts = await min_ts_getter()

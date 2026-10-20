@@ -2045,6 +2045,104 @@ textarea:disabled,
     font-weight: 600;
 }
 
+/* 调用监控：密钥 → 账号 两级视图 */
+.cm-group-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.cm-group-summary {
+    color: #868e96;
+    font-size: 12px;
+}
+
+.cm-group-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.cm-group-btn {
+    padding: 4px 10px;
+    border: 1px solid #ced4da;
+    border-radius: 6px;
+    background: #fff;
+    color: #495057;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.cm-group-btn:hover {
+    border-color: #0d6efd;
+    color: #0d6efd;
+}
+
+.cm-table tbody tr.cm-group-row td {
+    background: #f8fafc;
+    font-weight: 600;
+}
+
+.cm-table tbody tr.cm-group-row:hover td {
+    background: #f1f5fa;
+}
+
+.cm-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.cm-group-toggle .cm-key-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+.cm-caret {
+    display: inline-block;
+    width: 14px;
+    color: #868e96;
+    font-size: 11px;
+    transition: transform .15s ease;
+}
+
+.cm-caret.expanded {
+    transform: rotate(90deg);
+}
+
+.cm-group-accounts {
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #eef2f7;
+    color: #6b7684;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.cm-table tbody tr.cm-child-row td {
+    color: #495057;
+}
+
+.cm-child-cell {
+    padding-left: 32px !important;
+    color: #6b7684;
+}
+
+.cm-table tbody tr.cm-group-more td {
+    text-align: center;
+    color: #868e96;
+    font-size: 12px;
+    background: #fbfcfe;
+}
+
 .cm-code {
     display: inline-block;
     padding: 1px 6px;

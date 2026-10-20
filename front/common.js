@@ -2406,6 +2406,7 @@ const callMonitorState = {
     page: 1,
     pageSize: 20,
     lastData: null,
+    expandedKeys: new Set(), // key 视图里已展开的密钥（API Key ID）
 };
 
 function _cmEscape(value) {
@@ -2415,13 +2416,15 @@ function _cmEscape(value) {
 }
 
 // 脱敏：保留首尾少量字符，中间打码
+// 长标识（API Key / 账号文件名）保留前 8 后 4，避免多个账号被打码成同一个名字
 function _cmMask(value) {
     const s = String(value ?? '');
     if (!s) return '-';
     if (!callMonitorState.mask) return _cmEscape(s);
     if (s === 'env') return 'env（默认密钥）';
     if (s.length <= 6) return _cmEscape(s[0] + '****');
-    return _cmEscape(s.slice(0, 4) + '****' + s.slice(-3));
+    if (s.length <= 16) return _cmEscape(s.slice(0, 4) + '****' + s.slice(-3));
+    return _cmEscape(s.slice(0, 8) + '****' + s.slice(-4));
 }
 
 function _cmFormatTime(ts) {
@@ -2473,6 +2476,25 @@ function _cmRateCell(rate) {
     return `<td class="${cls}" style="font-weight:600;">${rate}%</td>`;
 }
 
+// 密钥视图：展开 / 收起某个密钥下的账号明细
+function toggleCallMonitorKey(apiKeyId) {
+    const key = String(apiKeyId || '');
+    if (!key) return;
+    if (callMonitorState.expandedKeys.has(key)) {
+        callMonitorState.expandedKeys.delete(key);
+    } else {
+        callMonitorState.expandedKeys.add(key);
+    }
+    renderCallMonitor();
+}
+
+function setCallMonitorExpandAll(expand) {
+    const data = callMonitorState.lastData;
+    const groups = data ? _cmKeyGroups(data.rows || []) : [];
+    callMonitorState.expandedKeys = new Set(expand ? groups.map(group => group.key) : []);
+    renderCallMonitor();
+}
+
 function setCallMonitorView(view) {
     if (callMonitorState.view === view) return;
     callMonitorState.view = view;
@@ -2503,6 +2525,9 @@ function _cmTotalPages() {
     if (!data) return 1;
     if (callMonitorState.view === 'realtime') {
         return Math.max(1, parseInt(data.total_pages, 10) || 1);
+    }
+    if (callMonitorState.view === 'key') {
+        return Math.max(1, Math.ceil(_cmKeyGroups(data.rows || []).length / callMonitorState.pageSize));
     }
     return Math.max(1, Math.ceil((data.rows || []).length / callMonitorState.pageSize));
 }
@@ -2639,6 +2664,145 @@ function _cmModelCell(row) {
     return `<td title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</td>`;
 }
 
+// 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
+const CM_KEY_ACCOUNT_LIMIT = 50;
+
+function _cmKeyModelHtml(row) {
+    const model = String(row.top_model || row.model_name || '').trim();
+    const upstream = String(row.top_upstream_model || '').trim();
+    const tips = [];
+    if (model) tips.push(`主要请求模型: ${model}（${row.top_model_calls || 0} 次）`);
+    if (upstream) tips.push(`上游物理模型: ${upstream}（${row.top_upstream_calls || 0} 次）`);
+    if (!model && !upstream) return '-';
+    const title = _cmEscape(tips.join('\n'));
+    if (model && upstream && model !== upstream) {
+        return `<span title="${title}">${_cmEscape(model)} → <span class="cm-upstream-model">${_cmEscape(upstream)}</span></span>`;
+    }
+    return `<span title="${title}">${_cmEscape(upstream || model)}</span>`;
+}
+
+// 把「密钥 × 账号」扁平行折叠成「密钥 → 账号」两级结构，父级指标由子行求和/加权得到
+function _cmKeyGroups(rows) {
+    const groups = new Map();
+    for (const row of rows || []) {
+        const key = String(row.group_key ?? '');
+        let group = groups.get(key);
+        if (!group) {
+            group = {
+                key, accounts: [], total: 0, successCount: 0, failedCount: 0,
+                tps: 0, gatewayWeighted: 0, inputTokens: 0, outputTokens: 0,
+                cacheTokens: 0, thoughtTokens: 0, totalTokens: 0, totalCost: 0,
+                currency: row.currency || 'CNY', lastCalledAt: 0,
+                lastSuccess: null, lastStatusCode: null,
+                taskType: row.task_type, channel: row.channel,
+            };
+            groups.set(key, group);
+        }
+        const total = Number(row.total || 0);
+        group.accounts.push(row);
+        group.total += total;
+        group.successCount += Number(row.success_count || 0);
+        group.failedCount += Number(row.failed_count || 0);
+        group.tps += Number(row.tps || 0);
+        group.gatewayWeighted += Number(row.avg_gateway_seconds || 0) * total;
+        group.inputTokens += Number(row.input_tokens || 0);
+        group.outputTokens += Number(row.output_tokens || 0);
+        group.cacheTokens += Number(row.cache_tokens || 0);
+        group.thoughtTokens += Number(row.thought_tokens || 0);
+        group.totalTokens += Number(row.total_tokens || 0);
+        group.totalCost += Number(row.total_cost || 0);
+        const calledAt = Number(row.last_called_at || 0);
+        if (calledAt >= group.lastCalledAt) {
+            group.lastCalledAt = calledAt;
+            group.lastSuccess = row.last_success;
+            group.lastStatusCode = row.last_status_code;
+        }
+    }
+    const list = [...groups.values()];
+    for (const group of list) {
+        group.leader = group.accounts[0] || {};
+        group.taskType = group.leader.task_type || group.taskType;
+        group.channel = group.leader.channel || group.channel;
+        group.avgGateway = group.total ? group.gatewayWeighted / group.total : 0;
+        group.successRate = group.total
+            ? Math.round(1000 * group.successCount / group.total) / 10
+            : null;
+    }
+    list.sort((a, b) => b.total - a.total);
+    return list;
+}
+
+function _cmGroupBar(summary) {
+    return `<div class="cm-group-bar">
+        <span class="cm-group-summary">${summary}</span>
+        <span class="cm-group-actions">
+            <button type="button" class="cm-group-btn" onclick="setCallMonitorExpandAll(true)">展开全部</button>
+            <button type="button" class="cm-group-btn" onclick="setCallMonitorExpandAll(false)">收起全部</button>
+        </span>
+    </div>`;
+}
+
+function _cmRenderKeyGroups(groups) {
+    const rowsHtml = [];
+    for (const group of groups) {
+        const expanded = callMonitorState.expandedKeys.has(group.key);
+        const accountCount = group.accounts.length;
+        const tokensTip = `输入 ${_cmFormatTokens(group.inputTokens)} / 输出 ${_cmFormatTokens(group.outputTokens)} / 缓存 ${_cmFormatTokens(group.cacheTokens)} / 思考 ${_cmFormatTokens(group.thoughtTokens)}`;
+        rowsHtml.push(`<tr class="cm-group-row">
+            <td class="cm-key-cell">
+                <button type="button" class="cm-group-toggle" aria-expanded="${expanded}"
+                    title="${expanded ? '收起账号明细' : '展开账号明细'}"
+                    onclick="toggleCallMonitorKey('${_cmEscape(group.key)}')">
+                    <span class="cm-caret${expanded ? ' expanded' : ''}">▸</span>
+                    <span class="cm-key-text">${_cmMask(group.key)}</span>
+                    <span class="cm-group-accounts">${accountCount} 个账号</span>
+                </button>
+            </td>
+            <td>${_cmKeyModelHtml(group.leader)}</td>
+            <td>${_cmTaskLabel(group.taskType)} / ${_cmEscape(group.channel || 'antigravity')}</td>
+            <td>${_cmStatusCodeChip(group.lastStatusCode)}</td>
+            <td>${_cmStatusBadge(group.lastSuccess)}</td>
+            ${_cmRateCell(group.successRate)}
+            <td title="成功 ${group.successCount} / 失败 ${group.failedCount}">${group.total}</td>
+            <td>${Math.round(group.tps * 1000) / 1000}</td>
+            <td>${_cmFormatLatency(group.avgGateway)}</td>
+            <td>${_cmFormatTime(group.lastCalledAt)}</td>
+            <td title="${tokensTip}">${_cmFormatTokens(group.totalTokens)}</td>
+            <td>${_cmFormatCost(group.totalCost, group.currency)}</td>
+        </tr>`);
+
+        if (!expanded) continue;
+        const visible = group.accounts.slice(0, CM_KEY_ACCOUNT_LIMIT);
+        for (const account of visible) {
+            const accountTokensTip = `输入 ${_cmFormatTokens(account.input_tokens)} / 输出 ${_cmFormatTokens(account.output_tokens)} / 缓存 ${_cmFormatTokens(account.cache_tokens)} / 思考 ${_cmFormatTokens(account.thought_tokens)}`;
+            rowsHtml.push(`<tr class="cm-child-row">
+                <td class="cm-key-cell cm-child-cell" title="账号: ${_cmEscape(account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.credential_name || '-')}</td>
+                <td>${_cmKeyModelHtml(account)}</td>
+                <td>${_cmTaskLabel(account.task_type)} / ${_cmEscape(account.channel || 'antigravity')}</td>
+                <td>${_cmStatusCodeChip(account.last_status_code)}</td>
+                <td>${_cmStatusBadge(account.last_success)}</td>
+                ${_cmRateCell(account.success_rate)}
+                <td title="成功 ${account.success_count} / 失败 ${account.failed_count}">${account.total}</td>
+                <td>${account.tps ?? 0}</td>
+                <td>${_cmFormatLatency(account.avg_gateway_seconds)}</td>
+                <td>${_cmFormatTime(account.last_called_at)}</td>
+                <td title="${accountTokensTip}">${_cmFormatTokens(account.total_tokens)}</td>
+                <td>${_cmFormatCost(account.total_cost, account.currency)}</td>
+            </tr>`);
+        }
+        if (accountCount > visible.length) {
+            rowsHtml.push(`<tr class="cm-group-more"><td colspan="12">还有 ${accountCount - visible.length} 个账号未显示（按调用量降序，仅展示前 ${CM_KEY_ACCOUNT_LIMIT} 个）</td></tr>`);
+        }
+    }
+    return `<div class="cm-table-wrap"><table class="cm-table cm-table-key">
+        <thead><tr>
+            <th>密钥 / 账号</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
+        </tr></thead>
+        <tbody>${rowsHtml.join('')}</tbody>
+    </table></div>`;
+}
+
 function _cmRenderGrouped(rows, view) {
     const firstHead = view === 'account' ? '账号' : 'API KEY';
     const body = rows.map(row => {
@@ -2700,7 +2864,7 @@ function _cmRenderRealtime(records) {
 }
 
 // 分页条：上一页/页码窗口/下一页 + 每页条数（20/50/100）
-function _cmPaginationBar(total, totalPages) {
+function _cmPaginationBar(total, totalPages, infoText) {
     if (!total || totalPages <= 1) return '';
     const page = Math.min(callMonitorState.page, totalPages);
     const btn = (p, label, disabled, active = false) =>
@@ -2720,7 +2884,7 @@ function _cmPaginationBar(total, totalPages) {
     }
 
     return `<div class="cm-pagination">
-        <span class="cm-page-info">共 ${total} 条 · 第 ${page} / ${totalPages} 页</span>
+        <span class="cm-page-info">${infoText || `共 ${total} 条 · 第 ${page} / ${totalPages} 页`}</span>
         <div class="cm-page-controls">
             ${btn(page - 1, '‹ 上一页', page <= 1)}
             ${nums}
@@ -2750,6 +2914,24 @@ function renderCallMonitor() {
         content.innerHTML = note
             + (records.length ? _cmRenderRealtime(records) : _cmEmptyState())
             + _cmPaginationBar(total, totalPages);
+    } else if (callMonitorState.view === 'key') {
+        // 密钥 → 账号：按密钥分页，展开后显示该密钥在各上游账号上的明细
+        const rows = data.rows || [];
+        const groups = _cmKeyGroups(rows);
+        const totalPages = Math.max(1, Math.ceil(groups.length / callMonitorState.pageSize));
+        const page = Math.min(callMonitorState.page, totalPages);
+        const start = (page - 1) * callMonitorState.pageSize;
+        const pageGroups = groups.slice(start, start + callMonitorState.pageSize);
+        const summary = `共 ${groups.length} 个密钥 · ${rows.length} 条账号记录`;
+        content.innerHTML = note
+            + (pageGroups.length
+                ? _cmGroupBar(summary) + _cmRenderKeyGroups(pageGroups)
+                : _cmEmptyState())
+            + _cmPaginationBar(
+                groups.length,
+                totalPages,
+                `${summary} · 第 ${page} / ${totalPages} 页`
+            );
     } else {
         const rows = data.rows || [];
         const totalPages = Math.max(1, Math.ceil(rows.length / callMonitorState.pageSize));

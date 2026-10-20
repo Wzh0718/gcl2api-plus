@@ -2853,6 +2853,129 @@ class SQLiteManager:
             })
         return result
 
+    async def aggregate_key_account_usage(
+        self,
+        *,
+        since_ts: float,
+        until_ts: Optional[float] = None,
+        failed_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """按 (API Key, 账号) 聚合调用记录，供「密钥 → 账号」两级视图使用。
+
+        一行是一个「密钥 × 账号」组合：模型不参与分组——账号级路由下同一账号会把
+        请求归一到同一个上游物理模型，所以只回填该组合调用量最大的请求模型与上游
+        物理模型，供「模型」列展示实际执行结果。
+        """
+        self._ensure_initialized()
+        where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT api_key_id, credential_name,
+                        COUNT(*) AS total,
+                        SUM(success) AS success_count,
+                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_count,
+                        AVG(gateway_seconds) AS avg_gateway_seconds,
+                        MAX(created_at) AS last_called_at,
+                        SUM(input_tokens) AS input_tokens,
+                        SUM(output_tokens) AS output_tokens,
+                        SUM(cache_tokens) AS cache_tokens,
+                        SUM(thought_tokens) AS thought_tokens,
+                        SUM(total_tokens) AS total_tokens,
+                        SUM(CAST(total_cost AS REAL)) AS total_cost,
+                        MAX(currency) AS currency,
+                        MAX(task_type) AS task_type,
+                        MAX(channel) AS channel
+                   FROM call_records
+                   WHERE {where}
+                   GROUP BY api_key_id, credential_name
+                   ORDER BY total DESC, api_key_id ASC, credential_name ASC""",
+                tuple(params),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            # 最近状态：倒序扫描有界行数，取每个「密钥 × 账号」的首条
+            async with db.execute(
+                f"""SELECT api_key_id, credential_name, success, status_code
+                   FROM call_records
+                   WHERE {where}
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 5000""",
+                tuple(params),
+            ) as cursor:
+                recent_rows = await cursor.fetchall()
+            # 模型回填：账号级路由下同一账号通常只命中一个上游物理模型
+            async with db.execute(
+                f"""SELECT api_key_id, credential_name, model_name, upstream_model,
+                           COUNT(*) AS calls
+                   FROM call_records
+                   WHERE {where}
+                   GROUP BY api_key_id, credential_name, model_name, upstream_model""",
+                tuple(params),
+            ) as cursor:
+                model_rows = await cursor.fetchall()
+
+        last_status: Dict[Tuple[str, str], Tuple[bool, Optional[int]]] = {}
+        for api_key_id, credential_name, success, status_code in recent_rows:
+            key = (api_key_id, credential_name)
+            if key not in last_status:
+                last_status[key] = (bool(success), status_code)
+
+        top_model: Dict[Tuple[str, str], Tuple[str, int]] = {}
+        top_upstream: Dict[Tuple[str, str], Tuple[str, int]] = {}
+        for api_key_id, credential_name, model_name, upstream_model, calls in model_rows:
+            key = (api_key_id, credential_name)
+            calls = int(calls or 0)
+            model_name = model_name or ""
+            upstream_model = upstream_model or ""
+            if model_name and (key not in top_model or calls > top_model[key][1]):
+                top_model[key] = (model_name, calls)
+            if upstream_model and (
+                key not in top_upstream or calls > top_upstream[key][1]
+            ):
+                top_upstream[key] = (upstream_model, calls)
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            (
+                api_key_id, credential_name, total, success_count, failed_count,
+                avg_gateway_seconds, last_called_at,
+                input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens,
+                total_cost, currency, task_type, channel,
+            ) = row
+            key = (api_key_id, credential_name)
+            last_success, last_status_code = last_status.get(key, (None, None))
+            top_model_name, top_model_calls = top_model.get(key, ("", 0))
+            top_upstream_model, top_upstream_calls = top_upstream.get(key, ("", 0))
+            total = int(total or 0)
+            success_count = int(success_count or 0)
+            result.append({
+                # group_key 保持与 aggregate_call_records 一致：取主维度（密钥）
+                "group_key": api_key_id,
+                "api_key_id": api_key_id,
+                "credential_name": credential_name,
+                "total": total,
+                "success_count": success_count,
+                "failed_count": int(failed_count or 0),
+                "success_rate": round(100.0 * success_count / total, 1) if total else None,
+                "avg_gateway_seconds": float(avg_gateway_seconds or 0.0),
+                "last_called_at": float(last_called_at or 0.0),
+                "input_tokens": int(input_tokens or 0),
+                "output_tokens": int(output_tokens or 0),
+                "cache_tokens": int(cache_tokens or 0),
+                "thought_tokens": int(thought_tokens or 0),
+                "total_tokens": int(total_tokens or 0),
+                "total_cost": f"{float(total_cost or 0.0):.8f}",
+                "currency": currency or "CNY",
+                "task_type": task_type or "chat",
+                "channel": channel or "antigravity",
+                "last_success": last_success,
+                "last_status_code": last_status_code,
+                "top_model": top_model_name,
+                "top_model_calls": top_model_calls,
+                "top_upstream_model": top_upstream_model,
+                "top_upstream_calls": top_upstream_calls,
+            })
+        return result
+
     async def count_call_records(
         self,
         *,
