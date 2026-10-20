@@ -47,6 +47,11 @@ def _error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=message)
 
 
+def _unexpected(exc: Exception) -> HTTPException:
+    """面板接口必须始终返回 JSON，避免前端解析到纯文本 500。"""
+    return HTTPException(status_code=500, detail=f"服务器内部错误：{type(exc).__name__}")
+
+
 @router.get("")
 async def list_api_keys(
     page: int = Query(default=1, ge=1),
@@ -54,9 +59,14 @@ async def list_api_keys(
     status: Literal["active", "disabled", "revoked"] | None = None,
     _token: str = Depends(verify_panel_token),
 ):
-    return await ApiKeyService(await get_storage_adapter()).list_keys(
-        page=page, page_size=page_size, status=status
-    )
+    try:
+        return await ApiKeyService(await get_storage_adapter()).list_keys(
+            page=page, page_size=page_size, status=status
+        )
+    except (KeyError, ValueError) as exc:
+        raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
 
 
 @router.get("/{api_key_id}")
@@ -65,6 +75,8 @@ async def get_api_key(api_key_id: str, _token: str = Depends(verify_panel_token)
         return await ApiKeyService(await get_storage_adapter()).get_key(api_key_id)
     except (KeyError, ValueError) as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
 
 
 @router.get("/{api_key_id}/secret")
@@ -77,6 +89,8 @@ async def get_api_key_secret(
         )
     except (KeyError, ValueError) as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
     return JSONResponse(
         {"api_key": api_key}, headers={"Cache-Control": "no-store"}
     )
@@ -96,6 +110,8 @@ async def create_api_key(
         )
     except ValueError as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
     return JSONResponse(
         result,
         status_code=201,
@@ -116,6 +132,8 @@ async def update_api_key(
         )
     except (KeyError, ValueError) as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
 
 
 @router.delete("/{api_key_id}")
@@ -124,6 +142,8 @@ async def revoke_api_key(api_key_id: str, _token: str = Depends(verify_panel_tok
         found = await ApiKeyService(await get_storage_adapter()).revoke_key(api_key_id)
     except ValueError as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
     if not found:
         raise HTTPException(status_code=404, detail="密钥不存在")
     return {"success": True, "api_key_id": api_key_id}
@@ -138,3 +158,5 @@ async def reset_api_key_quota(
         return await ApiKeyService(await get_storage_adapter()).reset_quota(api_key_id)
     except (KeyError, ValueError) as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc

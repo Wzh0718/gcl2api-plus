@@ -34,16 +34,22 @@ _writer_running = False
 # -----------------------------------------------------------------
 _cached_log_level: int = LOG_LEVELS["info"]
 _cached_log_file: str = "log.txt"
+# 日志文件体积上限（字节），超过后轮转为 <file>.1 并重新开始；0 表示不限制
+_cached_log_max_bytes: int = 50 * 1024 * 1024
 # ENABLE_LOG=0/false/no/off 时彻底关闭日志
 _log_enabled: bool = True
 
 
 def _refresh_config():
     """从环境变量刷新缓存配置（模块加载时及需要时调用）"""
-    global _cached_log_level, _cached_log_file, _log_enabled
+    global _cached_log_level, _cached_log_file, _log_enabled, _cached_log_max_bytes
     level = os.getenv("LOG_LEVEL", "info").lower()
     _cached_log_level = LOG_LEVELS.get(level, LOG_LEVELS["info"])
     _cached_log_file = os.getenv("LOG_FILE", "log.txt")
+    try:
+        _cached_log_max_bytes = max(int(os.getenv("LOG_MAX_BYTES", "52428800")), 0)
+    except ValueError:
+        _cached_log_max_bytes = 50 * 1024 * 1024
     _log_enabled = os.getenv("ENABLE_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
@@ -116,6 +122,25 @@ _BATCH_SIZE = 1000          # 单次最多批量写入条数
 _FLUSH_INTERVAL = 2      # 秒：无新消息时强制 flush 周期
 
 
+def _maybe_rotate_log_file(pending_bytes: int) -> None:
+    """超过 LOG_MAX_BYTES 时轮转日志文件（保留一个 .1 备份），避免无限增长。"""
+    limit = _cached_log_max_bytes
+    if limit <= 0 or _log_file_handle is None:
+        return
+    try:
+        current = os.fstat(_log_file_handle.fileno()).st_size
+    except Exception:
+        return
+    if current + pending_bytes <= limit:
+        return
+    _close_log_file()
+    try:
+        os.replace(_cached_log_file, _cached_log_file + ".1")
+    except OSError:
+        pass
+    _open_log_file("a")
+
+
 def _log_writer_worker():
     global _writer_running
 
@@ -142,7 +167,9 @@ def _log_writer_worker():
                 if _log_file_handle is None:
                     _open_log_file("a")
                 if _log_file_handle is not None:
-                    _log_file_handle.write(chunk)
+                    _maybe_rotate_log_file(len(chunk.encode("utf-8")))
+                    if _log_file_handle is not None:
+                        _log_file_handle.write(chunk)
             except Exception as e:
                 print(f"Warning: Failed to write log batch: {e}", file=sys.stderr)
                 _close_log_file()

@@ -208,6 +208,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"关闭凭证管理器时出错: {e}")
 
+    # 关闭复用的 Shadowsocks SOCKS5 监听器
+    try:
+        from src.shadowsocks import close_shared_bridges
+
+        await close_shared_bridges()
+        log.info("Shadowsocks 桥接监听器已关闭")
+    except Exception as e:
+        log.error(f"关闭 Shadowsocks 桥接监听器时出错: {e}")
+
     log.info("GCLI2API 主服务已停止")
 
 

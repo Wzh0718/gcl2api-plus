@@ -203,21 +203,39 @@ class _AeadStream:
 
 
 class ShadowsocksBridge:
-    """Expose one Shadowsocks node as a temporary local SOCKS5 endpoint."""
+    """Expose one Shadowsocks node as a local SOCKS5 endpoint.
+
+    每个进程内按节点 URL 复用同一个监听器（见 ``shadowsocks_proxy_context``）。
+    旧实现为每个 httpx 客户端新建监听器，高并发时会产生大量 LISTEN fd，
+    在 nofile 较低时会直接打满文件描述符。
+    """
 
     def __init__(self, node: ShadowsocksNode):
         self.node = node
         self.server: asyncio.AbstractServer | None = None
+        self.url: str | None = None
 
-    async def __aenter__(self) -> str:
-        self.server = await asyncio.start_server(self._handle_client, "127.0.0.1", 0)
-        port = self.server.sockets[0].getsockname()[1]
-        return f"socks5h://127.0.0.1:{port}"
+    async def start(self) -> str:
+        if self.url is None:
+            self.server = await asyncio.start_server(
+                self._handle_client, "127.0.0.1", 0
+            )
+            port = self.server.sockets[0].getsockname()[1]
+            self.url = f"socks5h://127.0.0.1:{port}"
+        return self.url
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def stop(self) -> None:
         if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
+            self.server = None
+        self.url = None
+
+    async def __aenter__(self) -> str:
+        return await self.start()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.stop()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         remote: asyncio.StreamWriter | None = None
@@ -289,14 +307,46 @@ class ShadowsocksBridge:
         raise ValueError("不支持的 SOCKS5 地址类型")
 
 
+# 进程内按节点 URL 复用的 SOCKS5 监听器缓存。
+# 高并发下若每个请求都新建监听器，会为每个在途请求各占用一个 LISTEN fd，
+# 足以在小 nofile 限额下打满文件描述符；这里每个节点只保留一个监听器。
+_shared_bridges: dict[str, ShadowsocksBridge] = {}
+_shared_bridge_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _shared_bridge(proxy_url: str) -> ShadowsocksBridge:
+    bridge = _shared_bridges.get(proxy_url)
+    if bridge is not None and bridge.url is not None:
+        return bridge
+    lock = _shared_bridge_locks.setdefault(proxy_url, asyncio.Lock())
+    async with lock:
+        bridge = _shared_bridges.get(proxy_url)
+        if bridge is None or bridge.url is None:
+            bridge = ShadowsocksBridge(parse_shadowsocks_url(proxy_url))
+            await bridge.start()
+            _shared_bridges[proxy_url] = bridge
+        return bridge
+
+
+async def close_shared_bridges() -> None:
+    """Close every cached SOCKS5 listener (graceful shutdown)."""
+    global _shared_bridges
+    bridges, _shared_bridges = _shared_bridges, {}
+    for bridge in bridges.values():
+        try:
+            await bridge.stop()
+        except Exception:
+            pass
+
+
 async def with_shadowsocks_proxy(
     proxy_url: str, callback: Callable[[str], Awaitable[object]]
 ) -> object:
     """Run ``callback`` with a local SOCKS5 URL when ``proxy_url`` is ss://."""
     if not proxy_url.lower().startswith("ss://"):
         return await callback(proxy_url)
-    async with ShadowsocksBridge(parse_shadowsocks_url(proxy_url)) as local_proxy:
-        return await callback(local_proxy)
+    bridge = await _shared_bridge(proxy_url)
+    return await callback(bridge.url)
 
 
 @asynccontextmanager
@@ -305,5 +355,5 @@ async def shadowsocks_proxy_context(proxy_url: object) -> AsyncIterator[object]:
     if not isinstance(proxy_url, str) or not proxy_url.lower().startswith("ss://"):
         yield proxy_url
         return
-    async with ShadowsocksBridge(parse_shadowsocks_url(proxy_url)) as local_proxy:
-        yield local_proxy
+    bridge = await _shared_bridge(proxy_url)
+    yield bridge.url

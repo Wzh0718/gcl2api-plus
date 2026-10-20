@@ -53,6 +53,24 @@ services:
       - ANTIGRAVITY_EGRESS_IP_CHECK_URL=${ANTIGRAVITY_EGRESS_IP_CHECK_URL:-}
     volumes:
       - ./data/creds:/app/creds
+    # API 代理在高并发下需要远高于默认 1024 的文件描述符上限
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    # 限制容器日志体积，避免 json-file 无限增长；应用侧 log.txt 由 LOG_MAX_BYTES 轮转
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      # 优先使用分离密码 API_PASSWORD；仅设置通用 PASSWORD 时回退到它
+      test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); pw = os.environ.get('API_PASSWORD') or os.environ.get('PASSWORD', 'pwd'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + pw}); sys.exit(0 if urllib.request.urlopen(req, timeout=5).getcode() == 200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 # Example with Redis for distributed storage
 #  redis:

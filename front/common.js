@@ -1691,8 +1691,7 @@ async function loadApiKeys({ silent = false } = {}) {
     if (list && !silent) list.innerHTML = '<div class="api-key-empty">正在加载密钥…</div>';
     try {
         const response = await fetch('./api-keys?page_size=100', { headers: getAuthHeaders() });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '加载密钥失败');
+        const data = await readJsonResponse(response, '加载密钥失败');
         AppState.apiKeyItems = data.items || [];
         renderApiKeys(AppState.apiKeyItems);
         updateBillingKeyFilter();
@@ -1725,8 +1724,7 @@ async function createApiKey(event) {
             method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '创建密钥失败');
+        await readJsonResponse(response, '创建密钥失败');
         document.getElementById('apiKeyCreateForm')?.reset();
         showStatus('密钥已创建，可随时在列表中复制', 'success');
         await loadApiKeys({ silent: true });
@@ -1761,14 +1759,34 @@ async function writeApiKeyToClipboard(value) {
     if (!copied) throw new Error('浏览器未允许复制操作');
 }
 
+// 非 JSON 响应（例如框架返回的纯文本 500）也要给出可读错误，
+// 而不是让 JSON.parse 抛出 "Unexpected token ..."，掩盖真正的服务端状态。
+async function readJsonResponse(response, fallbackMessage) {
+    const text = await response.text();
+    let data = null;
+    if (text) {
+        try {
+            data = JSON.parse(text);
+        } catch (_) {
+            data = null;
+        }
+    }
+    if (response.ok) return data || {};
+    const detail = data && (data.detail || data.message);
+    if (detail) {
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+    const snippet = text.trim().slice(0, 120);
+    throw new Error(`${fallbackMessage}（HTTP ${response.status}${snippet ? '：' + snippet : ''}）`);
+}
+
 async function copyApiKey(apiKeyId) {
     try {
         const response = await fetch(`./api-keys/${encodeURIComponent(apiKeyId)}/secret`, {
             headers: getAuthHeaders(),
             cache: 'no-store'
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '读取密钥失败');
+        const data = await readJsonResponse(response, '读取密钥失败');
         await writeApiKeyToClipboard(data.api_key);
         showStatus('密钥已复制，可直接粘贴使用', 'success');
     } catch (error) {
@@ -1781,8 +1799,7 @@ async function patchApiKey(apiKeyId, payload, successMessage) {
         method: 'PATCH', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || '更新密钥失败');
+    await readJsonResponse(response, '更新密钥失败');
     showStatus(successMessage, 'success');
     await loadApiKeys({ silent: true });
 }
@@ -1815,8 +1832,7 @@ async function resetApiKeyQuota(apiKeyId) {
     if (!confirm('确定将该密钥当前周期的已用金额重置为 0 吗？历史账单会继续保留。')) return;
     try {
         const response = await fetch(`./api-keys/${encodeURIComponent(apiKeyId)}/quota-resets`, { method: 'POST', headers: getAuthHeaders() });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '重置额度失败');
+        await readJsonResponse(response, '重置额度失败');
         showStatus('密钥额度已重置', 'success');
         await loadApiKeys({ silent: true });
     } catch (error) {
@@ -1828,8 +1844,7 @@ async function revokeApiKey(apiKeyId) {
     if (!confirm('确定吊销该密钥吗？吊销后不可恢复，但历史账单会保留。')) return;
     try {
         const response = await fetch(`./api-keys/${encodeURIComponent(apiKeyId)}`, { method: 'DELETE', headers: getAuthHeaders() });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '吊销密钥失败');
+        await readJsonResponse(response, '吊销密钥失败');
         showStatus('密钥已吊销', 'success');
         await loadApiKeys({ silent: true });
     } catch (error) {
