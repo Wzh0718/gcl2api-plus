@@ -2,6 +2,33 @@
 // GCLI2API 控制面板公共JavaScript模块
 // =====================================================================
 
+// 全局容错：非 JSON / 空响应体（例如部署/重启期间 hypercorn 返回的纯文本 503、
+// 反代返回的 HTML 错误页）不再抛出 "Unexpected end of JSON input"，
+// 而是给出带 HTTP 状态码和文本摘要的可读错误。
+(function installJsonSafetyNet() {
+    if (Response.prototype.__jsonSafetyNetInstalled) return;
+    const nativeJson = Response.prototype.json;
+    Response.prototype.json = async function () {
+        let text = '';
+        try {
+            text = await this.clone().text();
+        } catch (_) {
+            // 无法读取响应体时退回原生行为
+            return nativeJson.apply(this, arguments);
+        }
+        if (text.trim() === '') {
+            throw new Error(`服务器返回空响应（HTTP ${this.status}）`);
+        }
+        try {
+            return JSON.parse(text);
+        } catch (_) {
+            const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 120);
+            throw new Error(`服务器返回非 JSON 响应（HTTP ${this.status}）：${snippet}`);
+        }
+    };
+    Response.prototype.__jsonSafetyNetInstalled = true;
+})();
+
 // =====================================================================
 // 全局状态管理
 // =====================================================================

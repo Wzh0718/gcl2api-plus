@@ -17,6 +17,26 @@ from src.storage_adapter import get_storage_adapter
 
 IMAGE_CAPACITY_DEMOTION_SECONDS = 60
 
+# 代理节点连接失败后短暂冷却，避免账号被反复选中又反复失败。
+# 冷却期间该账号会从调度中排除（proxy_group_nodes.cooldown_until）。
+PROXY_NODE_FAILURE_COOLDOWN_SECONDS = 300
+
+# 判定为「节点不可达」的错误特征（SOCKS/连接层错误，非 HTTP 状态错误）
+_PROXY_CONNECT_ERROR_MARKERS = (
+    "socks",
+    "proxy server",
+    "connect",
+    "connection",
+    "timeout",
+    "timed out",
+    "unreachable",
+    "refused",
+    "reset by peer",
+    "network is down",
+    "nodename nor servname",
+    "name or service not known",
+)
+
 
 def _antigravity_tier_priority(tier: Any) -> int:
     normalized = str(tier or "").strip().lower()
@@ -878,8 +898,41 @@ class CredentialManager:
             else:
                 # 网络错误或其他临时性错误，不封禁凭证
                 log.warning(f"Token刷新失败但非永久性错误 (HTTP {status_code})，不封禁凭证: {filename}")
+                if mode == "antigravity":
+                    await self._cool_dead_proxy_node(filename, error_msg)
 
             return None
+
+    async def _cool_dead_proxy_node(self, filename: str, error_msg: str) -> bool:
+        """代理节点连不上时冷却该节点并解绑账号，避免账号被反复选中反复失败。
+
+        只对「组模式 + 连接层错误」生效：HTTP 状态类错误（429/5xx）由各自的
+        冷却逻辑处理，不应把节点标记为不可用。
+        """
+        text = (error_msg or "").lower()
+        if not any(marker in text for marker in _PROXY_CONNECT_ERROR_MARKERS):
+            return False
+        try:
+            network = await self._storage_adapter.get_credential_network(
+                filename, mode="antigravity"
+            )
+        except Exception as exc:
+            log.debug(f"读取账号网络配置失败 {filename}: {exc}")
+            return False
+        if network.get("proxy_mode") != "group":
+            return False
+        try:
+            cooled = await self._storage_adapter.invalidate_antigravity_proxy_binding(
+                filename, cooldown_seconds=PROXY_NODE_FAILURE_COOLDOWN_SECONDS
+            )
+        except Exception as exc:
+            log.warning(f"冷却代理节点失败 {filename}: {exc}")
+            return False
+        if cooled:
+            log.warning(
+                f"代理节点不可达，已冷却 {PROXY_NODE_FAILURE_COOLDOWN_SECONDS}s 并解绑账号: {filename}"
+            )
+        return bool(cooled)
 
     def _is_permanent_refresh_failure(self, error_msg: str, status_code: Optional[int] = None) -> bool:
         """
