@@ -446,6 +446,45 @@ async def get_antigravity_stream2nostream() -> bool:
     return bool(await get_config_value("antigravity_stream2nostream", False))
 
 
+# Antigravity hub 轨迹指纹（2026-10-21 起，见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md）
+# 这两个键刻意不走 ENV_MAPPINGS：优先级为 面板配置 > ENV > 默认值，
+# ENV 只作部署期兜底初始值，面板随时可改（hub 通道周更，需频繁维护）。
+_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.25.0"
+_ANTIGRAVITY_HUB_CL_DEFAULT = "1003475615"
+
+
+async def get_antigravity_hub_version() -> str:
+    """hub UA 版本。面板配置 > ENV > 默认。"""
+    value = await get_config_value("antigravity_hub_version")
+    if value:
+        return str(value)
+    return os.getenv("ANTIGRAVITY_HUB_VERSION") or _ANTIGRAVITY_HUB_VERSION_DEFAULT
+
+
+async def get_antigravity_hub_cl() -> str:
+    """hub UA 的 CL（changelist）。面板配置 > ENV > 默认。"""
+    value = await get_config_value("antigravity_hub_cl")
+    if value:
+        return str(value)
+    return os.getenv("ANTIGRAVITY_HUB_CL") or _ANTIGRAVITY_HUB_CL_DEFAULT
+
+
+def get_antigravity_hub_version_sync() -> str:
+    """同步版（UA 构建等热路径用）：面板配置缓存 > ENV > 默认。"""
+    cached = _get_cached_config("antigravity_hub_version")
+    if cached:
+        return str(cached)
+    return os.getenv("ANTIGRAVITY_HUB_VERSION") or _ANTIGRAVITY_HUB_VERSION_DEFAULT
+
+
+def get_antigravity_hub_cl_sync() -> str:
+    """同步版（UA 构建等热路径用）：面板配置缓存 > ENV > 默认。"""
+    cached = _get_cached_config("antigravity_hub_cl")
+    if cached:
+        return str(cached)
+    return os.getenv("ANTIGRAVITY_HUB_CL") or _ANTIGRAVITY_HUB_CL_DEFAULT
+
+
 async def get_enable_geminicli() -> bool:
     """GeminiCLI is opt-in in the SQLite single-database edition."""
     env_value = os.getenv("ENABLE_GEMINICLI")

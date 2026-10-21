@@ -26,12 +26,13 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-# Antigravity CLI 客户端标识。ANTIGRAVITY_CLI_VERSION 是 env 保底值（只托底、
-# 不封顶）：上游按 User-Agent 中的版本号下发模型列表（1.1.8 只有 27 个模型且无
-# 3.8 系，1.1.28 起返回 gemini-3.7/3.8-flash 等共 33 个），版本过旧会导致
-# /models 列表比真实 agy cli 少。实际生效版本 = max(env 保底, 已验证采纳版本)，
-# 由 src/antigravity_cli_version.py 动态追踪官方 auto-updater manifest 维护；
-# 保底默认值需与当前真实 AGY CLI 版本保持一致。
+# Antigravity hub 轨迹指纹默认值（2026-10-21 实抓官方 language_server 2.25.0，
+# 见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md）。真实客户端 UA：
+#   antigravity/hub/<ver> (aidev_client; os_type=<os>; arch=<arch>; cl=<CL>)
+# 实际生效值优先级：ENV（ANTIGRAVITY_HUB_VERSION/ANTIGRAVITY_HUB_CL）> 面板配置 > 这里的默认值。
+# hub 通道周更，CL 只能从新二进制 --stamp 获取；复跑方法见上述文档 §5。
+ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.25.0")
+ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1003475615")
 ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.3.1")
 ANTIGRAVITY_CLI_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
 ANTIGRAVITY_CLI_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
@@ -44,16 +45,30 @@ def build_antigravity_user_agent(
     version: Optional[str] = None,
     os_type: str = ANTIGRAVITY_CLI_OS_TYPE,
     arch: str = ANTIGRAVITY_CLI_ARCH,
+    cl: Optional[str] = None,
+) -> str:
+    """Build the AGY hub-track User-Agent（真实官方客户端形态）。
+
+    version/cl 为 None 时取配置系统值（ENV > 面板配置 > 默认）。
+    """
+    if version is None or cl is None:
+        from config import get_antigravity_hub_cl_sync, get_antigravity_hub_version_sync
+
+        version = version or get_antigravity_hub_version_sync()
+        cl = cl or get_antigravity_hub_cl_sync()
+    return (
+        f"antigravity/hub/{version} "
+        f"(aidev_client; os_type={os_type}; arch={arch}; cl={cl})"
+    )
+
+
+def build_antigravity_cli_user_agent(
+    version: str,
+    os_type: str = ANTIGRAVITY_CLI_OS_TYPE,
+    arch: str = ANTIGRAVITY_CLI_ARCH,
     auth_method: str = ANTIGRAVITY_CLI_AUTH_METHOD,
 ) -> str:
-    """Build the AGY-compatible User-Agent without per-request randomization.
-
-    version 为 None 时使用 src/antigravity_cli_version 的动态生效版本。
-    """
-    if version is None:
-        from src.antigravity_cli_version import get_effective_version
-
-        version = get_effective_version()
+    """旧 CLI 轨迹 UA，仅供 src/antigravity_cli_version.py 版本探测使用。"""
     return (
         f"antigravity/cli/{version} "
         f"(aidev_client; os_type={os_type}; arch={arch}; "
@@ -62,30 +77,31 @@ def build_antigravity_user_agent(
 
 
 def get_antigravity_user_agent() -> str:
-    """按当前动态生效版本构建 Antigravity CLI User-Agent。"""
+    """构建 Antigravity hub 轨迹 User-Agent。"""
     return build_antigravity_user_agent()
 
 
-# 兼容别名：导入期快照，版本不会随后续动态采纳热切换；新代码请用
-# get_antigravity_user_agent()。
-ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent(ANTIGRAVITY_CLI_VERSION)
+# 兼容别名：导入期快照；新代码请用 get_antigravity_user_agent()。
+ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent()
 
 # Antigravity OAuth token 端点（exchange/refresh）使用的 User-Agent，
 # 对齐 Antigravity-Manager 的 NATIVE_OAUTH_USER_AGENT（vscode 部分固定为字面量 1.X.X）。
 # ANTIGRAVITY_OAUTH_UA_VERSION / ANTIGRAVITY_OAUTH_USER_AGENT env 可单独钉死；
-# 未钉死时版本跟随动态生效的 CLI 版本。
+# 未钉死时版本跟随 hub 轨迹版本。
 ANTIGRAVITY_OAUTH_UA_VERSION = os.getenv("ANTIGRAVITY_OAUTH_UA_VERSION", "")
 
 
 def get_antigravity_oauth_user_agent() -> str:
-    """按当前动态生效版本构建 OAuth 端 User-Agent（env 可覆盖）。"""
+    """构建 OAuth 端 User-Agent（env 可覆盖；版本默认跟随 hub 轨迹配置）。"""
     explicit = os.getenv("ANTIGRAVITY_OAUTH_USER_AGENT", "").strip()
     if explicit:
         return explicit
-    from src.antigravity_cli_version import get_effective_version
-
     pinned = ANTIGRAVITY_OAUTH_UA_VERSION.strip()
-    return f"vscode/1.X.X (Antigravity/{pinned or get_effective_version()})"
+    if pinned:
+        return f"vscode/1.X.X (Antigravity/{pinned})"
+    from config import get_antigravity_hub_version_sync
+
+    return f"vscode/1.X.X (Antigravity/{get_antigravity_hub_version_sync()})"
 
 
 # 兼容别名：导入期快照；新代码请用 get_antigravity_oauth_user_agent()。

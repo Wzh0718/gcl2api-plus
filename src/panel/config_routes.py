@@ -64,6 +64,10 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_stream2nostream"] = await config.get_antigravity_stream2nostream()
         current_config["antigravity_switch_credential_enabled"] = await config.get_antigravity_switch_credential_enabled()
 
+        # Antigravity hub 轨迹指纹（UA 版本/CL，2026-10-21 起）
+        current_config["antigravity_hub_version"] = await config.get_antigravity_hub_version()
+        current_config["antigravity_hub_cl"] = await config.get_antigravity_hub_cl()
+
         # Antigravity 403封禁账号定期复检配置
         current_config["antigravity_403_recheck_enabled"] = await config.get_antigravity_403_recheck_enabled()
         current_config["antigravity_403_recheck_interval"] = await config.get_antigravity_403_recheck_interval()
@@ -173,6 +177,18 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "antigravity_switch_credential_enabled" in new_config:
             if not isinstance(new_config["antigravity_switch_credential_enabled"], bool):
                 raise HTTPException(status_code=400, detail="Antigravity切换凭证开关必须是布尔值")
+
+        for hub_key, hub_label in (
+            ("antigravity_hub_version", "Antigravity hub 版本号"),
+            ("antigravity_hub_cl", "Antigravity hub CL"),
+        ):
+            if hub_key in new_config:
+                hub_value = new_config[hub_key]
+                if not isinstance(hub_value, str) or not hub_value.strip():
+                    raise HTTPException(status_code=400, detail=f"{hub_label}必须是非空字符串")
+                if len(hub_value.strip()) > 64:
+                    raise HTTPException(status_code=400, detail=f"{hub_label}过长（最多 64 字符）")
+                new_config[hub_key] = hub_value.strip()
 
         if "antigravity_403_recheck_enabled" in new_config:
             if not isinstance(new_config["antigravity_403_recheck_enabled"], bool):

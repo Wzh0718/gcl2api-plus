@@ -430,28 +430,33 @@ class UserAgentBuilderTests(_StatelessCase):
         ua = build_antigravity_user_agent("9.9.9")
         self.assertEqual(
             ua,
-            "antigravity/cli/9.9.9 "
-            "(aidev_client; os_type=linux; arch=amd64; auth_method=consumer)",
+            "antigravity/hub/9.9.9 "
+            "(aidev_client; os_type=linux; arch=amd64; cl=1003475615)",
         )
 
-    async def test_get_user_agent_uses_effective_version(self):
+    async def test_get_user_agent_uses_hub_track_version(self):
+        # 正式流量 UA 已切 hub 轨迹，不再跟随 CLI 动态采纳版本
         from src.utils import get_antigravity_user_agent
 
         cliver._state["adopted_version"] = "1.4.0"
-        with patch.dict(os.environ, {"ANTIGRAVITY_CLI_VERSION": "1.2.7"}, clear=True):
-            self.assertIn("antigravity/cli/1.4.0", get_antigravity_user_agent())
+        with (
+            patch("config.get_antigravity_hub_version_sync", lambda: "2.25.0"),
+            patch("config.get_antigravity_hub_cl_sync", lambda: "1003475615"),
+        ):
+            self.assertIn("antigravity/hub/2.25.0", get_antigravity_user_agent())
+            self.assertNotIn("antigravity/cli", get_antigravity_user_agent())
 
-    async def test_oauth_user_agent_follows_effective_version(self):
+    async def test_oauth_user_agent_follows_hub_version(self):
         from src.utils import get_antigravity_oauth_user_agent
 
-        cliver._state["adopted_version"] = "1.4.0"
         with (
             patch.dict(os.environ, {}, clear=True),
             patch("src.utils.ANTIGRAVITY_OAUTH_UA_VERSION", ""),
+            patch("config.get_antigravity_hub_version_sync", lambda: "2.25.0"),
         ):
             self.assertEqual(
                 get_antigravity_oauth_user_agent(),
-                "vscode/1.X.X (Antigravity/1.4.0)",
+                "vscode/1.X.X (Antigravity/2.25.0)",
             )
 
     async def test_oauth_user_agent_env_explicit_override(self):
@@ -480,16 +485,19 @@ class UserAgentBuilderTests(_StatelessCase):
         from src.api.antigravity import build_antigravity_headers
 
         headers = build_antigravity_headers("tok", version_override="2.0.0")
-        self.assertIn("antigravity/cli/2.0.0", headers["User-Agent"])
+        self.assertIn("antigravity/hub/2.0.0", headers["User-Agent"])
         self.assertEqual(headers["Authorization"], "Bearer tok")
 
-    async def test_build_headers_default_uses_effective_version(self):
+    async def test_build_headers_default_uses_hub_track(self):
         from src.api.antigravity import build_antigravity_headers
 
         cliver._state["adopted_version"] = "1.4.0"
-        with patch.dict(os.environ, {"ANTIGRAVITY_CLI_VERSION": "1.2.7"}, clear=True):
+        with (
+            patch("config.get_antigravity_hub_version_sync", lambda: "2.25.0"),
+            patch("config.get_antigravity_hub_cl_sync", lambda: "1003475615"),
+        ):
             headers = build_antigravity_headers("tok")
-        self.assertIn("antigravity/cli/1.4.0", headers["User-Agent"])
+        self.assertIn("antigravity/hub/2.25.0", headers["User-Agent"])
 
 
 if __name__ == "__main__":

@@ -3190,6 +3190,24 @@
                             </div>
 
                             <div class="form-group">
+                                <label for="antigravityHubVersion">Antigravity hub 版本号（UA 指纹）:</label>
+                                <input type="text" id="antigravityHubVersion" class="config-input"
+                                    placeholder="如：2.25.0" />
+                                <small class="config-note">当前生效 User-Agent 的版本段：<code>antigravity/hub/&lt;版本&gt;
+                                        (aidev_client; …; cl=&lt;CL&gt;)</code>。hub 通道约每周更新，需与官方最新版保持一致 <span
+                                        style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityHubCl">Antigravity hub CL（changelist）:</label>
+                                <input type="text" id="antigravityHubCl" class="config-input"
+                                    placeholder="如：1003475615" />
+                                <small class="config-note">UA 中的 cl= 值，只能从新版本 language_server 二进制的
+                                        <code>--stamp</code> 输出获取；版本号与 CL 必须配套更新 <span
+                                        style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
                                 <label>AGY CLI 版本（自动追踪）:</label>
                                 <div class="config-info"
                                     style="background-color: #e8f5e9; border: 1px solid #66bb6a; color: #1b5e20;">

@@ -73,7 +73,7 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
     monkeypatch.setattr(antigravity, "get_antigravity_api_url", lambda: async_value("https://example.invalid"))
     monkeypatch.setattr(antigravity, "get_retry_config", lambda: async_value({"retry_enabled": True, "max_retries": 1, "retry_interval": 0}))
     monkeypatch.setattr(antigravity, "get_auto_ban_error_codes", lambda: async_value([]))
-    monkeypatch.setattr(antigravity, "wrap_cli_request", lambda request, model, project, user_email=None: async_value(({"project": project, "request": request}, "request-1")))
+    monkeypatch.setattr(antigravity, "wrap_cli_request", lambda request, model, project, user_email=None, credential_key=None: async_value(({"project": project, "request": request}, "request-1")))
     monkeypatch.setattr(antigravity, "post_async", fake_post_async)
     monkeypatch.setattr(antigravity, "handle_error_with_retry", lambda *args, **kwargs: async_value(True))
     monkeypatch.setattr(antigravity, "_switch_credential_for_retry", fake_switch)

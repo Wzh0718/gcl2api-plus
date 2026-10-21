@@ -220,7 +220,6 @@ async def _probe_version(candidate: str) -> Dict[str, Any]:
     探测不写任何账号健康状态、不触发 403 处置，零副作用。
     """
     from config import get_antigravity_api_url
-    from src.api.antigravity import build_antigravity_headers
     from src.httpx_client import post_async
     from src.proxy_groups import proxy_argument_from_network
 
@@ -245,10 +244,19 @@ async def _probe_version(candidate: str) -> Dict[str, Any]:
             attempts.append({"credential": filename, "ok": False, "error": str(exc)})
             continue
         try:
+            # 注意：正式流量 UA 已切 hub 轨迹（build_antigravity_headers），
+            # 本探测专门验证 CLI 轨迹候选版本，必须用 CLI 模板。
+            from src.utils import build_antigravity_cli_user_agent
+
             response = await post_async(
                 f"{api_url}/v1internal:fetchAvailableModels",
                 json={},
-                headers=build_antigravity_headers(token, version_override=candidate),
+                headers={
+                    "User-Agent": build_antigravity_cli_user_agent(candidate),
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept-Encoding": "gzip",
+                },
                 timeout=30.0,
                 proxy_url=proxy_url,
             )

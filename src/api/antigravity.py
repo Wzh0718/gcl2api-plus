@@ -170,24 +170,42 @@ def _prune_session_states(now: float) -> None:
         _session_states.pop(k, None)
 
 
-def _make_new_state(first_user_text: str, now: float) -> AntigravitySessionState:
+def _derive_session_id(first_user_text: str, credential_key: Optional[str]) -> str:
+    """派生 sessionId，对齐真实 hub 客户端：安装级稳定的负 int64 字符串
+    （2.23.1/2.25.0 实抓均为同一负值，跨会话、跨请求不变）。
+
+    网关按账号维度稳定：同一 credential 的所有会话共享同一 sessionId；
+    无 credential_key 时回退到首条用户文本/随机派生（保持负值格式）。
+    """
+    if credential_key:
+        digest = hashlib.sha256(f"agy-session:{credential_key}".encode("utf-8")).digest()
+        val = int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
+        return str(-val - 1)
     if first_user_text:
         digest = hashlib.sha256(first_user_text.encode("utf-8")).digest()
         session_id_val = int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
-        session_id = f"-{session_id_val}"
-    else:
-        session_id = f"-{uuid.uuid4().int % 9_000_000_000_000_000_000}"
+        return str(-session_id_val - 1)
+    return str(-(uuid.uuid4().int % 9_000_000_000_000_000_000) - 1)
+
+
+def _make_new_state(
+    first_user_text: str, now: float, credential_key: Optional[str] = None
+) -> AntigravitySessionState:
     return AntigravitySessionState(
         conversation_id=str(uuid.uuid4()),
         trajectory_id=str(uuid.uuid4()),
-        session_id=session_id,
+        session_id=_derive_session_id(first_user_text, credential_key),
         step_index=1,
         created_at=now,
         last_used_at=now,
     )
 
 
-async def _get_session_state(request_payload: Dict[str, Any], model: str = "") -> AntigravitySessionState:
+async def _get_session_state(
+    request_payload: Dict[str, Any],
+    model: str = "",
+    credential_key: Optional[str] = None,
+) -> AntigravitySessionState:
     now = time.time()
     key = _session_key(request_payload, model)
     first_user_text = _extract_first_user_text(request_payload)
@@ -203,7 +221,7 @@ async def _get_session_state(request_payload: Dict[str, Any], model: str = "") -
                 state.step_index += 1
                 state.last_used_at = now
             else:
-                state = _make_new_state(first_user_text, now)
+                state = _make_new_state(first_user_text, now, credential_key)
             await redis.set(redis_key, json.dumps(state.__dict__), ex=SESSION_TTL_SECONDS)
             return state
         except Exception as e:
@@ -218,7 +236,7 @@ async def _get_session_state(request_payload: Dict[str, Any], model: str = "") -
         state.step_index += 1
         state.last_used_at = now
         return state
-    state = _make_new_state(first_user_text, now)
+    state = _make_new_state(first_user_text, now, credential_key)
     _session_states[key] = state
     return state
 
@@ -228,14 +246,28 @@ def _generate_request_id(conversation_id: str, trajectory_id: str, step: int) ->
     return f"agent/{conversation_id}/{unix_ms}/{trajectory_id}/{step}"
 
 
-def _build_labels(model: str, trajectory_id: str, step: int) -> Dict[str, str]:
+def _build_labels(model: str, state: AntigravitySessionState) -> Dict[str, str]:
+    """构建 labels 9 键全集，对齐真实 hub 客户端（2.25.0 实抓）。
+
+    model_enum 必须填服务端 fetchAvailableModels 下发的枚举名
+    （如 MODEL_PLACEHOLDER_M318），而非模型 ID——真实客户端如此。
+    步进编号从 0 开始（实抓首条 agent 请求 last_step_index=0、
+    request_id=<trajectory_id>-0；信封 requestId 末段从 1 开始）。
+    """
+    from src.antigravity_model_catalog import get_model_enum
+
     used_claude = "claude" in model.lower()
+    label_step = max(state.step_index - 1, 0)
     return {
-        "last_step_index": str(step),
-        "model_enum": model,
-        "trajectory_id": trajectory_id,
+        "cascade_id": state.conversation_id,
+        "root_cascade_id": state.conversation_id,
+        "request_id": f"{state.trajectory_id}-{label_step}",
+        "trajectory_id": state.trajectory_id,
+        "last_step_index": str(label_step),
+        "model_enum": get_model_enum(model),
         "used_claude": str(used_claude).lower(),
         "used_claude_conservative": str(used_claude).lower(),
+        "used_non_gemini_model": "false" if model.lower().startswith("gemini") else "true",
     }
 
 
@@ -244,13 +276,15 @@ async def wrap_cli_request(
     model: str,
     project_id: str,
     user_email: Optional[str] = None,
+    credential_key: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """
-    将 Gemini 格式请求包装成 Antigravity CLI 格式。
+    将 Gemini 格式请求包装成 Antigravity hub 格式（对齐 2.25.0 实抓信封）。
     返回 (payload, request_id)。
 
     user_email 为 None 或 gmail/googlemail 邮箱时保持 antigravity 指纹；
     其他邮箱（如企业/教育账号）改用 jetski 指纹（对齐 Antigravity-Manager）。
+    credential_key 用于派生账号级稳定 sessionId。
     """
     inner = dict(gemini_request)
 
@@ -259,20 +293,28 @@ async def wrap_cli_request(
     is_image_request = is_antigravity_image_request(model, inner)
 
     # 获取/更新会话状态
-    state = await _get_session_state(inner, model)
+    state = await _get_session_state(inner, model, credential_key)
 
     if not is_image_request:
-        # Agent 请求沿用 CLI 会话字段；原生图片请求不携带这些字段。
+        # Agent 请求沿用 hub 会话字段；原生图片请求不携带这些字段。
         if not inner.get("sessionId"):
             inner["sessionId"] = state.session_id
-        inner["labels"] = _build_labels(model, state.trajectory_id, state.step_index)
+        inner["labels"] = _build_labels(model, state)
 
-        tool_config = inner.get("toolConfig") or {}
-        func_config = tool_config.get("functionCallingConfig") or {}
-        if "mode" not in func_config:
-            func_config["mode"] = "VALIDATED"
-        tool_config["functionCallingConfig"] = func_config
-        inner["toolConfig"] = tool_config
+        # generationConfig 默认值按模型目录补齐，对齐真实 agent 请求
+        # （真实客户端恒发 maxOutputTokens + thinkingConfig；客户端已指定的保留）。
+        from src.antigravity_model_catalog import get_model_info
+
+        info = get_model_info(model) or {}
+        gen_cfg = inner.setdefault("generationConfig", {})
+        if isinstance(gen_cfg, dict):
+            gen_cfg.setdefault("maxOutputTokens", info.get("max_output_tokens") or 65536)
+            budget = info.get("thinking_budget")
+            if info.get("supports_thinking") and budget is not None:
+                gen_cfg.setdefault(
+                    "thinkingConfig",
+                    {"includeThoughts": True, "thinkingBudget": budget},
+                )
 
     request_id = _generate_request_id(state.conversation_id, state.trajectory_id, state.step_index)
 
@@ -291,8 +333,6 @@ async def wrap_cli_request(
         "userAgent": user_agent,
         "requestType": "image_gen" if is_image_request else "agent",
     }
-    if not is_image_request:
-        payload["enabledCreditTypes"] = ["GOOGLE_ONE_AI"]
     return payload, request_id
 
 
@@ -445,6 +485,9 @@ async def _get_available_models_for_credential(
     models = payload.get("models")
     if not isinstance(models, dict):
         return set()
+    from src.antigravity_model_catalog import update_from_catalog
+
+    update_from_catalog(models)
     available = {
         str(model_id).strip().lower()
         for model_id in models.keys()
@@ -761,6 +804,7 @@ async def _try_model_fallback(
     quota_exhausted: bool,
     image_request: bool,
     log_prefix: str,
+    credential_key: Optional[str] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], str]]:
     """模型配额耗尽且号池无可用凭证时，按配置的降级链切换到下一个模型。
 
@@ -775,6 +819,7 @@ async def _try_model_fallback(
     new_payload, new_request_id = await wrap_cli_request(
         inner_request, next_model, credential_data.get("project_id", ""),
         user_email=credential_data.get("user_email"),
+        credential_key=credential_key,
     )
     log.warning(
         f"{log_prefix} 模型 {model_name} 配额耗尽且号池无可用凭证，降级到 {next_model}"
@@ -873,6 +918,7 @@ async def _stream_request_inner(
     final_payload, request_id = await wrap_cli_request(
         inner_request, model_name, project_id,
         user_email=credential_data.get("user_email"),
+        credential_key=current_file,
     )
 
     # 3. 调用stream_post_async进行请求
@@ -1081,6 +1127,7 @@ async def _stream_request_inner(
                                     quota_exhausted=True,
                                     image_request=image_request,
                                     log_prefix="[ANTIGRAVITY STREAM]",
+                                    credential_key=current_file,
                                 )
                                 if fallback is not None:
                                     model_name, final_payload, request_id = fallback
@@ -1186,6 +1233,7 @@ async def _stream_request_inner(
                         quota_exhausted=last_error_quota_exhausted,
                         image_request=image_request,
                         log_prefix="[ANTIGRAVITY STREAM]",
+                        credential_key=current_file,
                     )
                     if fallback is not None:
                         model_name, final_payload, request_id = fallback
@@ -1400,6 +1448,7 @@ async def _non_stream_image_request_inner(
             resolved_model,
             project_id,
             user_email=credential_data.get("user_email"),
+            credential_key=current_file,
         )
         auth_headers = build_antigravity_headers(
             access_token,
@@ -1659,6 +1708,7 @@ async def non_stream_request(
     final_payload, request_id = await wrap_cli_request(
         inner_request, model_name, project_id,
         user_email=credential_data.get("user_email"),
+        credential_key=current_file,
     )
 
     # 3. 调用post_async进行请求
@@ -1876,6 +1926,7 @@ async def non_stream_request(
                                 quota_exhausted=True,
                                 image_request=False,
                                 log_prefix="[ANTIGRAVITY]",
+                                credential_key=current_file,
                             )
                             if fallback is not None:
                                 model_name, final_payload, request_id = fallback
@@ -1925,6 +1976,7 @@ async def non_stream_request(
                         quota_exhausted=last_error_quota_exhausted,
                         image_request=False,
                         log_prefix="[ANTIGRAVITY]",
+                        credential_key=current_file,
                     )
                     if fallback is not None:
                         model_name, final_payload, request_id = fallback
@@ -2146,6 +2198,11 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
         if response.status_code == 200:
             data = response.json()
             log.debug(f"[ANTIGRAVITY] Raw models response: {json.dumps(data, ensure_ascii=False)[:500]}")
+
+            # 热更新模型目录（labels.model_enum 枚举名 / generationConfig 默认值）
+            from src.antigravity_model_catalog import update_from_catalog
+
+            update_from_catalog(data.get("models"))
 
             # 转换为 OpenAI 格式的模型列表，使用 Model 类
             model_list = []

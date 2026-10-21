@@ -8,16 +8,25 @@ from unittest.mock import AsyncMock, patch
 
 
 class AntigravityUserAgentTests(unittest.TestCase):
-    def test_builder_matches_real_cli_header_shape(self):
+    def test_builder_matches_real_hub_header_shape(self):
         from src.utils import build_antigravity_user_agent
 
         self.assertEqual(
             build_antigravity_user_agent(
-                version="1.1.8",
+                version="2.25.0",
                 os_type="linux",
                 arch="amd64",
-                auth_method="consumer",
+                cl="1003475615",
             ),
+            "antigravity/hub/2.25.0 (aidev_client; os_type=linux; "
+            "arch=amd64; cl=1003475615)",
+        )
+
+    def test_cli_builder_kept_for_version_probe(self):
+        from src.utils import build_antigravity_cli_user_agent
+
+        self.assertEqual(
+            build_antigravity_cli_user_agent("1.1.8"),
             "antigravity/cli/1.1.8 (aidev_client; os_type=linux; "
             "arch=amd64; auth_method=consumer)",
         )

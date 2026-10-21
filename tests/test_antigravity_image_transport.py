@@ -66,7 +66,7 @@ def test_image_headers_match_native_cli_without_quota_project_headers():
 
 
 @pytest.mark.asyncio
-async def test_agent_wrapper_keeps_google_one_credit_contract():
+async def test_agent_wrapper_matches_hub_envelope():
     from src.api import antigravity
 
     state = antigravity.AntigravitySessionState(
@@ -86,7 +86,26 @@ async def test_agent_wrapper_keeps_google_one_credit_contract():
         )
 
     assert payload["requestType"] == "agent"
-    assert payload["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+    # hub 轨迹不发 enabledCreditTypes（2026-10-21 实抓对齐）
+    assert "enabledCreditTypes" not in payload
+    # hub 轨迹不强制 toolConfig
+    assert "toolConfig" not in payload["request"]
+    # labels 9 键全集（未知模型 model_enum 回退为模型 ID）
+    labels = payload["request"]["labels"]
+    assert set(labels.keys()) == {
+        "cascade_id", "root_cascade_id", "request_id", "trajectory_id",
+        "last_step_index", "model_enum", "used_claude",
+        "used_claude_conservative", "used_non_gemini_model",
+    }
+    assert labels["cascade_id"] == "conv"
+    assert labels["root_cascade_id"] == "conv"
+    assert labels["request_id"] == "traj-0"
+    assert labels["model_enum"] == "gemini-3.1-pro-preview"
+    assert labels["used_non_gemini_model"] == "false"
+    # generationConfig 默认值（未知模型：仅 maxOutputTokens 65536，无 thinkingConfig）
+    gen_cfg = payload["request"]["generationConfig"]
+    assert gen_cfg["maxOutputTokens"] == 65536
+    assert "thinkingConfig" not in gen_cfg
 
 
 def test_dynamic_image_model_candidates_stay_in_requested_tier():
@@ -958,7 +977,7 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
             else "gemini-3.1-flash-image"
         )
 
-    async def fake_wrap(request, model, project, user_email=None):
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
         return {
             "project": project,
             "model": model,
@@ -1079,7 +1098,7 @@ async def test_all_image_capacity_failures_return_503_without_account_alert(monk
         )
         return antigravity.ImageUpstreamResult(response, "prod", ())
 
-    async def fake_wrap(request, model, project, user_email=None):
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
         return {
             "project": project,
             "model": model,
@@ -1160,7 +1179,7 @@ async def test_image_non_stream_releases_account_when_request_is_cancelled(monke
         entered_upstream.set()
         await asyncio.Event().wait()
 
-    async def fake_wrap(request, model, project, user_email=None):
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
         return {
             "project": project,
             "model": model,

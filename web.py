@@ -137,11 +137,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"403复检服务启动失败: {e}")
 
-    # 启动 AGY CLI 版本动态追踪服务（常开，探测验证后热切换 User-Agent）
-    try:
-        await cli_version_service.start()
-    except Exception as e:
-        log.error(f"CLI版本追踪服务启动失败: {e}")
+    # AGY CLI 版本动态追踪服务。正式流量 UA 已切 hub 轨迹（2026-10-21，
+    # 见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md），该服务不再影响 UA，
+    # 且其探测会消耗账号上行流量，默认停用；需要跟踪 CLI 轨迹时设
+    # ANTIGRAVITY_CLI_VERSION_TRACKING=true 开启。
+    if os.getenv("ANTIGRAVITY_CLI_VERSION_TRACKING", "").lower() == "true":
+        try:
+            await cli_version_service.start()
+        except Exception as e:
+            log.error(f"CLI版本追踪服务启动失败: {e}")
 
     # 调用监控：预热内存缓冲并按保留期执行一次启动清理
     try:

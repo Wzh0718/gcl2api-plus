@@ -5136,6 +5136,8 @@ function populateConfigForm() {
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
     setConfigField('antigravity403RecheckInterval', c.antigravity_403_recheck_interval || 3600);
     setConfigField('antigravityModelFallbackChain', c.antigravity_model_fallback_chain || '');
+    setConfigField('antigravityHubVersion', c.antigravity_hub_version || '');
+    setConfigField('antigravityHubCl', c.antigravity_hub_cl || '');
 
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
@@ -5195,6 +5197,8 @@ async function saveConfig() {
             antigravity_403_recheck_enabled: getChecked('antigravity403RecheckEnabled'),
             antigravity_403_recheck_interval: getInt('antigravity403RecheckInterval', 3600),
             antigravity_model_fallback_chain: getValue('antigravityModelFallbackChain'),
+            antigravity_hub_version: getValue('antigravityHubVersion'),
+            antigravity_hub_cl: getValue('antigravityHubCl'),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
             sensitive_word_replace_enabled: getChecked('sensitiveWordReplaceEnabled'),
             sensitive_word_replace_rules: getValue('sensitiveWordReplaceRules'),
