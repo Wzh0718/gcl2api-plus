@@ -485,6 +485,145 @@ def get_antigravity_hub_cl_sync() -> str:
     return os.getenv("ANTIGRAVITY_HUB_CL") or _ANTIGRAVITY_HUB_CL_DEFAULT
 
 
+# Antigravity 请求节奏与 429 治理（2026-10-21）。与 hub 指纹同理，这些策略参数
+# 走 面板配置 > ENV > 默认值，便于随时调参不调部署。
+_ANTIGRAVITY_PACING_ENABLED_DEFAULT = True
+_ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 1500
+_ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT = 50
+_ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT = True
+_ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT = 0.05
+
+
+def _sync_bool(key: str, env_var: str, default: bool) -> bool:
+    cached = _get_cached_config(key)
+    if cached is not None:
+        return bool(cached)
+    env_value = os.getenv(env_var)
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return default
+
+
+def _sync_number(key: str, env_var: str, default: float, cast=float) -> float:
+    cached = _get_cached_config(key)
+    if cached is not None:
+        try:
+            return cast(cached)
+        except (TypeError, ValueError):
+            return default
+    env_value = os.getenv(env_var)
+    if env_value:
+        try:
+            return cast(env_value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+async def _async_panel_first(key: str, env_var: str, default: Any) -> Any:
+    """面板 > ENV > 默认 的通用异步读取。"""
+    value = await get_config_value(key)
+    if value is not None:
+        return value
+    env_value = os.getenv(env_var)
+    if env_value is not None and env_value != "":
+        return env_value
+    return default
+
+
+async def get_antigravity_pacing_enabled() -> bool:
+    """每账号请求节奏（随机抖动）开关。默认开启。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_enabled", "ANTIGRAVITY_PACING_ENABLED", None
+    )
+    if value is None:
+        return _ANTIGRAVITY_PACING_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+def get_antigravity_pacing_enabled_sync() -> bool:
+    return _sync_bool(
+        "antigravity_pacing_enabled",
+        "ANTIGRAVITY_PACING_ENABLED",
+        _ANTIGRAVITY_PACING_ENABLED_DEFAULT,
+    )
+
+
+async def get_antigravity_pacing_base_ms() -> int:
+    """每账号最小请求间隔基准（毫秒）。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_base_ms",
+        "ANTIGRAVITY_PACING_BASE_MS",
+        _ANTIGRAVITY_PACING_BASE_MS_DEFAULT,
+    )
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_BASE_MS_DEFAULT
+
+
+def get_antigravity_pacing_base_ms_sync() -> int:
+    return int(
+        _sync_number(
+            "antigravity_pacing_base_ms",
+            "ANTIGRAVITY_PACING_BASE_MS",
+            _ANTIGRAVITY_PACING_BASE_MS_DEFAULT,
+            cast=int,
+        )
+    )
+
+
+async def get_antigravity_pacing_jitter_pct() -> int:
+    """间隔抖动幅度（百分比，±pct 均匀随机）。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_jitter_pct",
+        "ANTIGRAVITY_PACING_JITTER_PCT",
+        _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT,
+    )
+    try:
+        return min(max(int(value), 0), 95)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT
+
+
+def get_antigravity_pacing_jitter_pct_sync() -> int:
+    return int(
+        _sync_number(
+            "antigravity_pacing_jitter_pct",
+            "ANTIGRAVITY_PACING_JITTER_PCT",
+            _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT,
+            cast=int,
+        )
+    )
+
+
+async def get_antigravity_quota_guard_enabled() -> bool:
+    """quotaInfo 主动避让开关：额度剩余低于阈值时提前换号。默认开启。"""
+    value = await _async_panel_first(
+        "antigravity_quota_guard_enabled", "ANTIGRAVITY_QUOTA_GUARD_ENABLED", None
+    )
+    if value is None:
+        return _ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+async def get_antigravity_quota_guard_threshold() -> float:
+    """quotaInfo 主动避让阈值（remainingFraction 低于该值视为额度将尽）。"""
+    value = await _async_panel_first(
+        "antigravity_quota_guard_threshold",
+        "ANTIGRAVITY_QUOTA_GUARD_THRESHOLD",
+        _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 0.0), 0.5)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT
+
+
 async def get_enable_geminicli() -> bool:
     """GeminiCLI is opt-in in the SQLite single-database edition."""
     env_value = os.getenv("ENABLE_GEMINICLI")

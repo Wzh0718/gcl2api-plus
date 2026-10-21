@@ -2441,6 +2441,48 @@
                             </div>
 
                             <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="antigravityPacingEnabled" />
+                                    账号请求节奏（随机抖动）
+                                </label>
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">每个账号按「基准间隔 ± 抖动」排队发上游，拟人化节奏
+                                    <span style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingBaseMs">请求间隔基准（毫秒/账号）:</label>
+                                <input type="number" id="antigravityPacingBaseMs" min="0" max="600000" step="100" />
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 1500；0 = 不限速</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingJitterPct">间隔抖动幅度（±%）:</label>
+                                <input type="number" id="antigravityPacingJitterPct" min="0" max="95" />
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 50 即 0.5x~1.5x</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="antigravityQuotaGuardEnabled" />
+                                    额度将尽主动避让
+                                </label>
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">按 quotaInfo 在 429 前避开低额度账号
+                                    <span style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityQuotaGuardThreshold">避让阈值（剩余额度比例）:</label>
+                                <input type="number" id="antigravityQuotaGuardThreshold" min="0" max="0.5"
+                                    step="0.01" />
+                                <small
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 0.05 = 5%</small>
+                            </div>
+
+                            <div class="form-group">
                                 <label>AGY CLI 版本（自动追踪）:</label>
                                 <div
                                     style="background-color: #e8f5e9; border: 1px solid #66bb6a; color: #1b5e20; border-radius: 4px; padding: 10px; font-size: 13px;">

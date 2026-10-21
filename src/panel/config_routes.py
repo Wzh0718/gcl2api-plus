@@ -68,6 +68,13 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_hub_version"] = await config.get_antigravity_hub_version()
         current_config["antigravity_hub_cl"] = await config.get_antigravity_hub_cl()
 
+        # Antigravity 请求节奏与 429 治理（2026-10-21 起）
+        current_config["antigravity_pacing_enabled"] = await config.get_antigravity_pacing_enabled()
+        current_config["antigravity_pacing_base_ms"] = await config.get_antigravity_pacing_base_ms()
+        current_config["antigravity_pacing_jitter_pct"] = await config.get_antigravity_pacing_jitter_pct()
+        current_config["antigravity_quota_guard_enabled"] = await config.get_antigravity_quota_guard_enabled()
+        current_config["antigravity_quota_guard_threshold"] = await config.get_antigravity_quota_guard_threshold()
+
         # Antigravity 403封禁账号定期复检配置
         current_config["antigravity_403_recheck_enabled"] = await config.get_antigravity_403_recheck_enabled()
         current_config["antigravity_403_recheck_interval"] = await config.get_antigravity_403_recheck_interval()
@@ -189,6 +196,41 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 if len(hub_value.strip()) > 64:
                     raise HTTPException(status_code=400, detail=f"{hub_label}过长（最多 64 字符）")
                 new_config[hub_key] = hub_value.strip()
+
+        for pacing_flag, flag_label in (
+            ("antigravity_pacing_enabled", "Antigravity请求节奏开关"),
+            ("antigravity_quota_guard_enabled", "Antigravity额度避让开关"),
+        ):
+            if pacing_flag in new_config:
+                if not isinstance(new_config[pacing_flag], bool):
+                    raise HTTPException(status_code=400, detail=f"{flag_label}必须是布尔值")
+
+        if "antigravity_pacing_base_ms" in new_config:
+            try:
+                base_ms = int(new_config["antigravity_pacing_base_ms"])
+                if base_ms < 0 or base_ms > 600000:
+                    raise ValueError
+                new_config["antigravity_pacing_base_ms"] = base_ms
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="请求间隔基准必须是0-600000之间的整数毫秒")
+
+        if "antigravity_pacing_jitter_pct" in new_config:
+            try:
+                jitter_pct = int(new_config["antigravity_pacing_jitter_pct"])
+                if jitter_pct < 0 or jitter_pct > 95:
+                    raise ValueError
+                new_config["antigravity_pacing_jitter_pct"] = jitter_pct
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="抖动幅度必须是0-95之间的整数百分比")
+
+        if "antigravity_quota_guard_threshold" in new_config:
+            try:
+                threshold = float(new_config["antigravity_quota_guard_threshold"])
+                if threshold < 0 or threshold > 0.5:
+                    raise ValueError
+                new_config["antigravity_quota_guard_threshold"] = threshold
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="额度避让阈值必须是0-0.5之间的数值")
 
         if "antigravity_403_recheck_enabled" in new_config:
             if not isinstance(new_config["antigravity_403_recheck_enabled"], bool):

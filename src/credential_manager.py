@@ -195,6 +195,42 @@ class CredentialManager:
         # 最多重试3次
         max_retries = 3
         attempted_filenames: set[str] = set(exclude_filenames or set())
+
+        # quotaInfo 主动避让：额度快照低于阈值的账号本轮排除（在 429 之前换号）；
+        # 若排除后无可用账号则回退为不避让（快照可能滞后，不宁可信其有）
+        if mode == "antigravity" and model_name:
+            try:
+                from config import (
+                    get_antigravity_quota_guard_enabled,
+                    get_antigravity_quota_guard_threshold,
+                )
+
+                if await get_antigravity_quota_guard_enabled():
+                    from src.antigravity_quota_guard import low_quota_accounts
+
+                    low = low_quota_accounts(
+                        model_name, await get_antigravity_quota_guard_threshold()
+                    ) - attempted_filenames
+                    if low:
+                        probe = await self._storage_adapter._backend.get_next_available_credential(
+                            mode=mode,
+                            model_name=model_name,
+                            exclude_filenames=attempted_filenames | low,
+                        )
+                        if probe is not None:
+                            log.info(
+                                f"[QUOTA GUARD] 模型 {model_name} 额度将尽，"
+                                f"本轮避让 {len(low)} 个账号"
+                            )
+                            attempted_filenames |= low
+                        else:
+                            log.warning(
+                                f"[QUOTA GUARD] 模型 {model_name} 全部账号额度快照均低，"
+                                f"回退为不避让"
+                            )
+            except Exception as e:
+                log.debug(f"[QUOTA GUARD] 避让检查失败（忽略，按不避让处理）: {e}")
+
         for attempt in range(max_retries):
             result = await self._storage_adapter._backend.get_next_available_credential(
                 mode=mode,

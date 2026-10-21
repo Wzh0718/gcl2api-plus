@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import random
 import time
 import uuid
 from dataclasses import dataclass
@@ -486,8 +487,10 @@ async def _get_available_models_for_credential(
     if not isinstance(models, dict):
         return set()
     from src.antigravity_model_catalog import update_from_catalog
+    from src.antigravity_quota_guard import update_quota_snapshot
 
     update_from_catalog(models)
+    update_quota_snapshot(credential_name, models)
     available = {
         str(model_id).strip().lower()
         for model_id in models.keys()
@@ -1030,6 +1033,11 @@ async def _stream_request_inner(
         attempted_credentials.add(current_file)
         attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
 
+        # 每账号请求节奏（随机抖动），拟人化间隔
+        from src.antigravity_pacing import pace_credential
+
+        await pace_credential(current_file)
+
         stream = stream_post_async(
             url=target_url,
             body=final_payload,
@@ -1059,7 +1067,7 @@ async def _stream_request_inner(
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
                         if status_code == 429 or status_code == 503:
-                            cooldown_until = await _resolve_error_cooldown(status_code, error_body)
+                            cooldown_until = await _resolve_error_cooldown(status_code, error_body, current_file)
 
                         classified_403 = None
                         if status_code == 403:
@@ -1093,9 +1101,16 @@ async def _stream_request_inner(
                                 and attempt < max_retries
                             )
                         else:
+                            # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
+                            sleep_interval = (
+                                min(retry_interval * (2 ** attempt), 30.0)
+                                * random.uniform(0.5, 1.5)
+                                if status_code == 429
+                                else retry_interval
+                            )
                             should_retry = await handle_error_with_retry(
                                 credential_manager, status_code, current_file,
-                                retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                                retry_config["retry_enabled"], attempt, max_retries, sleep_interval,
                                 mode="antigravity"
                             )
 
@@ -1164,6 +1179,9 @@ async def _stream_request_inner(
                     consume_usage_chunk(chunk)
                     # 只在第一个chunk时记录成功
                     if not success_recorded:
+                        from src.antigravity_pacing import note_success
+
+                        note_success(current_file)
                         await record_api_call_success(
                             credential_manager, current_file, mode="antigravity", model_name=model_name,
                             upstream_seconds=time.monotonic() - attempt_started,
@@ -1460,6 +1478,11 @@ async def _non_stream_image_request_inner(
 
         started = time.monotonic()
         try:
+            # 每账号请求节奏（随机抖动），拟人化间隔
+            from src.antigravity_pacing import pace_credential
+
+            await pace_credential(current_file)
+
             call_result = await _post_image_generate(
                 headers=auth_headers,
                 json_body=final_payload,
@@ -1499,6 +1522,9 @@ async def _non_stream_image_request_inner(
         )
 
         if status_code == 200:
+            from src.antigravity_pacing import note_success
+
+            note_success(current_file)
             await _record_image_account_outcome(
                 current_file, success=True, latency_seconds=elapsed
             )
@@ -1543,7 +1569,7 @@ async def _non_stream_image_request_inner(
         cooldown_until = None
         classified_403 = None
         if status_code in (429, 503):
-            cooldown_until = await _resolve_error_cooldown(status_code, error_text)
+            cooldown_until = await _resolve_error_cooldown(status_code, error_text, current_file)
         if status_code == 403:
             classified_403 = await _handle_antigravity_403(
                 credential_name=current_file,
@@ -1792,6 +1818,12 @@ async def non_stream_request(
         
         try:
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
+
+            # 每账号请求节奏（随机抖动），拟人化间隔
+            from src.antigravity_pacing import pace_credential
+
+            await pace_credential(current_file)
+
             response = await post_async(
                 url=target_url,
                 json=final_payload,
@@ -1832,6 +1864,9 @@ async def non_stream_request(
                         )
                 else:
                     # 正常响应
+                    from src.antigravity_pacing import note_success
+
+                    note_success(current_file)
                     await record_api_call_success(
                         credential_manager, current_file, mode="antigravity", model_name=model_name,
                         upstream_seconds=upstream_elapsed,
@@ -1867,7 +1902,7 @@ async def non_stream_request(
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
                     if status_code == 429 or status_code == 503:
-                        cooldown_until = await _resolve_error_cooldown(status_code, error_text)
+                        cooldown_until = await _resolve_error_cooldown(status_code, error_text, current_file)
 
                     classified_403 = None
                     if status_code == 403:
@@ -1901,9 +1936,16 @@ async def non_stream_request(
                             and attempt < max_retries
                         )
                     else:
+                        # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
+                        sleep_interval = (
+                            min(retry_interval * (2 ** attempt), 30.0)
+                            * random.uniform(0.5, 1.5)
+                            if status_code == 429
+                            else retry_interval
+                        )
                         should_retry = await handle_error_with_retry(
                             credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                            retry_config["retry_enabled"], attempt, max_retries, sleep_interval,
                             mode="antigravity"
                         )
 
@@ -2201,8 +2243,10 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
 
             # 热更新模型目录（labels.model_enum 枚举名 / generationConfig 默认值）
             from src.antigravity_model_catalog import update_from_catalog
+            from src.antigravity_quota_guard import update_quota_snapshot
 
             update_from_catalog(data.get("models"))
+            update_quota_snapshot(current_file, data.get("models"))
 
             # 转换为 OpenAI 格式的模型列表，使用 Model 类
             model_list = []
@@ -2465,13 +2509,17 @@ RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS = 60
 CREDITS_EXHAUSTED_MARKER = "INSUFFICIENT_G1_CREDITS_BALANCE"
 
 
-async def _resolve_error_cooldown(status_code: int, error_body: Optional[str]) -> Optional[float]:
+async def _resolve_error_cooldown(
+    status_code: int,
+    error_body: Optional[str],
+    credential_name: Optional[str] = None,
+) -> Optional[float]:
     """
     解析 429/503 的冷却时间：
 
     - 错误体带 quotaResetTimeStamp/quotaResetDelay 时，按上游明确重置时间冷却；
     - 其余 429（包括 INSUFFICIENT_G1_CREDITS_BALANCE）都按瞬时限流处理，
-      只短冷却 RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS 秒，之后允许再次发送。
+      走连击升级短冷却（60s 翻倍、封顶 300s，成功重置）。
     """
     cooldown_until = None
     if error_body:
@@ -2481,7 +2529,12 @@ async def _resolve_error_cooldown(status_code: int, error_body: Optional[str]) -
             cooldown_until = None
 
     if cooldown_until is None and status_code == 429:
-        cooldown_until = time.time() + RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS
+        if credential_name:
+            from src.antigravity_pacing import transient_429_cooldown
+
+            cooldown_until = transient_429_cooldown(credential_name)
+        else:
+            cooldown_until = time.time() + RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS
         marker = (
             f"（包含 {CREDITS_EXHAUSTED_MARKER}）"
             if error_body and CREDITS_EXHAUSTED_MARKER in error_body
@@ -2489,7 +2542,8 @@ async def _resolve_error_cooldown(status_code: int, error_body: Optional[str]) -
         )
         log.info(
             f"[ANTIGRAVITY] 429{marker} 未携带明确配额重置时间，按瞬时限流处理，"
-            f"冷却 {RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS} 秒"
+            f"冷却至 {datetime.fromtimestamp(cooldown_until).strftime('%H:%M:%S')}"
+            + (f"（凭证 {credential_name}）" if credential_name else "")
         )
 
     return cooldown_until
