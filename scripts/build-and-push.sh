@@ -23,6 +23,8 @@ readonly IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION:-gcli2api-plus —— GeminiCLI 
 
 RELEASE_WORK_DIR=""
 SOURCE_DIR=""
+# 机器特定的额外 buildx 参数（如构建容器出网需走宿主机代理时传入）
+EXTRA_BUILD_ARGS="${EXTRA_BUILD_ARGS:-}"
 
 usage() {
     cat <<'EOF'
@@ -48,6 +50,9 @@ usage() {
   PLATFORMS           目标平台列表，默认 linux/amd64,linux/arm64；只需 amd64 时设为 linux/amd64
   IMAGE_DESCRIPTION   GHCR 包描述，默认与 Dockerfile 的 description 标签一致
   KEEP_BUILD_DIR=1    保留临时构建目录用于排查
+  EXTRA_BUILD_ARGS    透传给 docker buildx build 的额外参数，按空格分词；典型用法：
+                      构建容器出网需走宿主机代理时
+                      EXTRA_BUILD_ARGS="--build-arg HTTPS_PROXY=http://172.17.0.1:7890 --build-arg HTTP_PROXY=http://172.17.0.1:7890"
 
 多架构说明:
   构建 linux/arm64 需要 QEMU binfmt 支持（Docker Desktop 自带）。
@@ -208,6 +213,9 @@ if [[ "${PLATFORMS}" == *,* ]]; then
 fi
 
 printf '\n==> 使用 Buildx 构建 %s 平台镜像并推送，同时标记 %s 和 latest\n' "${PLATFORMS}" "${VERSION_TAG}"
+# EXTRA_BUILD_ARGS 用于透传机器特定的构建参数（典型场景：构建容器出网需走
+# 宿主机代理）。按空格分词，勿放含空格的单个参数。
+# shellcheck disable=SC2086
 docker buildx build \
     --platform "${PLATFORMS}" \
     --pull \
@@ -219,6 +227,7 @@ docker buildx build \
     -t "${DATE_IMAGE}" \
     -t "${LATEST_IMAGE}" \
     --push \
+    ${EXTRA_BUILD_ARGS} \
     "${SOURCE_DIR}" \
     || die "多架构镜像构建/推送失败。请先执行 docker login ${IMAGE_REGISTRY}，并确认 ${PLATFORMS} 各平台均可构建。"
 
