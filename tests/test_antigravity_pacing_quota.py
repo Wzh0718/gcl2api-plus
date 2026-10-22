@@ -1,5 +1,6 @@
-"""antigravity_pacing / antigravity_quota_guard 专项测试（2026-10-21）。"""
+"""antigravity_pacing / antigravity_quota_guard 专项测试（2026-10-21，2026-10-22 扩展并发闸门）。"""
 
+import asyncio
 import time
 
 import pytest
@@ -10,15 +11,16 @@ from src import antigravity_quota_guard as quota_guard
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
-    pacing._LOCKS.clear()
-    pacing._NEXT_FREE.clear()
-    pacing._429_STRIKES.clear()
+    pacing.reset_state()
     quota_guard._SNAPSHOTS.clear()
     quota_guard._FETCHED_AT.clear()
-    # 固定配置：启用、基准 100ms、抖动 0%（便于确定性断言）
+    # 固定配置：启用、错峰基准 100ms、抖动 0%、并发上限 15（便于确定性断言）
     monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "true")
     monkeypatch.setenv("ANTIGRAVITY_PACING_BASE_MS", "100")
     monkeypatch.setenv("ANTIGRAVITY_PACING_JITTER_PCT", "0")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "15")
+    # over-admit 等待上限缩短，避免测试变慢
+    monkeypatch.setattr(pacing, "_SLOT_WAIT_CAP_SECONDS", 0.1)
     yield
 
 
@@ -83,6 +85,101 @@ def test_transient_429_cooldown_caps_at_300s():
     for _ in range(10):
         cooldown = pacing.transient_429_cooldown("acc-a")
     assert cooldown - time.time() <= 301
+
+
+# ==================== 并发闸门（2026-10-22） ====================
+
+
+@pytest.mark.asyncio
+async def test_slot_allows_configured_concurrency_without_wait(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "3")
+    for _ in range(3):
+        assert await pacing.acquire_credential_slot("acc-a") < 0.01
+    assert pacing._SLOTS["acc-a"].inflight == 3
+
+
+@pytest.mark.asyncio
+async def test_slot_waits_then_over_admits_when_full(monkeypatch):
+    """并发占满且无人释放：等待上限到时放行，保证延迟有界。"""
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    await pacing.acquire_credential_slot("acc-a")
+    t0 = time.monotonic()
+    waited = await pacing.acquire_credential_slot("acc-a")
+    elapsed = time.monotonic() - t0
+    assert waited >= 0.09  # 等到 _SLOT_WAIT_CAP_SECONDS（夹具设为 0.1s）
+    assert elapsed < 0.5
+    assert pacing._SLOTS["acc-a"].inflight == 2  # over-admit
+
+
+@pytest.mark.asyncio
+async def test_slot_release_wakes_waiter(monkeypatch):
+    monkeypatch.setattr(pacing, "_SLOT_WAIT_CAP_SECONDS", 5.0)
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    await pacing.acquire_credential_slot("acc-a")
+
+    async def _release_soon():
+        await asyncio.sleep(0.05)
+        pacing.release_credential_slot("acc-a")
+
+    releaser = asyncio.create_task(_release_soon())
+    t0 = time.monotonic()
+    await pacing.acquire_credential_slot("acc-a")
+    elapsed = time.monotonic() - t0
+    await releaser
+    assert elapsed < 1.0  # 由 release 唤醒，而不是等满上限
+    assert pacing._SLOTS["acc-a"].inflight == 1
+
+
+@pytest.mark.asyncio
+async def test_slot_release_is_idempotent_at_zero(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "2")
+    await pacing.acquire_credential_slot("acc-a")
+    pacing.release_credential_slot("acc-a")
+    pacing.release_credential_slot("acc-a")  # 多余释放不应变负
+    assert pacing._SLOTS["acc-a"].inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_slot_disabled_bypasses_gate(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "get_antigravity_pacing_enabled_sync", lambda: False)
+    for _ in range(20):
+        assert await pacing.acquire_credential_slot("acc-a") == 0.0
+    assert "acc-a" not in pacing._SLOTS
+
+
+@pytest.mark.asyncio
+async def test_429_tightens_concurrency_and_success_restores(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "4")
+    await pacing.acquire_credential_slot("acc-a")
+    slot = pacing._SLOTS["acc-a"]
+    slot.limit = 4
+
+    pacing.note_transient_429("acc-a")
+    assert slot.limit == 2  # 对半收紧
+    pacing.note_transient_429("acc-a")
+    assert slot.limit == 1  # 下限 1
+
+    pacing.note_success("acc-a")
+    assert slot.limit == 2  # 成功后 +1 恢复
+
+    pacing.release_credential_slot("acc-a")
+    assert slot.inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrency_config_lower_applies_immediately(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "8")
+    await pacing.acquire_credential_slot("acc-a")
+    pacing.release_credential_slot("acc-a")
+    slot = pacing._SLOTS["acc-a"]
+    assert slot.limit == 8
+
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "2")
+    await pacing.acquire_credential_slot("acc-a")
+    assert slot.limit == 2  # 面板下调立即生效
+    pacing.release_credential_slot("acc-a")
 
 
 def test_quota_guard_snapshot_and_threshold():

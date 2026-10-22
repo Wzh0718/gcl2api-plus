@@ -488,8 +488,12 @@ def get_antigravity_hub_cl_sync() -> str:
 # Antigravity 请求节奏与 429 治理（2026-10-21）。与 hub 指纹同理，这些策略参数
 # 走 面板配置 > ENV > 默认值，便于随时调参不调部署。
 _ANTIGRAVITY_PACING_ENABLED_DEFAULT = True
-_ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 1500
+# 2026-10-22：节奏控制从「每账号硬间隔」改为「并发闸门 + 毫秒级错峰」。
+# 基准 1500ms 会把单账号锁成 0.67 rps（15 并发完全用不上），业务侧表现为
+# 每个请求先随机等 1~2 秒；现在基准只用于打散瞬时齐发。
+_ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 80
 _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT = 50
+_ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT = 15
 _ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT = True
 _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT = 0.05
 
@@ -596,6 +600,36 @@ def get_antigravity_pacing_jitter_pct_sync() -> int:
             _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT,
             cast=int,
         )
+    )
+
+
+async def get_antigravity_pacing_concurrency() -> int:
+    """每账号并发闸门上限（在飞上游请求数）。默认 15。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_concurrency",
+        "ANTIGRAVITY_PACING_CONCURRENCY",
+        _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT,
+    )
+    try:
+        return min(max(int(value), 1), 64)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT
+
+
+def get_antigravity_pacing_concurrency_sync() -> int:
+    return min(
+        max(
+            int(
+                _sync_number(
+                    "antigravity_pacing_concurrency",
+                    "ANTIGRAVITY_PACING_CONCURRENCY",
+                    _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT,
+                    cast=int,
+                )
+            ),
+            1,
+        ),
+        64,
     )
 
 

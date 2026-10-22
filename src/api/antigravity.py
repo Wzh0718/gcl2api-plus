@@ -1031,12 +1031,17 @@ async def _stream_request_inner(
         need_retry = False  # 标记是否需要重试
         model_fell_back = False  # 标记本轮重试是否由模型降级触发（跳过换号）
         attempted_credentials.add(current_file)
-        attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
 
-        # 每账号请求节奏（随机抖动），拟人化间隔
-        from src.antigravity_pacing import pace_credential
+        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）。
+        # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
+        from src.antigravity_pacing import (
+            acquire_credential_slot,
+            pace_credential,
+            release_credential_slot,
+        )
 
-        await pace_credential(current_file)
+        slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
+        pacing_waited = await pace_credential(slot_holder)
 
         stream = stream_post_async(
             url=target_url,
@@ -1046,6 +1051,13 @@ async def _stream_request_inner(
             proxy_url=proxy_url,
         )
         try:
+            pacing_waited += await acquire_credential_slot(slot_holder)
+            attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
+            if pacing_waited >= 0.2:
+                log.debug(
+                    f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
+                )
+
             async for chunk in stream:
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
@@ -1298,6 +1310,8 @@ async def _stream_request_inner(
                     await record_billing_once(False)
                 return
         finally:
+            # 并发槽位先归还（纯同步，取消/异常路径也安全），再关闭上游流
+            release_credential_slot(slot_holder)
             # 无论流被完整消费，还是因重试/返回/异常被中途放弃，都显式关闭上游流
             await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
 
@@ -1358,16 +1372,20 @@ async def stream_request(
     api_key_id: str = "env",
 ):
     lease_tracker = _ImageCredentialLeaseTracker()
+    inner = _stream_request_inner(
+        body=body,
+        native=native,
+        headers=headers,
+        api_key_id=api_key_id,
+        lease_tracker=lease_tracker,
+    )
     try:
-        async for item in _stream_request_inner(
-            body=body,
-            native=native,
-            headers=headers,
-            api_key_id=api_key_id,
-            lease_tracker=lease_tracker,
-        ):
+        async for item in inner:
             yield item
     finally:
+        # 显式关闭内层生成器：消费者提前断开时立即归还并发槽位/上游流/图片 lease，
+        # 不依赖 async generator 被 GC 终结的时机（否则槽位可能被短暂计为在飞）。
+        await aclose_quietly(inner, "[ANTIGRAVITY STREAM]")
         # Releasing the consumer closes image leases on disconnect/cancellation.
         await lease_tracker.release()
 
@@ -1476,12 +1494,19 @@ async def _non_stream_image_request_inner(
         if headers:
             auth_headers.update(headers)
 
-        started = time.monotonic()
-        try:
-            # 每账号请求节奏（随机抖动），拟人化间隔
-            from src.antigravity_pacing import pace_credential
+        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
+        from src.antigravity_pacing import (
+            acquire_credential_slot,
+            pace_credential,
+            release_credential_slot,
+        )
 
-            await pace_credential(current_file)
+        pacing_waited = await pace_credential(current_file)
+
+        started = time.monotonic()  # 兜底：槽位获取异常时 except 分支仍有耗时基准
+        try:
+            pacing_waited += await acquire_credential_slot(current_file)
+            started = time.monotonic()
 
             call_result = await _post_image_generate(
                 headers=auth_headers,
@@ -1502,6 +1527,9 @@ async def _non_stream_image_request_inner(
                 f"elapsed={elapsed:.3f}s, error={type(exc).__name__}"
             )
             continue
+        finally:
+            # 并发槽位先归还（纯同步，取消/异常/continue 路径都安全）
+            release_credential_slot(current_file)
 
         response = call_result.response
         elapsed = time.monotonic() - started
@@ -1518,7 +1546,8 @@ async def _non_stream_image_request_inner(
             f"request_id={last_request_id}, credential={current_file}, "
             f"tier={credential_data.get('tier')}, "
             f"model={resolved_model}, host={call_result.host}, status={status_code}, "
-            f"upstream_calls={len(call_result.attempts)}, elapsed={elapsed:.3f}s"
+            f"upstream_calls={len(call_result.attempts)}, elapsed={elapsed:.3f}s, "
+            f"queue={pacing_waited:.3f}s"
         )
 
         if status_code == 200:
@@ -1815,14 +1844,24 @@ async def non_stream_request(
     while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
         attempted_credentials.add(current_file)
-        
+
+        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
+        from src.antigravity_pacing import (
+            acquire_credential_slot,
+            pace_credential,
+            release_credential_slot,
+        )
+
+        slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
+        pacing_waited = await pace_credential(slot_holder)
+
         try:
+            pacing_waited += await acquire_credential_slot(slot_holder)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
-
-            # 每账号请求节奏（随机抖动），拟人化间隔
-            from src.antigravity_pacing import pace_credential
-
-            await pace_credential(current_file)
+            if pacing_waited >= 0.2:
+                log.debug(
+                    f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
+                )
 
             response = await post_async(
                 url=target_url,
@@ -2061,6 +2100,9 @@ async def non_stream_request(
                         status_code=500,
                         media_type="application/json"
                     )
+        finally:
+            # 并发槽位先归还（纯同步，取消/异常/重试换号路径都安全）
+            release_credential_slot(slot_holder)
 
     # 所有重试都失败，返回最后一次的原始错误（如果有）或500错误
     log.error("[ANTIGRAVITY] 所有重试均失败")
