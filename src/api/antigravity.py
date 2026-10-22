@@ -7,12 +7,14 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
 import random
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Callable, Set, Tuple
+from email.utils import parsedate_to_datetime
+from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
 from fastapi import Response
 from config import (
@@ -39,6 +41,7 @@ from src.antigravity_error_classifier import (
 # 导入共同的基础功能
 from src.api.utils import (
     check_should_auto_ban,
+    handle_auto_ban,
     handle_error_with_retry,
     get_retry_config,
     record_api_call_success,
@@ -745,6 +748,7 @@ async def _switch_credential_for_retry(
     refresh_credential_fast: Callable[[], Any],
     apply_cred_result: Callable[[Tuple[str, Dict[str, Any]]], bool],
     log_prefix: str,
+    stop_when_unavailable: bool = False,
 ) -> Tuple[bool, Optional[asyncio.Task]]:
     """优先使用预热凭证，失败后退回同步刷新。"""
     if next_cred_task is not None:
@@ -754,15 +758,40 @@ async def _switch_credential_for_retry(
             if cred_result and apply_cred_result(cred_result):
                 await asyncio.sleep(retry_interval)
                 return True, next_cred_task
+            if stop_when_unavailable:
+                return False, next_cred_task
         except Exception as e:
             log.warning(f"{log_prefix} 预热凭证任务失败: {e}")
             next_cred_task = None
+
+    if stop_when_unavailable:
+        if await refresh_credential_fast():
+            await asyncio.sleep(retry_interval)
+            return True, next_cred_task
+        return False, next_cred_task
 
     await asyncio.sleep(retry_interval)
     if await refresh_credential_fast():
         return True, next_cred_task
 
     return False, next_cred_task
+
+
+async def _text_credential_is_available(credential_name: str, model_name: str) -> bool:
+    """复查预选凭证：等待节奏/并发槽位后，可能已被其它请求标记冷却。"""
+    from src.storage_adapter import get_storage_adapter
+
+    try:
+        storage = await get_storage_adapter()
+        state = await storage.get_credential_state(credential_name, mode="antigravity")
+        if not state or state.get("disabled"):
+            return False
+        cooldown = (state.get("model_cooldowns") or {}).get(model_name)
+        return cooldown is None or float(cooldown) <= time.time()
+    except Exception as exc:
+        # 无法确认冷却状态时不向上游盲发，也不走网络异常重试分支。
+        log.warning(f"[ANTIGRAVITY] 无法复查凭证冷却: {credential_name}, {type(exc).__name__}")
+        return False
 
 
 def _is_quota_exhausted_429(status_code: int, error_body: Optional[str]) -> bool:
@@ -808,15 +837,23 @@ async def _try_model_fallback(
     image_request: bool,
     log_prefix: str,
     credential_key: Optional[str] = None,
-) -> Optional[Tuple[str, Dict[str, Any], str]]:
-    """模型配额耗尽且号池无可用凭证时，按配置的降级链切换到下一个模型。
+) -> Optional[Tuple[str, Dict[str, Any], str, Tuple[str, Dict[str, Any]]]]:
+    """模型配额耗尽后，沿降级链选择有可用凭证的后续模型。
 
-    返回 (新模型名, 新payload, 新request_id)；不降级时返回 None。
+    返回 (新模型名, 新payload, 新request_id, 新凭证)；无可用路由时返回 None。
     """
     if image_request or not quota_exhausted:
         return None
     chain = await get_antigravity_model_fallback_chain()
     next_model = _next_fallback_model(chain, model_name)
+    while next_model:
+        cred_result = await credential_manager.get_valid_credential(
+            mode="antigravity", model_name=next_model
+        )
+        if cred_result:
+            credential_key, credential_data = cred_result
+            break
+        next_model = _next_fallback_model(chain, next_model)
     if not next_model:
         return None
     new_payload, new_request_id = await wrap_cli_request(
@@ -827,7 +864,7 @@ async def _try_model_fallback(
     log.warning(
         f"{log_prefix} 模型 {model_name} 配额耗尽且号池无可用凭证，降级到 {next_model}"
     )
-    return next_model, new_payload, new_request_id
+    return next_model, new_payload, new_request_id, cred_result
 
 
 # ==================== 新的流式和非流式请求函数 ====================
@@ -876,12 +913,12 @@ async def _stream_request_inner(
             next_model = _next_fallback_model(chain, model_name)
 
     if not cred_result:
-        # 如果返回值是None，直接返回错误500
+        # 文本号池暂时不可用返回429，图片保留原有语义。
         log.error("[ANTIGRAVITY STREAM] 当前无可用凭证")
         await _alert_all_accounts_unavailable_if_needed(model_name)
         yield Response(
             content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500,
+            status_code=500 if image_request else 429,
             media_type="application/json"
         )
         return
@@ -934,6 +971,7 @@ async def _stream_request_inner(
     last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
+    rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
     usage_metadata = None
     upstream_model = None  # 上游响应 modelVersion：真实执行模型（归一后的物理模型）
     usage_remainder = ""
@@ -990,7 +1028,8 @@ async def _stream_request_inner(
         if lease_tracker is not None:
             await lease_tracker.release()
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name, image_request=image_request
+            mode="antigravity", model_name=model_name, image_request=image_request,
+            exclude_filenames=set(rate_limited_credentials) if not image_request else None,
         )
         if not cred_result:
             return None
@@ -1011,6 +1050,8 @@ async def _stream_request_inner(
 
     def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
         nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url
+        if cred_result[0] in rate_limited_credentials and not image_request:
+            return False
         current_file, credential_data = cred_result
         if lease_tracker is not None:
             lease_tracker.activate_reserved(
@@ -1030,7 +1071,6 @@ async def _stream_request_inner(
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
         model_fell_back = False  # 标记本轮重试是否由模型降级触发（跳过换号）
-        attempted_credentials.add(current_file)
 
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）。
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
@@ -1052,6 +1092,22 @@ async def _stream_request_inner(
         )
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
+            if not image_request and (
+                current_file in rate_limited_credentials
+                or not await _text_credential_is_available(current_file, model_name)
+            ):
+                log.info(f"[ANTIGRAVITY] 跳过预选后已冷却或429失败的凭证: {current_file} / {model_name}")
+                rate_limited_credentials.add(current_file)
+                if retry_config["retry_enabled"] and attempt < max_retries and await refresh_credential_fast():
+                    attempt += 1
+                    continue
+                await record_billing_once(False, status_code=429)
+                yield (_upstream_403_to_503(last_error_response) if last_error_response is not None else Response(
+                    content=json.dumps({"error": "当前无可用凭证"}),
+                    status_code=429, media_type="application/json",
+                ))
+                return
+            attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
                 log.debug(
@@ -1079,7 +1135,10 @@ async def _stream_request_inner(
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
                         if status_code == 429 or status_code == 503:
-                            cooldown_until = await _resolve_error_cooldown(status_code, error_body, current_file)
+                            cooldown_until = await _resolve_error_cooldown(
+                                status_code, error_body, current_file,
+                                headers=getattr(chunk, "headers", None),
+                            )
 
                         classified_403 = None
                         if status_code == 403:
@@ -1112,6 +1171,11 @@ async def _stream_request_inner(
                                 and classified_403.should_retry
                                 and attempt < max_retries
                             )
+                        elif status_code == 429 and not image_request:
+                            rate_limited_credentials.add(current_file)
+                            if await check_should_auto_ban(status_code):
+                                await handle_auto_ban(credential_manager, status_code, current_file, mode="antigravity")
+                            should_retry = retry_config["retry_enabled"] and attempt < max_retries
                         else:
                             # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
                             sleep_interval = (
@@ -1137,7 +1201,8 @@ async def _stream_request_inner(
                         ):
                             next_cred_task = asyncio.create_task(
                                 credential_manager.get_valid_credential(
-                                    mode="antigravity", model_name=model_name
+                                    mode="antigravity", model_name=model_name,
+                                    exclude_filenames=set(rate_limited_credentials),
                                 )
                             )
 
@@ -1157,8 +1222,9 @@ async def _stream_request_inner(
                                     credential_key=current_file,
                                 )
                                 if fallback is not None:
-                                    model_name, final_payload, request_id = fallback
-                                    attempted_credentials.clear()
+                                    model_name, final_payload, request_id, fallback_cred = fallback
+                                    rate_limited_credentials.clear()
+                                    apply_cred_result(fallback_cred)
                                     need_retry = True
                                     model_fell_back = True
                                     break  # 跳出内层循环，用降级模型重试
@@ -1249,10 +1315,15 @@ async def _stream_request_inner(
 
                 switched, next_cred_task = await _switch_credential_for_retry(
                     next_cred_task=next_cred_task,
-                    retry_interval=retry_interval,
+                    retry_interval=(
+                        min(retry_interval * (2 ** attempt), 30.0) * random.uniform(0.5, 1.5)
+                        if not image_request and last_error_response is not None and last_error_response.status_code == 429
+                        else retry_interval
+                    ),
                     refresh_credential_fast=refresh_credential_fast,
                     apply_cred_result=apply_cred_result,
                     log_prefix="[ANTIGRAVITY STREAM]",
+                    stop_when_unavailable=not image_request and last_error_response is not None and last_error_response.status_code == 429,
                 )
                 if not switched:
                     # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
@@ -1266,8 +1337,9 @@ async def _stream_request_inner(
                         credential_key=current_file,
                     )
                     if fallback is not None:
-                        model_name, final_payload, request_id = fallback
-                        attempted_credentials.clear()
+                        model_name, final_payload, request_id, fallback_cred = fallback
+                        rate_limited_credentials.clear()
+                        apply_cred_result(fallback_cred)
                         attempt = 0
                         continue
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
@@ -1275,6 +1347,9 @@ async def _stream_request_inner(
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
+                    if not image_request and last_error_response is not None and last_error_response.status_code == 429:
+                        yield last_error_response
+                        return
                     yield Response(
                         content=json.dumps({"error": "当前无可用凭证"}),
                         status_code=500,
@@ -1598,7 +1673,10 @@ async def _non_stream_image_request_inner(
         cooldown_until = None
         classified_403 = None
         if status_code in (429, 503):
-            cooldown_until = await _resolve_error_cooldown(status_code, error_text, current_file)
+            cooldown_until = await _resolve_error_cooldown(
+                status_code, error_text, current_file,
+                headers=getattr(response, "headers", None),
+            )
         if status_code == 403:
             classified_403 = await _handle_antigravity_403(
                 credential_name=current_file,
@@ -1723,12 +1801,12 @@ async def non_stream_request(
             next_model = _next_fallback_model(chain, model_name)
 
     if not cred_result:
-        # 如果返回值是None，直接返回错误500
+        # 文本号池暂时不可用返回429，不作为内部故障。
         log.error("[ANTIGRAVITY] 当前无可用凭证")
         await _alert_all_accounts_unavailable_if_needed(model_name)
         return Response(
             content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500,
+            status_code=429,
             media_type="application/json"
         )
 
@@ -1776,6 +1854,7 @@ async def non_stream_request(
     last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
+    rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
     usage_metadata = None
     upstream_model = None  # 上游响应 modelVersion：真实执行模型
     billing_recorded = False
@@ -1813,7 +1892,8 @@ async def non_stream_request(
     async def refresh_credential_fast():
         nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url
         cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name
+            mode="antigravity", model_name=model_name,
+            exclude_filenames=set(rate_limited_credentials),
         )
         if not cred_result:
             return None
@@ -1830,6 +1910,8 @@ async def non_stream_request(
 
     def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
         nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url
+        if cred_result[0] in rate_limited_credentials:
+            return False
         current_file, credential_data = cred_result
         access_token = credential_data.get("access_token") or credential_data.get("token")
         project_id = credential_data.get("project_id", "")
@@ -1843,7 +1925,6 @@ async def non_stream_request(
     attempt = 0
     while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
-        attempted_credentials.add(current_file)
 
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
         from src.antigravity_pacing import (
@@ -1857,6 +1938,21 @@ async def non_stream_request(
 
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
+            if (
+                current_file in rate_limited_credentials
+                or not await _text_credential_is_available(current_file, model_name)
+            ):
+                log.info(f"[ANTIGRAVITY] 跳过预选后已冷却或429失败的凭证: {current_file} / {model_name}")
+                rate_limited_credentials.add(current_file)
+                if retry_config["retry_enabled"] and attempt < max_retries and await refresh_credential_fast():
+                    attempt += 1
+                    continue
+                await record_billing_once(False, status_code=429)
+                return (_upstream_403_to_503(last_error_response) if last_error_response is not None else Response(
+                    content=json.dumps({"error": "当前无可用凭证"}),
+                    status_code=429, media_type="application/json",
+                ))
+            attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
                 log.debug(
@@ -1941,7 +2037,10 @@ async def non_stream_request(
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
                     if status_code == 429 or status_code == 503:
-                        cooldown_until = await _resolve_error_cooldown(status_code, error_text, current_file)
+                        cooldown_until = await _resolve_error_cooldown(
+                            status_code, error_text, current_file,
+                            headers=getattr(response, "headers", None),
+                        )
 
                     classified_403 = None
                     if status_code == 403:
@@ -1974,6 +2073,11 @@ async def non_stream_request(
                             and classified_403.should_retry
                             and attempt < max_retries
                         )
+                    elif status_code == 429:
+                        rate_limited_credentials.add(current_file)
+                        if await check_should_auto_ban(status_code):
+                            await handle_auto_ban(credential_manager, status_code, current_file, mode="antigravity")
+                        should_retry = retry_config["retry_enabled"] and attempt < max_retries
                     else:
                         # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
                         sleep_interval = (
@@ -1991,7 +2095,8 @@ async def non_stream_request(
                     if should_retry and next_cred_task is None and attempt < max_retries:
                         next_cred_task = asyncio.create_task(
                             credential_manager.get_valid_credential(
-                                mode="antigravity", model_name=model_name
+                                mode="antigravity", model_name=model_name,
+                                exclude_filenames=set(rate_limited_credentials),
                             )
                         )
 
@@ -2010,8 +2115,9 @@ async def non_stream_request(
                                 credential_key=current_file,
                             )
                             if fallback is not None:
-                                model_name, final_payload, request_id = fallback
-                                attempted_credentials.clear()
+                                model_name, final_payload, request_id, fallback_cred = fallback
+                                rate_limited_credentials.clear()
+                                apply_cred_result(fallback_cred)
                                 attempt = 0
                                 continue
                         # 不重试，直接返回原始错误（上游 403 改写为 503）
@@ -2043,10 +2149,15 @@ async def non_stream_request(
 
                 switched, next_cred_task = await _switch_credential_for_retry(
                     next_cred_task=next_cred_task,
-                    retry_interval=retry_interval,
+                    retry_interval=(
+                        min(retry_interval * (2 ** attempt), 30.0) * random.uniform(0.5, 1.5)
+                        if last_error_response is not None and last_error_response.status_code == 429
+                        else retry_interval
+                    ),
                     refresh_credential_fast=refresh_credential_fast,
                     apply_cred_result=apply_cred_result,
                     log_prefix="[ANTIGRAVITY]",
+                    stop_when_unavailable=last_error_response is not None and last_error_response.status_code == 429,
                 )
                 if not switched:
                     # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
@@ -2060,8 +2171,9 @@ async def non_stream_request(
                         credential_key=current_file,
                     )
                     if fallback is not None:
-                        model_name, final_payload, request_id = fallback
-                        attempted_credentials.clear()
+                        model_name, final_payload, request_id, fallback_cred = fallback
+                        rate_limited_credentials.clear()
+                        apply_cred_result(fallback_cred)
                         attempt = 0
                         continue
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
@@ -2069,6 +2181,8 @@ async def non_stream_request(
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
+                    if last_error_response is not None and last_error_response.status_code == 429:
+                        return last_error_response
                     return Response(
                         content=json.dumps({"error": "当前无可用凭证"}),
                         status_code=500,
@@ -2555,20 +2669,47 @@ async def _resolve_error_cooldown(
     status_code: int,
     error_body: Optional[str],
     credential_name: Optional[str] = None,
+    headers: Optional[Mapping[str, str]] = None,
 ) -> Optional[float]:
-    """
-    解析 429/503 的冷却时间：
+    """取正文配额重置与 Retry-After 中较晚的有效未来时间。
 
-    - 错误体带 quotaResetTimeStamp/quotaResetDelay 时，按上游明确重置时间冷却；
-    - 其余 429（包括 INSUFFICIENT_G1_CREDITS_BALANCE）都按瞬时限流处理，
-      走连击升级短冷却（60s 翻倍、封顶 300s，成功重置）。
+    Retry-After 支持非负整数秒和 HTTP-date；无有效上游时间的 429
+    （包括 INSUFFICIENT_G1_CREDITS_BALANCE）沿用 60s→300s 连击冷却。
+    503 没有有效上游时间时仍不设置冷却。
     """
+    now = time.time()
     cooldown_until = None
     if error_body:
         try:
-            cooldown_until = await parse_and_log_cooldown(error_body, mode="antigravity")
+            deadline = await parse_and_log_cooldown(error_body, mode="antigravity")
+            if (
+                isinstance(deadline, (int, float))
+                and not isinstance(deadline, bool)
+                and math.isfinite(deadline)
+                and deadline > now
+            ):
+                cooldown_until = deadline
         except Exception:
-            cooldown_until = None
+            pass
+
+    if headers:
+        try:
+            value = next(
+                (value for key, value in headers.items() if key.lower() == "retry-after"),
+                "",
+            ).strip()
+            if value and value.isascii() and value.isdigit():
+                deadline = now + float(value)
+            else:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                deadline = date.timestamp()
+            if math.isfinite(deadline) and deadline > now:
+                cooldown_until = max(cooldown_until or deadline, deadline)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            # 无效/过期上游时间不能抑制原有退避，也不能覆盖正文中的有效时间。
+            pass
 
     if cooldown_until is None and status_code == 429:
         if credential_name:

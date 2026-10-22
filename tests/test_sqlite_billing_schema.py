@@ -111,6 +111,112 @@ async def test_active_antigravity_429_remains_visible_during_short_cooldown(tmp_
 
 
 @pytest.mark.asyncio
+async def test_old_antigravity_success_preserves_new_active_429_cooldown(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    from src.storage.sqlite_manager import SQLiteManager
+    import aiosqlite
+    import json
+
+    manager = SQLiteManager()
+    await manager.initialize()
+    try:
+        model = "gemini-2.5-flash"
+        for filename in ("a.json", "b.json"):
+            await manager.store_credential(
+                filename,
+                {"access_token": filename, "project_id": "project"},
+                mode="antigravity",
+            )
+
+        # A was selected before another in-flight request reported a new 429.
+        old_request = await manager.get_next_available_credential(
+            mode="antigravity", model_name=model
+        )
+        assert old_request[0] == "a.json"
+        cooldown_until = time.time() + 60
+        await manager.update_credential_state(
+            "a.json", {"error_codes": [429]}, mode="antigravity"
+        )
+        assert await manager.set_model_cooldown(
+            "a.json", model, cooldown_until, mode="antigravity"
+        )
+        await manager.record_success(old_request[0], model, mode="antigravity")
+
+        async with aiosqlite.connect(manager._db_path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT model_cooldowns FROM antigravity_credentials WHERE filename = ?",
+                    ("a.json",),
+                )
+            ).fetchone()
+        assert json.loads(row[0]) == {model: cooldown_until}
+        state = await manager.get_credential_state("a.json", mode="antigravity")
+        assert state["model_cooldowns"] == {model: cooldown_until}
+        summary = await manager.get_credentials_summary(
+            mode="antigravity", cooldown_filter="in_cooldown", limit=20
+        )
+        assert [item["filename"] for item in summary["items"]] == ["a.json"]
+        assert summary["items"][0]["model_cooldowns"] == {model: cooldown_until}
+
+        selected = await manager.get_next_available_credential(
+            mode="antigravity", model_name=model
+        )
+        assert selected[0] == "b.json"
+        assert await manager.get_next_available_credential(
+            mode="antigravity", model_name=model, exclude_filenames=["b.json"]
+        ) is None
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "cooldown_seconds"),
+    [("antigravity", -60), ("geminicli", 60)],
+)
+async def test_success_clears_expired_antigravity_or_active_cli_cooldown(
+    tmp_path, monkeypatch, mode, cooldown_seconds
+):
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    from src.storage.sqlite_manager import SQLiteManager
+    import aiosqlite
+    import json
+
+    manager = SQLiteManager()
+    await manager.initialize()
+    try:
+        model = "gemini-2.5-flash"
+        await manager.store_credential(
+            "account.json", {"access_token": "token", "project_id": "project"}, mode=mode
+        )
+        await manager.update_credential_state(
+            "account.json", {"error_codes": [429]}, mode=mode
+        )
+        assert await manager.set_model_cooldown(
+            "account.json", model, time.time() + cooldown_seconds, mode=mode
+        )
+
+        await manager.record_success("account.json", model, mode=mode)
+
+        table = manager._get_table_name(mode)
+        async with aiosqlite.connect(manager._db_path) as db:
+            row = await (
+                await db.execute(
+                    f"SELECT model_cooldowns, error_codes FROM {table} WHERE filename = ?",
+                    ("account.json",),
+                )
+            ).fetchone()
+        assert json.loads(row[0]) == {}
+        assert json.loads(row[1]) == []
+        selected = await manager.get_next_available_credential(mode=mode, model_name=model)
+        assert selected[0] == "account.json"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_antigravity_credentials_include_network_context_and_switch_atomically(tmp_path, monkeypatch):
     monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
     from src.storage.sqlite_manager import SQLiteManager

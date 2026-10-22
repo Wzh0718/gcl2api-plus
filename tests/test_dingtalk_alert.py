@@ -225,7 +225,7 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     {"model": "gemini-test", "request": {"contents": []}}
                 )
 
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 429)
         alert.assert_not_awaited()
 
     async def test_available_snapshot_overrides_transient_no_credential_result(self):
@@ -256,7 +256,7 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
                     {"model": "gemini-test", "request": {"contents": []}}
                 )
 
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 429)
         alert.assert_not_awaited()
 
     async def test_no_available_account_sends_one_alert(self):
@@ -288,7 +288,7 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
                         {"model": "gemini-test", "request": {"contents": []}}
                     )
 
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 429)
         self.assertEqual(fake_manager.mode, "antigravity")
         alert.assert_awaited_once()
         self.assertEqual(alert.await_args.kwargs["model_name"], "gemini-test")
@@ -318,7 +318,7 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 ]
 
         self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0].status_code, 500)
+        self.assertEqual(chunks[0].status_code, 429)
         alert.assert_awaited_once()
 
     async def test_all_attempted_accounts_return_non_200_sends_one_alert(self):

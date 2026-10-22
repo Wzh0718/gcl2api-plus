@@ -3752,36 +3752,39 @@ class SQLiteManager:
 
         try:
             table_name = self._get_table_name(mode)
+            json_path = '$.' + json.dumps(model_name, ensure_ascii=False)
             async with aiosqlite.connect(self._db_path) as db:
-                # 获取当前的 model_cooldowns
-                async with db.execute(f"""
-                    SELECT model_cooldowns FROM {table_name} WHERE filename = ?
-                """, (filename,)) as cursor:
-                    row = await cursor.fetchone()
+                # 原子修改指定键，避免并发写不同模型时整量 JSON 覆盖。
+                if cooldown_until is None:
+                    expression = "json_remove(COALESCE(model_cooldowns, '{}'), :path)"
+                else:
+                    # 仅有效的数值截止时间参与比较，短冷却不能缩短既有长冷却。
+                    expression = """json_set(COALESCE(model_cooldowns, '{}'), :path,
+                        json(CASE
+                            WHEN json_type(model_cooldowns, :path) IN ('integer', 'real')
+                                 AND json_extract(model_cooldowns, :path) > unixepoch()
+                                 AND json_extract(model_cooldowns, :path) > :deadline
+                            THEN model_cooldowns -> :path
+                            ELSE :deadline_json
+                        END))"""
+                result = await db.execute(f"""
+                    UPDATE {table_name}
+                    SET model_cooldowns = {expression},
+                        updated_at = unixepoch()
+                    WHERE filename = :filename
+                """, {
+                    "path": json_path,
+                    "deadline": cooldown_until,
+                    "deadline_json": json.dumps(cooldown_until),
+                    "filename": filename,
+                })
+                await db.commit()
+                if result.rowcount == 0:
+                    log.warning(f"Credential {filename} not found")
+                    return False
 
-                    if not row:
-                        log.warning(f"Credential {filename} not found")
-                        return False
-
-                    model_cooldowns = json.loads(row[0] or '{}')
-
-                    # 更新或删除指定模型的冷却时间
-                    if cooldown_until is None:
-                        model_cooldowns.pop(model_name, None)
-                    else:
-                        model_cooldowns[model_name] = cooldown_until
-
-                    # 写回数据库
-                    await db.execute(f"""
-                        UPDATE {table_name}
-                        SET model_cooldowns = ?,
-                            updated_at = unixepoch()
-                        WHERE filename = ?
-                    """, (json.dumps(model_cooldowns), filename))
-                    await db.commit()
-
-                    log.debug(f"Set model cooldown: {filename}, model_name={model_name}, cooldown_until={cooldown_until}")
-                    return True
+                log.debug(f"Set model cooldown: {filename}, model_name={model_name}, cooldown_until={cooldown_until}")
+                return True
 
         except Exception as e:
             log.error(f"Error setting model cooldown for {filename}: {e}")
@@ -3829,7 +3832,8 @@ class SQLiteManager:
         """
         成功调用后的条件写入：
         - 只有当前 error_codes 非空时才清除错误并写 last_success
-        - 只有当前存在该模型的冷却键时才清除
+        - Antigravity 仅清除本模型已过期的冷却，保留其他在飞请求新记录的活跃冷却
+        - GeminiCLI 保持成功即清除本模型冷却的行为
         通过 SQL WHERE 条件匹配实现
         """
         self._ensure_initialized()
@@ -3854,7 +3858,7 @@ class SQLiteManager:
                           AND (error_codes IS NOT NULL AND error_codes != '[]' AND error_codes != '')
                     """, (filename,))
 
-                    # 条件删除模型冷却：只有模型键存在时才写入
+                    # 旧在飞成功不能抹去新 429；Antigravity 仅清过期冷却。
                     if model_name:
                         async with db.execute(f"""
                             SELECT model_cooldowns FROM {table_name} WHERE filename = ?
@@ -3862,7 +3866,10 @@ class SQLiteManager:
                             row = await cursor.fetchone()
                             if row:
                                 cooldowns = json.loads(row[0] or '{}')
-                                if model_name in cooldowns:
+                                active_cooldowns = _active_model_cooldowns(cooldowns, time.time())
+                                if model_name in cooldowns and (
+                                    mode != "antigravity" or model_name not in active_cooldowns
+                                ):
                                     cooldowns.pop(model_name)
                                     await db.execute(f"""
                                         UPDATE {table_name}
@@ -3872,7 +3879,7 @@ class SQLiteManager:
 
                     if mode == "antigravity":
                         # 一次真实 API 成功比陈旧的 403/地区缓存更可信。清除
-                        # 账号级红色状态；模型级冷却仍只清除本次成功的模型。
+                        # 账号级红色状态；本模型仍未到期的冷却不受成功响应影响。
                         await db.execute("""
                             UPDATE antigravity_account_health
                             SET binding_status = CASE
