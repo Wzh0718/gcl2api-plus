@@ -5139,8 +5139,9 @@ function populateConfigForm() {
     setConfigField('antigravityHubVersion', c.antigravity_hub_version || '');
     setConfigField('antigravityHubCl', c.antigravity_hub_cl || '');
     document.getElementById('antigravityPacingEnabled').checked = Boolean(c.antigravity_pacing_enabled !== false);
-    setConfigField('antigravityPacingBaseMs', c.antigravity_pacing_base_ms ?? 1500);
+    setConfigField('antigravityPacingBaseMs', c.antigravity_pacing_base_ms ?? 80);
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
+    setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
     document.getElementById('antigravityQuotaGuardEnabled').checked = Boolean(c.antigravity_quota_guard_enabled !== false);
     setConfigField('antigravityQuotaGuardThreshold', c.antigravity_quota_guard_threshold ?? 0.05);
 
@@ -5205,8 +5206,9 @@ async function saveConfig() {
             antigravity_hub_version: getValue('antigravityHubVersion'),
             antigravity_hub_cl: getValue('antigravityHubCl'),
             antigravity_pacing_enabled: getChecked('antigravityPacingEnabled'),
-            antigravity_pacing_base_ms: getInt('antigravityPacingBaseMs', 1500),
+            antigravity_pacing_base_ms: getInt('antigravityPacingBaseMs', 80),
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
+            antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
             antigravity_quota_guard_enabled: getChecked('antigravityQuotaGuardEnabled'),
             antigravity_quota_guard_threshold: getFloat('antigravityQuotaGuardThreshold', 0.05),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),

@@ -72,6 +72,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_pacing_enabled"] = await config.get_antigravity_pacing_enabled()
         current_config["antigravity_pacing_base_ms"] = await config.get_antigravity_pacing_base_ms()
         current_config["antigravity_pacing_jitter_pct"] = await config.get_antigravity_pacing_jitter_pct()
+        current_config["antigravity_pacing_concurrency"] = await config.get_antigravity_pacing_concurrency()
         current_config["antigravity_quota_guard_enabled"] = await config.get_antigravity_quota_guard_enabled()
         current_config["antigravity_quota_guard_threshold"] = await config.get_antigravity_quota_guard_threshold()
 
@@ -222,6 +223,15 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config["antigravity_pacing_jitter_pct"] = jitter_pct
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="抖动幅度必须是0-95之间的整数百分比")
+
+        if "antigravity_pacing_concurrency" in new_config:
+            try:
+                concurrency = int(new_config["antigravity_pacing_concurrency"])
+                if concurrency < 1 or concurrency > 64:
+                    raise ValueError
+                new_config["antigravity_pacing_concurrency"] = concurrency
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="每账号并发上限必须是1-64之间的整数")
 
         if "antigravity_quota_guard_threshold" in new_config:
             try:

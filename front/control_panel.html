@@ -3210,24 +3210,31 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityPacingEnabled" class="config-checkbox" />
-                                    账号请求节奏（随机抖动）
+                                    账号请求节奏（并发闸门 + 随机抖动）
                                 </label>
-                                <small class="config-note">启用后每个账号的发往上游请求按「基准间隔 ± 抖动」排队，拟人化请求节奏，降低突发特征 <span
+                                <small class="config-note">启用后每个账号按「并发上限」控制同时在飞请求数，并让请求发起时刻带随机抖动，避免瞬时齐发特征；429 时该账号并发自动收紧、成功后逐步恢复 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
 
                             <div class="form-group">
-                                <label for="antigravityPacingBaseMs">请求间隔基准（毫秒/账号）:</label>
+                                <label for="antigravityPacingConcurrency">每账号并发上限（在飞请求）:</label>
+                                <input type="number" id="antigravityPacingConcurrency" class="config-input" min="1"
+                                    max="64" step="1" />
+                                <small class="config-note">单个账号允许同时进行的上游请求数，默认 15（实测单账号可承载 15 并发）。这是真实容量约束；占满时请求排队，等待超过 2 秒会放行并告警</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingBaseMs">请求发起错峰基准（毫秒/账号）:</label>
                                 <input type="number" id="antigravityPacingBaseMs" class="config-input" min="0"
-                                    max="600000" step="100" />
-                                <small class="config-note">每个账号两次上游请求的最小间隔基准，默认 1500；0 = 不限速。多账号各自排队，聚合吞吐 = 账号数 × (1000/间隔)</small>
+                                    max="600000" step="10" />
+                                <small class="config-note">同一账号两次请求发起时刻的最小间隔，默认 80；仅用于打散瞬时齐发，不再限制吞吐（0 = 不设错峰）。旧版默认 1500 会把单账号锁成 0.67 rps</small>
                             </div>
 
                             <div class="form-group">
                                 <label for="antigravityPacingJitterPct">间隔抖动幅度（±%）:</label>
                                 <input type="number" id="antigravityPacingJitterPct" class="config-input" min="0"
                                     max="95" />
-                                <small class="config-note">实际间隔 = 基准 × (1 ± 抖动%) 均匀随机，默认 50 即 0.5x~1.5x</small>
+                                <small class="config-note">实际错峰间隔 = 基准 × (1 ± 抖动%) 均匀随机，默认 50 即 0.5x~1.5x</small>
                             </div>
 
                             <div class="form-group">
