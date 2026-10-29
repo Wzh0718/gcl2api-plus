@@ -635,7 +635,7 @@ def get_antigravity_pacing_concurrency_sync() -> int:
 
 
 async def get_antigravity_pacing_slot_wait_seconds() -> float:
-    """并发占满时等待释放的上限（秒），超时放行并告警。默认 30。"""
+    """并发占满时等待释放的上限（秒），超时返回 429 背压并告警。默认 30。"""
     value = await _async_panel_first(
         "antigravity_pacing_slot_wait_seconds",
         "ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS",

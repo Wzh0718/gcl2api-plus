@@ -615,6 +615,23 @@ def _safe_response_json(response: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _credential_slot_backpressure_response() -> Response:
+    return Response(
+        content=json.dumps(
+            {
+                "error": {
+                    "code": 429,
+                    "message": "Upstream account capacity is busy; retry later.",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            }
+        ),
+        status_code=429,
+        media_type="application/json",
+        headers={"Retry-After": "1"},
+    )
+
+
 def _upstream_403_to_503(response: Any) -> Any:
     """上游 403 返回给客户端时改写为 503（响应体保留）。
 
@@ -1079,6 +1096,7 @@ async def _stream_request_inner(
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）。
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
         from src.antigravity_pacing import (
+            CredentialSlotWaitTimeout,
             acquire_credential_slot,
             pace_credential,
             release_credential_slot,
@@ -1094,8 +1112,10 @@ async def _stream_request_inner(
             headers=auth_headers,
             proxy_url=proxy_url,
         )
+        slot_acquired = False
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
+            slot_acquired = True
             if not image_request and (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -1363,6 +1383,10 @@ async def _stream_request_inner(
                 attempt += 1
                 continue  # 重试
 
+        except CredentialSlotWaitTimeout:
+            await record_billing_once(False, status_code=429)
+            yield _credential_slot_backpressure_response()
+            return
         except Exception as e:
             log.error(f"[ANTIGRAVITY STREAM] 流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
@@ -1389,8 +1413,9 @@ async def _stream_request_inner(
                     await record_billing_once(False)
                 return
         finally:
-            # 并发槽位先归还（纯同步，取消/异常路径也安全），再关闭上游流
-            release_credential_slot(slot_holder)
+            # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
+            if slot_acquired:
+                release_credential_slot(slot_holder)
             # 无论流被完整消费，还是因重试/返回/异常被中途放弃，都显式关闭上游流
             await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
 
@@ -1575,6 +1600,7 @@ async def _non_stream_image_request_inner(
 
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
         from src.antigravity_pacing import (
+            CredentialSlotWaitTimeout,
             acquire_credential_slot,
             pace_credential,
             release_credential_slot,
@@ -1583,8 +1609,10 @@ async def _non_stream_image_request_inner(
         pacing_waited = await pace_credential(current_file)
 
         started = time.monotonic()  # 兜底：槽位获取异常时 except 分支仍有耗时基准
+        slot_acquired = False
         try:
             pacing_waited += await acquire_credential_slot(current_file)
+            slot_acquired = True
             started = time.monotonic()
 
             call_result = await _post_image_generate(
@@ -1594,6 +1622,9 @@ async def _non_stream_image_request_inner(
                 timeout=300.0,
                 request_id=last_request_id,
             )
+        except CredentialSlotWaitTimeout:
+            await lease_tracker.release()
+            return _credential_slot_backpressure_response()
         except Exception as exc:
             elapsed = time.monotonic() - started
             await _record_image_account_outcome(
@@ -1607,8 +1638,9 @@ async def _non_stream_image_request_inner(
             )
             continue
         finally:
-            # 并发槽位先归还（纯同步，取消/异常/continue 路径都安全）
-            release_credential_slot(current_file)
+            # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
+            if slot_acquired:
+                release_credential_slot(current_file)
 
         response = call_result.response
         elapsed = time.monotonic() - started
@@ -1932,6 +1964,7 @@ async def non_stream_request(
 
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
         from src.antigravity_pacing import (
+            CredentialSlotWaitTimeout,
             acquire_credential_slot,
             pace_credential,
             release_credential_slot,
@@ -1940,8 +1973,10 @@ async def non_stream_request(
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
         pacing_waited = await pace_credential(slot_holder)
 
+        slot_acquired = False
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
+            slot_acquired = True
             if (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -2195,6 +2230,9 @@ async def non_stream_request(
                 attempt += 1
                 continue  # 重试
 
+        except CredentialSlotWaitTimeout:
+            await record_billing_once(False, status_code=429)
+            return _credential_slot_backpressure_response()
         except Exception as e:
             log.error(f"[ANTIGRAVITY] 非流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
@@ -2219,8 +2257,9 @@ async def non_stream_request(
                         media_type="application/json"
                     )
         finally:
-            # 并发槽位先归还（纯同步，取消/异常/重试换号路径都安全）
-            release_credential_slot(slot_holder)
+            # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
+            if slot_acquired:
+                release_credential_slot(slot_holder)
 
     # 所有重试都失败，返回最后一次的原始错误（如果有）或500错误
     log.error("[ANTIGRAVITY] 所有重试均失败")

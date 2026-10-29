@@ -1295,6 +1295,73 @@ async def test_image_stream_uses_configured_route_and_releases_on_cancel(
     ]
 
 
+@pytest.mark.asyncio
+async def test_image_slot_wait_timeout_returns_429_without_releasing_owner(monkeypatch):
+    from src import antigravity_pacing as pacing
+    from src.api import antigravity
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.releases = []
+            self.outcomes = []
+
+        async def get_valid_credential(self, **kwargs):
+            return "ultra.json", {
+                "access_token": "token",
+                "project_id": "project",
+                "_image_lease_id": "lease-ultra",
+            }
+
+        async def release_image_credential(self, credential_name, lease_id):
+            self.releases.append((credential_name, lease_id))
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            self.outcomes.append((credential_name, kwargs))
+
+    manager = FakeCredentialManager()
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "true")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_BASE_MS", "0")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_JITTER_PCT", "0")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "0.01")
+    monkeypatch.setattr(
+        antigravity,
+        "resolve_dynamic_image_model_for_credential",
+        lambda **kwargs: async_value("gemini-3.1-flash-image"),
+    )
+    monkeypatch.setattr(
+        antigravity,
+        "wrap_cli_request",
+        lambda *args, **kwargs: async_value(({"request": {}}, "request-id")),
+    )
+
+    async def unexpected_post(**kwargs):
+        raise AssertionError("背压请求不应触达上游")
+
+    monkeypatch.setattr(antigravity, "_post_image_generate", unexpected_post)
+    pacing.reset_state()
+    await pacing.acquire_credential_slot("ultra.json")
+
+    response = await antigravity.non_stream_request(
+        {
+            "model": "gemini-3.1-flash-image",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "draw"}]}],
+                "generationConfig": {"responseModalities": ["IMAGE"]},
+            },
+        }
+    )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "1"
+    assert manager.releases == [("ultra.json", "lease-ultra")]
+    assert manager.outcomes == []
+    assert pacing._SLOTS["ultra.json"].inflight == 1
+    pacing.release_credential_slot("ultra.json")
+    pacing.reset_state()
+
+
 def test_capacity_exhausted_is_model_level_not_account_unavailable():
     from src.api.antigravity import is_image_model_capacity_exhausted
 

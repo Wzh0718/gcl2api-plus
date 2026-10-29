@@ -165,6 +165,46 @@ async def test_concurrent_streams_with_limit_one_all_release(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stream_slot_wait_timeout_returns_429_without_releasing_owner(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    cred = _patch_common(monkeypatch)
+    await pacing.acquire_credential_slot(cred[0])
+
+    async def unexpected_stream(**kwargs):
+        raise AssertionError("背压请求不应触达上游")
+        yield
+
+    monkeypatch.setattr(agy, "stream_post_async", unexpected_stream)
+    chunks = [item async for item in agy.stream_request(_body())]
+
+    assert len(chunks) == 1
+    assert chunks[0].status_code == 429
+    assert chunks[0].headers["retry-after"] == "1"
+    assert json.loads(chunks[0].body)["error"]["code"] == 429
+    assert _inflight(cred[0]) == 1
+    pacing.release_credential_slot(cred[0])
+
+
+@pytest.mark.asyncio
+async def test_non_stream_slot_wait_timeout_returns_429_without_releasing_owner(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    cred = _patch_common(monkeypatch)
+    await pacing.acquire_credential_slot(cred[0])
+
+    async def unexpected_post(**kwargs):
+        raise AssertionError("背压请求不应触达上游")
+
+    monkeypatch.setattr(agy, "post_async", unexpected_post)
+    response = await agy.non_stream_request(_body())
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "1"
+    assert json.loads(response.body)["error"]["code"] == 429
+    assert _inflight(cred[0]) == 1
+    pacing.release_credential_slot(cred[0])
+
+
+@pytest.mark.asyncio
 async def test_disabled_pacing_never_registers_slot(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "false")
     cred = _patch_common(monkeypatch)

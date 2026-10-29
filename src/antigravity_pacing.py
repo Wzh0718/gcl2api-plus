@@ -10,7 +10,7 @@
 
 1. acquire/release_credential_slot()：**每账号并发闸门**（默认 15 个在飞请求），
    这是真实的容量约束。并发占满时等待释放；等待超过配置的排队上限（默认 30 秒）后
-   放行（over-admit）并告警，保证业务延迟有界，而不是无上界排队。
+   抛出背压异常，由 API 层返回 429，避免在飞请求无界增长。
 2. pace_credential()：同账号两次「请求发起」之间的毫秒级错峰 + 抖动
    （默认 80ms ± 50%），只用于打散瞬时齐发，不再限制吞吐。
 3. 429 自适应：同一账号瞬时 429 使并发上限对半收紧（下限 1），成功后每次 +1，
@@ -29,8 +29,8 @@ _NEXT_FREE: Dict[str, float] = {}
 _429_STRIKES: Dict[str, int] = {}
 _SLOTS: Dict[str, "_Slot"] = {}
 
-# over-admit 告警节流（同一账号）
-_OVER_ADMIT_LOG_INTERVAL = 30.0
+# 背压告警节流（同一账号）
+_BACKPRESSURE_LOG_INTERVAL = 30.0
 # 瞬时 429 连击冷却：基数 60s，每次连击翻倍，封顶 300s
 _TRANSIENT_429_BASE_COOLDOWN = 60.0
 _TRANSIENT_429_MAX_COOLDOWN = 300.0
@@ -38,16 +38,20 @@ _TRANSIENT_429_MAX_COOLDOWN = 300.0
 _MAX_TRACKED = 2000
 
 
+class CredentialSlotWaitTimeout(Exception):
+    """账号并发槽位在等待上限内未释放，需要向调用方施加背压。"""
+
+
 class _Slot:
     """单账号的并发闸门状态（纯同步计数 + Event 唤醒）。"""
 
-    __slots__ = ("inflight", "limit", "wakeup", "last_over_admit_log")
+    __slots__ = ("inflight", "limit", "wakeup", "last_backpressure_log")
 
     def __init__(self, limit: int) -> None:
         self.inflight = 0
         self.limit = limit
         self.wakeup = asyncio.Event()
-        self.last_over_admit_log = 0.0
+        self.last_backpressure_log = 0.0
 
 
 def _configured_concurrency() -> int:
@@ -123,7 +127,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
 
     - 有空位立即返回 0；
     - 占满时等待释放，最多等 antigravity_pacing_slot_wait_seconds（默认 30 秒）；
-    - 超时后放行（over-admit）并告警，保证业务延迟有界。
+    - 超时抛出 CredentialSlotWaitTimeout，不占用槽位，由 API 层返回 429 背压。
     """
     if not credential_name:
         return 0.0
@@ -144,16 +148,21 @@ async def acquire_credential_slot(credential_name: str) -> float:
 
     started = time.monotonic()
     deadline = started + get_antigravity_pacing_slot_wait_seconds_sync()
-    over_admitted = False
     while True:
         if slot.inflight < slot.limit:
             slot.inflight += 1
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            slot.inflight += 1
-            over_admitted = True
-            break
+            waited = time.monotonic() - started
+            now = time.monotonic()
+            if now - slot.last_backpressure_log > _BACKPRESSURE_LOG_INTERVAL:
+                slot.last_backpressure_log = now
+                log.warning(
+                    f"[PACING] 账号 {credential_name} 并发已满（上限 {slot.limit}，"
+                    f"在飞 {slot.inflight}），等待 {waited:.2f}s，返回 429 背压"
+                )
+            raise CredentialSlotWaitTimeout(credential_name)
         slot.wakeup.clear()
         # clear 之后再确认一次，避免与同步 release（set）竞态丢唤醒
         if slot.inflight < slot.limit:
@@ -164,13 +173,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
             continue
 
     waited = time.monotonic() - started
-    if over_admitted and time.monotonic() - slot.last_over_admit_log > _OVER_ADMIT_LOG_INTERVAL:
-        slot.last_over_admit_log = time.monotonic()
-        log.warning(
-            f"[PACING] 账号 {credential_name} 并发已满（上限 {slot.limit}，"
-            f"在飞 {slot.inflight}），等待 {waited:.2f}s 后放行（over-admit）"
-        )
-    elif waited >= 1.0:
+    if waited >= 1.0:
         log.debug(
             f"[PACING] 账号 {credential_name} 并发排队 {waited:.2f}s"
             f"（在飞 {slot.inflight}/{slot.limit}）"
