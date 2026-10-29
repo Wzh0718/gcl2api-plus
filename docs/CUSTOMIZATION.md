@@ -181,6 +181,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 配额耗尽型 429 的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
+| `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数，超时放行并告警；0 表示不等待 | `30` |
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
 | `ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS` ★ | 检查结果有效期（秒，最小 60） | `1800` |
 | `ANTIGRAVITY_EGRESS_IP_CHECK_URL` ★ | 出口 IP 回显接口，返回至少 `{"ip":"..."}`；启用检查前必填 | 空 |

@@ -9,7 +9,7 @@
   节奏控制因此拆成两层：
 
 1. acquire/release_credential_slot()：**每账号并发闸门**（默认 15 个在飞请求），
-   这是真实的容量约束。并发占满时等待释放；等待超过 _SLOT_WAIT_CAP_SECONDS 后
+   这是真实的容量约束。并发占满时等待释放；等待超过配置的排队上限（默认 30 秒）后
    放行（over-admit）并告警，保证业务延迟有界，而不是无上界排队。
 2. pace_credential()：同账号两次「请求发起」之间的毫秒级错峰 + 抖动
    （默认 80ms ± 50%），只用于打散瞬时齐发，不再限制吞吐。
@@ -29,8 +29,6 @@ _NEXT_FREE: Dict[str, float] = {}
 _429_STRIKES: Dict[str, int] = {}
 _SLOTS: Dict[str, "_Slot"] = {}
 
-# 并发占满时的最长等待：超出后放行（over-admit），避免无上界排队
-_SLOT_WAIT_CAP_SECONDS = 2.0
 # over-admit 告警节流（同一账号）
 _OVER_ADMIT_LOG_INTERVAL = 30.0
 # 瞬时 429 连击冷却：基数 60s，每次连击翻倍，封顶 300s
@@ -124,7 +122,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
     """获取该账号的一个并发槽位；返回等待秒数。
 
     - 有空位立即返回 0；
-    - 占满时等待释放，最多等 _SLOT_WAIT_CAP_SECONDS；
+    - 占满时等待释放，最多等 antigravity_pacing_slot_wait_seconds（默认 30 秒）；
     - 超时后放行（over-admit）并告警，保证业务延迟有界。
     """
     if not credential_name:
@@ -132,6 +130,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
     from config import (
         get_antigravity_pacing_concurrency_sync,
         get_antigravity_pacing_enabled_sync,
+        get_antigravity_pacing_slot_wait_seconds_sync,
     )
 
     if not get_antigravity_pacing_enabled_sync():
@@ -144,7 +143,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
         slot.limit = target
 
     started = time.monotonic()
-    deadline = started + _SLOT_WAIT_CAP_SECONDS
+    deadline = started + get_antigravity_pacing_slot_wait_seconds_sync()
     over_admitted = False
     while True:
         if slot.inflight < slot.limit:

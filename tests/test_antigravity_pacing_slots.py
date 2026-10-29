@@ -21,7 +21,7 @@ def _enable_pacing(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "15")
     monkeypatch.setenv("ANTIGRAVITY_PACING_BASE_MS", "0")
     monkeypatch.setenv("ANTIGRAVITY_PACING_JITTER_PCT", "0")
-    monkeypatch.setattr(pacing, "_SLOT_WAIT_CAP_SECONDS", 0.05)
+    monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "0.05")
     pacing.reset_state()
     yield
     pacing.reset_state()

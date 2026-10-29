@@ -2,6 +2,8 @@
 配置路由模块 - 处理 /config/* 相关的HTTP请求
 """
 
+import math
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -73,6 +75,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_pacing_base_ms"] = await config.get_antigravity_pacing_base_ms()
         current_config["antigravity_pacing_jitter_pct"] = await config.get_antigravity_pacing_jitter_pct()
         current_config["antigravity_pacing_concurrency"] = await config.get_antigravity_pacing_concurrency()
+        current_config["antigravity_pacing_slot_wait_seconds"] = await config.get_antigravity_pacing_slot_wait_seconds()
         current_config["antigravity_quota_guard_enabled"] = await config.get_antigravity_quota_guard_enabled()
         current_config["antigravity_quota_guard_threshold"] = await config.get_antigravity_quota_guard_threshold()
 
@@ -232,6 +235,15 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config["antigravity_pacing_concurrency"] = concurrency
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="每账号并发上限必须是1-64之间的整数")
+
+        if "antigravity_pacing_slot_wait_seconds" in new_config:
+            try:
+                wait_seconds = float(new_config["antigravity_pacing_slot_wait_seconds"])
+                if not math.isfinite(wait_seconds) or wait_seconds < 0:
+                    raise ValueError
+                new_config["antigravity_pacing_slot_wait_seconds"] = wait_seconds
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="并发排队放行等待必须是大于等于0的有限秒数")
 
         if "antigravity_quota_guard_threshold" in new_config:
             try:

@@ -20,7 +20,7 @@ def _reset_state(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_JITTER_PCT", "0")
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "15")
     # over-admit 等待上限缩短，避免测试变慢
-    monkeypatch.setattr(pacing, "_SLOT_WAIT_CAP_SECONDS", 0.1)
+    monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "0.1")
     yield
 
 
@@ -91,6 +91,17 @@ def test_transient_429_cooldown_caps_at_300s():
 
 
 @pytest.mark.asyncio
+async def test_slot_wait_seconds_defaults_to_30(monkeypatch):
+    import config
+
+    monkeypatch.delenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS")
+    monkeypatch.setattr(config, "_config_cache", {})
+    monkeypatch.setattr(config, "_config_initialized", True)
+    assert config.get_antigravity_pacing_slot_wait_seconds_sync() == 30.0
+    assert await config.get_antigravity_pacing_slot_wait_seconds() == 30.0
+
+
+@pytest.mark.asyncio
 async def test_slot_allows_configured_concurrency_without_wait(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "3")
     for _ in range(3):
@@ -106,14 +117,14 @@ async def test_slot_waits_then_over_admits_when_full(monkeypatch):
     t0 = time.monotonic()
     waited = await pacing.acquire_credential_slot("acc-a")
     elapsed = time.monotonic() - t0
-    assert waited >= 0.09  # 等到 _SLOT_WAIT_CAP_SECONDS（夹具设为 0.1s）
+    assert waited >= 0.09  # 等到配置的 0.1 秒等待上限
     assert elapsed < 0.5
     assert pacing._SLOTS["acc-a"].inflight == 2  # over-admit
 
 
 @pytest.mark.asyncio
 async def test_slot_release_wakes_waiter(monkeypatch):
-    monkeypatch.setattr(pacing, "_SLOT_WAIT_CAP_SECONDS", 5.0)
+    monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "5")
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
     await pacing.acquire_credential_slot("acc-a")
 

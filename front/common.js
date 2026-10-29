@@ -5142,6 +5142,7 @@ function populateConfigForm() {
     setConfigField('antigravityPacingBaseMs', c.antigravity_pacing_base_ms ?? 80);
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
     setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
+    setConfigField('antigravityPacingSlotWaitSeconds', c.antigravity_pacing_slot_wait_seconds ?? 30);
     document.getElementById('antigravityQuotaGuardEnabled').checked = Boolean(c.antigravity_quota_guard_enabled !== false);
     setConfigField('antigravityQuotaGuardThreshold', c.antigravity_quota_guard_threshold ?? 0.05);
 
@@ -5209,6 +5210,7 @@ async function saveConfig() {
             antigravity_pacing_base_ms: getInt('antigravityPacingBaseMs', 80),
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
             antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
+            antigravity_pacing_slot_wait_seconds: getValue('antigravityPacingSlotWaitSeconds', '30'),
             antigravity_quota_guard_enabled: getChecked('antigravityQuotaGuardEnabled'),
             antigravity_quota_guard_threshold: getFloat('antigravityQuotaGuardThreshold', 0.05),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),

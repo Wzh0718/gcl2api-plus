@@ -494,6 +494,7 @@ _ANTIGRAVITY_PACING_ENABLED_DEFAULT = True
 _ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 80
 _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT = 50
 _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT = 15
+_ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT = 30.0
 _ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT = True
 _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT = 0.05
 
@@ -630,6 +631,30 @@ def get_antigravity_pacing_concurrency_sync() -> int:
             1,
         ),
         64,
+    )
+
+
+async def get_antigravity_pacing_slot_wait_seconds() -> float:
+    """并发占满时等待释放的上限（秒），超时放行并告警。默认 30。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_slot_wait_seconds",
+        "ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS",
+        _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT,
+    )
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT
+
+
+def get_antigravity_pacing_slot_wait_seconds_sync() -> float:
+    return max(
+        _sync_number(
+            "antigravity_pacing_slot_wait_seconds",
+            "ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS",
+            _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT,
+        ),
+        0.0,
     )
 
 
