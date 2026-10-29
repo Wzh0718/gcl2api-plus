@@ -28,7 +28,11 @@ from config import (
 from log import log
 
 from src.credential_manager import credential_manager
-from src.httpx_client import stream_post_async, post_async
+from src.httpx_client import (
+    get_decoded_response_headers,
+    stream_post_async,
+    post_async,
+)
 from src.stream_guard import aclose_quietly
 from src.models import Model, model_to_dict
 from src.redis_config import create_redis_client_from_env
@@ -1645,13 +1649,13 @@ async def _non_stream_image_request_inner(
             return Response(
                 content=response.content,
                 status_code=200,
-                headers=dict(response.headers),
+                headers=get_decoded_response_headers(response.headers),
             )
 
         last_response = Response(
             content=response.content,
             status_code=status_code,
-            headers=dict(response.headers),
+            headers=get_decoded_response_headers(response.headers),
         )
         last_was_capacity = is_image_model_capacity_exhausted(
             status_code, error_text
@@ -2011,7 +2015,7 @@ async def non_stream_request(
                     return Response(
                         content=response.content,
                         status_code=200,
-                        headers=dict(response.headers)
+                        headers=get_decoded_response_headers(response.headers)
                     )
 
             # 失败 - 记录最后一次错误
@@ -2019,7 +2023,7 @@ async def non_stream_request(
                 last_error_response = Response(
                     content=response.content,
                     status_code=status_code,
-                    headers=dict(response.headers)
+                    headers=get_decoded_response_headers(response.headers)
                 )
 
                 # 判断是否需要重试

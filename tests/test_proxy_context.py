@@ -179,3 +179,54 @@ async def test_antigravity_image_non_stream_bypasses_stream_collection(monkeypat
     assert captured["body"]["model"] == "gemini-3.1-flash-image"
     assert captured["headers"] is None
     assert captured["api_key_id"] == "env"
+
+
+@pytest.mark.asyncio
+async def test_stream_error_removes_encoding_headers_from_decoded_body(monkeypatch):
+    from contextlib import asynccontextmanager
+    import gzip
+
+    import httpx
+    from src import httpx_client
+
+    error_body = b'{"error":{"code":400,"status":"INVALID_ARGUMENT"}}'
+    compressed_body = gzip.compress(error_body)
+
+    def upstream_error(request):
+        return httpx.Response(
+            400,
+            stream=httpx.ByteStream(compressed_body),
+            headers={
+                "Content-Type": "application/json; charset=UTF-8",
+                "Content-Encoding": "gzip",
+                "Content-Length": str(len(compressed_body)),
+            },
+        )
+
+    @asynccontextmanager
+    async def fake_streaming_client(**kwargs):
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(upstream_error)
+        ) as client:
+            yield client
+
+    monkeypatch.setattr(
+        httpx_client.http_client,
+        "get_streaming_client",
+        fake_streaming_client,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in httpx_client.stream_post_async(
+            "https://example.invalid", body={}, headers={}
+        )
+    ]
+
+    assert len(chunks) == 1
+    response = chunks[0]
+    assert response.status_code == 400
+    assert response.body == error_body
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] == str(len(error_body))
+    assert response.headers["content-type"] == "application/json; charset=UTF-8"

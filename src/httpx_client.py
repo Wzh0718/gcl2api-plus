@@ -15,6 +15,15 @@ from log import log
 from src.shadowsocks import shadowsocks_proxy_context
 
 
+def get_decoded_response_headers(headers: Any) -> Dict[str, str]:
+    """Return upstream headers that match an HTTPX-decoded response body."""
+    return {
+        key: value
+        for key, value in dict(headers).items()
+        if key.lower() not in ("content-encoding", "content-length")
+    }
+
+
 class HttpxClientManager:
     """通用HTTP客户端管理器"""
 
@@ -147,7 +156,11 @@ async def stream_post_async(
             # 错误直接返回
             if r.status_code != 200:
                 from fastapi import Response
-                yield Response(await r.aread(), r.status_code, dict(r.headers))
+                yield Response(
+                    await r.aread(),
+                    r.status_code,
+                    get_decoded_response_headers(r.headers),
+                )
                 return
 
             # 如果native=True，直接返回bytes流

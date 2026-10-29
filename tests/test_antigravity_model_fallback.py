@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import src.antigravity_pacing as pacing
 import src.storage_adapter as storage
 
+import httpx
 import pytest
 from fastapi import Response
 
@@ -722,3 +723,52 @@ async def test_stale_guard_maps_previous_validation_403_to_503(monkeypatch, stre
     assert response.body == error_body
     assert selected == ["a.json", "b.json"]
     assert sent == ["Bearer a.json"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [200, 400])
+async def test_non_stream_removes_encoding_headers_from_decoded_upstream_body(monkeypatch, status_code):
+    model = "gemini-2.5-flash"
+    _patch_common(monkeypatch, [model])
+    monkeypatch.setattr(
+        agy.credential_manager,
+        "get_valid_credential",
+        lambda **kw: _awaitable(("a.json", {"access_token": "token", "project_id": "proj"})),
+    )
+    response_body = (
+        b'{"response":{"candidates":[]}}'
+        if status_code == 200
+        else b'{"error":{"code":400,"status":"INVALID_ARGUMENT"}}'
+    )
+
+    async def post(**kwargs):
+        response = _FakeResponse(status_code, response_body)
+        response.headers = {
+            "Content-Type": "application/json; charset=UTF-8",
+            "Content-Encoding": "gzip",
+            "Content-Length": "1234",
+            "X-Upstream-Trace-Id": "trace-1",
+        }
+        return response
+
+    _patch_text_transport(monkeypatch, lambda *args: pytest.fail("unexpected response"))
+    monkeypatch.setattr(agy, "post_async", post)
+
+    response = await non_stream_request(
+        {"model": model, "request": {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}}
+    )
+
+    assert response.status_code == status_code
+    assert response.body == response_body
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] == str(len(response_body))
+    assert response.headers["content-type"] == "application/json; charset=UTF-8"
+    assert response.headers["x-upstream-trace-id"] == "trace-1"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=response),
+        base_url="http://testserver",
+    ) as client:
+        downstream = await client.post("/antigravity/v1beta/models/model:generateContent")
+    assert downstream.status_code == status_code
+    assert downstream.json() == json.loads(response_body)

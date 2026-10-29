@@ -22,7 +22,11 @@ from config import get_code_assist_endpoint, get_auto_ban_error_codes
 from log import log
 
 from src.credential_manager import credential_manager
-from src.httpx_client import stream_post_async, post_async
+from src.httpx_client import (
+    get_decoded_response_headers,
+    stream_post_async,
+    post_async,
+)
 from src.stream_guard import aclose_quietly
 
 # 导入共同的基础功能
@@ -487,27 +491,17 @@ async def non_stream_request(
                 await record_api_call_success(
                     credential_manager, current_file, mode="geminicli", model_name=model_name
                 )
-                # 创建响应头,移除压缩相关的header避免重复解压
-                response_headers = dict(response.headers)
-                response_headers.pop('content-encoding', None)
-                response_headers.pop('content-length', None)
-
                 return Response(
                     content=response.content,
                     status_code=200,
-                    headers=response_headers
+                    headers=get_decoded_response_headers(response.headers)
                 )
 
             # 失败 - 记录最后一次错误
-            # 创建响应头,移除压缩相关的header避免重复解压
-            error_headers = dict(response.headers)
-            error_headers.pop('content-encoding', None)
-            error_headers.pop('content-length', None)
-
             last_error_response = Response(
                 content=response.content,
                 status_code=status_code,
-                headers=error_headers
+                headers=get_decoded_response_headers(response.headers)
             )
 
             # 判断是否需要重试
