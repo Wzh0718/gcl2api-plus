@@ -1,6 +1,6 @@
-"""Antigravity 账号全链路检测：代理测试 → 出口/资格检测 → 消息测试。
+"""Antigravity 账号检测：默认代理测试 → 出口/资格检测 → 消息测试。
 
-供控制面板手动检测与 403 封禁账号定期复检共用。
+供控制面板手动检测与 403 封禁账号定期复检共用；批量检测可跳过独立代理阶段。
 任一阶段失败即短路，后续阶段标记 skipped。
 """
 
@@ -142,8 +142,10 @@ async def _check_message_stage(
     }
 
 
-async def run_account_full_check(filename: str) -> dict[str, Any]:
-    """按顺序执行全链路检测：代理测试 → 出口/资格检测 → 消息测试。
+async def run_account_full_check(
+    filename: str, *, check_proxy: bool = True
+) -> dict[str, Any]:
+    """按顺序执行账号检测，可选择跳过独立代理测试阶段。
 
     Raises:
         ValueError: 凭证不存在。
@@ -156,12 +158,15 @@ async def run_account_full_check(filename: str) -> dict[str, Any]:
 
     stages: dict[str, Any] = {}
 
-    proxy_stage = await _check_proxy_stage(filename, credential, network)
-    stages["proxy"] = proxy_stage
-    if not proxy_stage["ok"]:
-        stages["health"] = {"ok": False, "skipped": True}
-        stages["message"] = {"ok": False, "skipped": True}
-        return {"ok": False, "stages": stages}
+    if check_proxy:
+        proxy_stage = await _check_proxy_stage(filename, credential, network)
+        stages["proxy"] = proxy_stage
+        if not proxy_stage["ok"]:
+            stages["health"] = {"ok": False, "skipped": True}
+            stages["message"] = {"ok": False, "skipped": True}
+            return {"ok": False, "stages": stages}
+    else:
+        stages["proxy"] = {"ok": True, "skipped": True}
 
     try:
         health = await credential_manager.check_antigravity_account_health(filename)

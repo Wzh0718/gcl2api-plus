@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from urllib.parse import urlsplit
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -588,6 +588,99 @@ class ProxyGroupStorageTests(unittest.IsolatedAsyncioTestCase):
                 (group["id"],),
             ) as cursor:
                 self.assertEqual((await cursor.fetchone())[0], 0)
+
+
+class AccountNetworkHealthCheckTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skip_proxy_still_checks_health_and_message(self):
+        from src.antigravity_full_check import run_account_full_check
+
+        class FakeStorage:
+            async def get_credential(self, filename, mode):
+                return {"access_token": "token", "project_id": "project"}
+
+            async def resolve_credential_network(self, filename, mode):
+                return {}
+
+        manager = type("Manager", (), {})()
+        manager.check_antigravity_account_health = AsyncMock(
+            return_value={
+                "binding_status": "healthy",
+                "eligibility_status": "eligible",
+            }
+        )
+        proxy_check = AsyncMock()
+        message_check = AsyncMock(return_value={"ok": True, "status_code": 200})
+        with (
+            patch(
+                "src.antigravity_full_check.get_storage_adapter",
+                AsyncMock(return_value=FakeStorage()),
+            ),
+            patch("src.antigravity_full_check.credential_manager", manager),
+            patch("src.antigravity_full_check._check_proxy_stage", proxy_check),
+            patch("src.antigravity_full_check._check_message_stage", message_check),
+        ):
+            result = await run_account_full_check("account.json", check_proxy=False)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["stages"]["proxy"]["skipped"])
+        proxy_check.assert_not_awaited()
+        message_check.assert_awaited_once()
+
+    async def test_reconcile_disables_failed_account(self):
+        from src.panel.proxy_groups import check_account_network_health
+
+        manager = type("Manager", (), {})()
+        manager.set_cred_disabled = AsyncMock(return_value=True)
+        check = AsyncMock(return_value={"ok": False, "stages": {}})
+        with (
+            patch("src.panel.proxy_groups.run_account_full_check", check),
+            patch("src.panel.proxy_groups.credential_manager", manager),
+            patch(
+                "src.panel.proxy_groups._account_network_health_payload",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            result = await check_account_network_health(
+                "account.json", skip_proxy=True, reconcile=True, _token=""
+            )
+
+        self.assertFalse(result["ok"])
+        check.assert_awaited_once_with("account.json", check_proxy=False)
+        manager.set_cred_disabled.assert_awaited_once_with(
+            "account.json", True, mode="antigravity"
+        )
+
+    async def test_reconcile_restores_account_and_clears_test_model_state(self):
+        from src.panel.proxy_groups import check_account_network_health
+
+        manager = type("Manager", (), {})()
+        manager.set_cred_disabled = AsyncMock(return_value=True)
+        manager.record_api_call_result = AsyncMock(return_value=None)
+        with (
+            patch(
+                "src.panel.proxy_groups.run_account_full_check",
+                AsyncMock(return_value={"ok": True, "stages": {}}),
+            ),
+            patch("src.panel.proxy_groups.credential_manager", manager),
+            patch(
+                "src.panel.proxy_groups._account_network_health_payload",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            result = await check_account_network_health(
+                "account.json", skip_proxy=True, reconcile=True, _token=""
+            )
+
+        self.assertTrue(result["ok"])
+        manager.record_api_call_result.assert_awaited_once_with(
+            "account.json",
+            True,
+            mode="antigravity",
+            model_name="gemini-2.5-flash",
+        )
+        manager.set_cred_disabled.assert_awaited_once_with(
+            "account.json", False, mode="antigravity"
+        )
 
 
 if __name__ == "__main__":

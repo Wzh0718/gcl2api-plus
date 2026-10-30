@@ -951,7 +951,7 @@ async function batchCheckAntigravityNetworkHealth() {
         showStatus('请先选择要检测的 Antigravity 账号', 'error');
         return;
     }
-    if (!confirm(`确定要全链路检测 ${selectedFiles.length} 个Antigravity账号吗？\n\n每个账号将依次执行：代理测试 → 出口/资格检测 → 消息测试。\n将并行检测以加快速度。`)) {
+    if (!confirm(`确定要批量检测 ${selectedFiles.length} 个Antigravity账号吗？\n\n每个账号将依次执行：出口/资格检测 → 消息测试（跳过代理测试）。\n失败账号将自动禁用，成功账号将自动恢复。`)) {
         return;
     }
     showStatus(`正在批量检测 ${selectedFiles.length} 个账号...`, 'info');
@@ -961,7 +961,7 @@ async function batchCheckAntigravityNetworkHealth() {
     await Promise.all(selectedFiles.map(async (filename) => {
         try {
             const response = await fetch(
-                `./creds/network-health/${encodeURIComponent(filename)}/check`,
+                `./creds/network-health/${encodeURIComponent(filename)}/check?skip_proxy=true&reconcile=true`,
                 { method: 'POST', headers: getAuthHeaders() }
             );
             const data = await response.json();

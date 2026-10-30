@@ -105,14 +105,27 @@ async def get_account_network_health(
 @router.post("/creds/network-health/{filename}/check")
 async def check_account_network_health(
     filename: str,
+    skip_proxy: bool = False,
+    reconcile: bool = False,
     _token: str = Depends(verify_panel_token),
 ):
-    """全链路检测：代理测试 → 出口/资格检测 → 消息测试，任一失败即停止。"""
+    """检测账号；批量检测可跳过代理阶段，并按结果恢复或禁用账号。"""
     safe_name = _safe_credential_name(filename)
     try:
-        result = await run_account_full_check(safe_name)
+        result = await run_account_full_check(safe_name, check_proxy=not skip_proxy)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if reconcile:
+        if result.get("ok"):
+            await credential_manager.record_api_call_result(
+                safe_name,
+                True,
+                mode="antigravity",
+                model_name="gemini-2.5-flash",
+            )
+        await credential_manager.set_cred_disabled(
+            safe_name, not result.get("ok"), mode="antigravity"
+        )
     payload = await _account_network_health_payload(safe_name)
     payload.update(result)
     return payload
