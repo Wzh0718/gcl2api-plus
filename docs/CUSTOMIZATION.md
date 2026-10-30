@@ -174,14 +174,17 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_CLI_OS_TYPE` ★ | User-Agent os_type 字段 | `linux` |
 | `ANTIGRAVITY_CLI_ARCH` ★ | User-Agent arch 字段（仅标识串，与镜像架构无关） | `amd64` |
 | `ANTIGRAVITY_CLI_AUTH_METHOD` ★ | User-Agent auth_method 字段 | `consumer` |
-| `ANTIGRAVITY_OAUTH_UA_VERSION` ★ | OAuth token 端点 UA 版本 | 跟随 `ANTIGRAVITY_CLI_VERSION` |
+| `ANTIGRAVITY_HUB_VERSION` ★ | 正式请求使用的 Antigravity hub 版本 | `2.28.2` |
+| `ANTIGRAVITY_HUB_CL` ★ | 与 hub 版本配套的 changelist，由官方二进制 `--stamp` 核验 | `1009437749` |
+| `ANTIGRAVITY_OAUTH_UA_VERSION` ★ | OAuth token 端点 UA 版本 | 跟随 `ANTIGRAVITY_HUB_VERSION` |
 | `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | OAuth token 端点完整 User-Agent 覆盖 | `vscode/1.X.X (Antigravity/{版本})` |
 | `ANTIGRAVITY_STREAM2NOSTREAM` ★ | 非流式请求改走流式 API 并收集为完整响应 | `false` |
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 配额耗尽型 429 的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
-| `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数，超时返回 429 背压并告警；0 表示立即背压 | `30` |
+| `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按最少使用分配 | `15` |
+| `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
 | `ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS` ★ | 检查结果有效期（秒，最小 60） | `1800` |
 | `ANTIGRAVITY_EGRESS_IP_CHECK_URL` ★ | 出口 IP 回显接口，返回至少 `{"ip":"..."}`；启用检查前必填 | 空 |

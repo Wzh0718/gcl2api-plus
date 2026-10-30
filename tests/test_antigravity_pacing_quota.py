@@ -102,6 +102,17 @@ async def test_slot_wait_seconds_defaults_to_30(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_concurrency_defaults_to_fifteen(monkeypatch):
+    import config
+
+    monkeypatch.delenv("ANTIGRAVITY_PACING_CONCURRENCY")
+    monkeypatch.setattr(config, "_config_cache", {})
+    monkeypatch.setattr(config, "_config_initialized", True)
+    assert config.get_antigravity_pacing_concurrency_sync() == 15
+    assert await config.get_antigravity_pacing_concurrency() == 15
+
+
+@pytest.mark.asyncio
 async def test_slot_allows_configured_concurrency_without_wait(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "3")
     for _ in range(3):

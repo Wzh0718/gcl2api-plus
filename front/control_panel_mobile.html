@@ -2426,7 +2426,7 @@
 
                             <div class="form-group">
                                 <label for="antigravityHubVersion">Antigravity hub 版本号（UA 指纹）:</label>
-                                <input type="text" id="antigravityHubVersion" placeholder="如：2.25.0" />
+                                <input type="text" id="antigravityHubVersion" placeholder="如：2.28.2" />
                                 <small
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">当前生效 User-Agent 的版本段。hub 通道约每周更新，需与官方最新版保持一致
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
@@ -2434,7 +2434,7 @@
 
                             <div class="form-group">
                                 <label for="antigravityHubCl">Antigravity hub CL（changelist）:</label>
-                                <input type="text" id="antigravityHubCl" placeholder="如：1003475615" />
+                                <input type="text" id="antigravityHubCl" placeholder="如：1009437749" />
                                 <small
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">UA 中的 cl= 值，只能从新版本 language_server 二进制的 --stamp 输出获取；与版本号配套更新
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
@@ -2454,14 +2454,14 @@
                                 <label for="antigravityPacingConcurrency">每账号并发上限（在飞请求）:</label>
                                 <input type="number" id="antigravityPacingConcurrency" min="1" max="64" step="1" />
                                 <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 15；占满时请求排队</small>
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 15；健康号池按最少使用分配，占满时排队或换空闲账号</small>
                             </div>
 
                             <div class="form-group">
                                 <label for="antigravityPacingSlotWaitSeconds">并发排队放行等待（秒）:</label>
                                 <input type="number" id="antigravityPacingSlotWaitSeconds" min="0" step="0.1" />
                                 <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 30 秒；超时后返回 429 背压并告警，0 表示立即背压
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 30 秒；超时先换空闲账号，无候选时才返回 429，0 表示立即换号
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
 

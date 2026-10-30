@@ -10,8 +10,8 @@
 
 1. acquire/release_credential_slot()：**每账号并发闸门**（默认 15 个在飞请求），
    这是真实的容量约束。并发占满时等待释放；等待超过配置的排队上限（默认 30 秒）后
-   抛出背压异常，由 API 层返回 429，避免在飞请求无界增长。
-2. pace_credential()：同账号两次「请求发起」之间的毫秒级错峰 + 抖动
+   抛出背压异常，由 API 层优先改选其他账号，无候选时才返回 429。
+2. pace_credential()：取得槽位后、实际上游发起前的毫秒级错峰 + 抖动
    （默认 80ms ± 50%），只用于打散瞬时齐发，不再限制吞吐。
 3. 429 自适应：同一账号瞬时 429 使并发上限对半收紧（下限 1），成功后每次 +1，
    逐步恢复到配置值——用上游真实信号找容量上限，而不是靠猜固定间隔。
@@ -127,7 +127,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
 
     - 有空位立即返回 0；
     - 占满时等待释放，最多等 antigravity_pacing_slot_wait_seconds（默认 30 秒）；
-    - 超时抛出 CredentialSlotWaitTimeout，不占用槽位，由 API 层返回 429 背压。
+    - 超时抛出 CredentialSlotWaitTimeout，不占用槽位，由 API 层换号或最终返回 429。
     """
     if not credential_name:
         return 0.0
@@ -160,7 +160,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
                 slot.last_backpressure_log = now
                 log.warning(
                     f"[PACING] 账号 {credential_name} 并发已满（上限 {slot.limit}，"
-                    f"在飞 {slot.inflight}），等待 {waited:.2f}s，返回 429 背压"
+                    f"在飞 {slot.inflight}），等待 {waited:.2f}s，触发本地背压"
                 )
             raise CredentialSlotWaitTimeout(credential_name)
         slot.wakeup.clear()

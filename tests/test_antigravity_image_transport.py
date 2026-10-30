@@ -108,6 +108,54 @@ async def test_agent_wrapper_matches_hub_envelope():
     assert "thinkingConfig" not in gen_cfg
 
 
+@pytest.mark.asyncio
+async def test_session_cache_is_isolated_by_credential():
+    from src.api import antigravity
+
+    antigravity._session_states.clear()
+    request = {"contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
+    with patch.object(antigravity, "_get_redis", AsyncMock(return_value=None)):
+        account_a = await antigravity._get_session_state(request, "gemini-test", "a.json")
+        account_a_first_step = account_a.step_index
+        account_a_session_id = account_a.session_id
+        account_b = await antigravity._get_session_state(request, "gemini-test", "b.json")
+        account_b_first_step = account_b.step_index
+        account_b_session_id = account_b.session_id
+        account_a_again = await antigravity._get_session_state(request, "gemini-test", "a.json")
+
+    assert account_b_session_id != account_a_session_id
+    assert account_b_first_step == 1
+    assert account_a_again.step_index == account_a_first_step + 1
+    assert account_a_again.session_id == account_a_session_id
+
+
+@pytest.mark.asyncio
+async def test_redis_session_keys_are_isolated_by_credential():
+    from src.api import antigravity
+
+    class FakeRedis:
+        def __init__(self):
+            self.values = {}
+
+        async def get(self, key):
+            return self.values.get(key)
+
+        async def set(self, key, value, ex):
+            self.values[key] = value
+
+    redis = FakeRedis()
+    request = {"contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
+    with patch.object(antigravity, "_get_redis", AsyncMock(return_value=redis)):
+        account_a = await antigravity._get_session_state(request, "gemini-test", "a.json")
+        account_b = await antigravity._get_session_state(request, "gemini-test", "b.json")
+        account_a_again = await antigravity._get_session_state(request, "gemini-test", "a.json")
+
+    assert len(redis.values) == 2
+    assert account_b.session_id != account_a.session_id
+    assert account_b.step_index == 1
+    assert account_a_again.step_index == 2
+
+
 def test_dynamic_image_model_candidates_stay_in_requested_tier():
     from src.api.antigravity import build_dynamic_image_model_candidates
 
@@ -1306,6 +1354,8 @@ async def test_image_slot_wait_timeout_returns_429_without_releasing_owner(monke
             self.outcomes = []
 
         async def get_valid_credential(self, **kwargs):
+            if "ultra.json" in (kwargs.get("exclude_filenames") or set()):
+                return None
             return "ultra.json", {
                 "access_token": "token",
                 "project_id": "project",
@@ -1360,6 +1410,105 @@ async def test_image_slot_wait_timeout_returns_429_without_releasing_owner(monke
     assert pacing._SLOTS["ultra.json"].inflight == 1
     pacing.release_credential_slot("ultra.json")
     pacing.reset_state()
+
+
+@pytest.mark.asyncio
+async def test_image_busy_account_switches_to_idle_account(monkeypatch):
+    from types import SimpleNamespace
+    from src import antigravity_pacing as pacing
+    from src.api import antigravity
+
+    accounts = {
+        "ultra.json": {
+            "access_token": "token-ultra",
+            "project_id": "project-ultra",
+            "_image_lease_id": "lease-ultra",
+        },
+        "flash.json": {
+            "access_token": "token-flash",
+            "project_id": "project-flash",
+            "_image_lease_id": "lease-flash",
+        },
+    }
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.releases = []
+
+        async def get_valid_credential(self, **kwargs):
+            excluded = kwargs.get("exclude_filenames") or set()
+            for name, data in accounts.items():
+                if name not in excluded:
+                    return name, dict(data)
+            return None
+
+        async def release_image_credential(self, credential_name, lease_id):
+            self.releases.append((credential_name, lease_id))
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            return None
+
+    manager = FakeCredentialManager()
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setattr(
+        antigravity,
+        "get_retry_config",
+        lambda: async_value({"retry_enabled": True, "max_retries": 1, "retry_interval": 0}),
+    )
+    monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "true")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_BASE_MS", "0")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_JITTER_PCT", "0")
+    monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "0.01")
+    monkeypatch.setattr(
+        antigravity,
+        "resolve_dynamic_image_model_for_credential",
+        lambda **kwargs: async_value("gemini-3.1-flash-image"),
+    )
+    monkeypatch.setattr(
+        antigravity,
+        "wrap_cli_request",
+        lambda *args, **kwargs: async_value(({"request": {}}, "request-id")),
+    )
+    monkeypatch.setattr(antigravity, "record_api_call_success", lambda *a, **k: async_value(None))
+    monkeypatch.setattr(
+        antigravity,
+        "get_billing_recorder",
+        lambda: async_value(SimpleNamespace(record=AsyncMock())),
+    )
+    upstream_tokens = []
+
+    async def fake_post(**kwargs):
+        upstream_tokens.append(kwargs["headers"]["Authorization"])
+        return antigravity.ImageUpstreamResult(
+            response=FakeResponse(200),
+            host="upstream.invalid",
+            attempts=(),
+        )
+
+    monkeypatch.setattr(antigravity, "_post_image_generate", fake_post)
+    pacing.reset_state()
+    await pacing.acquire_credential_slot("ultra.json")
+    try:
+        response = await antigravity.non_stream_request(
+            {
+                "model": "gemini-3.1-flash-image",
+                "request": {
+                    "contents": [{"role": "user", "parts": [{"text": "draw"}]}],
+                    "generationConfig": {"responseModalities": ["IMAGE"]},
+                },
+            }
+        )
+    finally:
+        pacing.release_credential_slot("ultra.json")
+        pacing.reset_state()
+
+    assert response.status_code == 200
+    assert upstream_tokens == ["Bearer token-flash"]
+    assert manager.releases == [
+        ("ultra.json", "lease-ultra"),
+        ("flash.json", "lease-flash"),
+    ]
 
 
 def test_capacity_exhausted_is_model_level_not_account_unavailable():

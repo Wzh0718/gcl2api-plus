@@ -446,11 +446,11 @@ async def get_antigravity_stream2nostream() -> bool:
     return bool(await get_config_value("antigravity_stream2nostream", False))
 
 
-# Antigravity hub 轨迹指纹（2026-10-21 起，见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md）
+# Antigravity hub 轨迹指纹（2.28.2 / CL 1009437749，官方二进制 --stamp 核验）
 # 这两个键刻意不走 ENV_MAPPINGS：优先级为 面板配置 > ENV > 默认值，
 # ENV 只作部署期兜底初始值，面板随时可改（hub 通道周更，需频繁维护）。
-_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.25.0"
-_ANTIGRAVITY_HUB_CL_DEFAULT = "1003475615"
+_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.28.2"
+_ANTIGRAVITY_HUB_CL_DEFAULT = "1009437749"
 
 
 async def get_antigravity_hub_version() -> str:

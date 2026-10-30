@@ -49,7 +49,7 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
         return responses.pop(0)
 
     async def fake_switch(**kwargs):
-        assert kwargs["apply_cred_result"](("two.json", {
+        assert await kwargs["apply_cred_result"](("two.json", {
             "access_token": "token-two", "project_id": "project-two",
             "proxy_mode": "direct", "proxy_url": None,
         }))

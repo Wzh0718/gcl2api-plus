@@ -154,16 +154,26 @@ def _extract_first_user_text(request_payload: Dict[str, Any]) -> str:
     return ""
 
 
-def _session_key(request_payload: Dict[str, Any], model: str = "") -> str:
+def _session_key(
+    request_payload: Dict[str, Any],
+    model: str = "",
+    credential_key: Optional[str] = None,
+) -> str:
     session_id = request_payload.get("sessionId")
     if session_id:
-        return f"session:{session_id}"
-    model_prefix = f"model:{model}:" if model else ""
-    first_user_text = _extract_first_user_text(request_payload)
-    if first_user_text:
-        digest = hashlib.sha256(first_user_text.encode("utf-8")).hexdigest()[:32]
-        return f"{model_prefix}text:{digest}"
-    return f"{model_prefix}default"
+        key = f"session:{session_id}"
+    else:
+        model_prefix = f"model:{model}:" if model else ""
+        first_user_text = _extract_first_user_text(request_payload)
+        if first_user_text:
+            digest = hashlib.sha256(first_user_text.encode("utf-8")).hexdigest()[:32]
+            key = f"{model_prefix}text:{digest}"
+        else:
+            key = f"{model_prefix}default"
+    credential_scope = hashlib.sha256(
+        (credential_key or "").encode("utf-8")
+    ).hexdigest()[:32]
+    return f"credential:{credential_scope}:{key}"
 
 
 def _prune_session_states(now: float) -> None:
@@ -215,7 +225,7 @@ async def _get_session_state(
     credential_key: Optional[str] = None,
 ) -> AntigravitySessionState:
     now = time.time()
-    key = _session_key(request_payload, model)
+    key = _session_key(request_payload, model, credential_key)
     first_user_text = _extract_first_user_text(request_payload)
 
     redis = await _get_redis()
@@ -767,7 +777,7 @@ async def _switch_credential_for_retry(
     next_cred_task: Optional[asyncio.Task],
     retry_interval: float,
     refresh_credential_fast: Callable[[], Any],
-    apply_cred_result: Callable[[Tuple[str, Dict[str, Any]]], bool],
+    apply_cred_result: Callable[..., Any],
     log_prefix: str,
     stop_when_unavailable: bool = False,
 ) -> Tuple[bool, Optional[asyncio.Task]]:
@@ -776,7 +786,7 @@ async def _switch_credential_for_retry(
         try:
             cred_result = await next_cred_task
             next_cred_task = None
-            if cred_result and apply_cred_result(cred_result):
+            if cred_result and await apply_cred_result(cred_result):
                 await asyncio.sleep(retry_interval)
                 return True, next_cred_task
             if stop_when_unavailable:
@@ -1043,9 +1053,8 @@ async def _stream_request_inner(
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
 
-    # 内部函数：快速更新凭证(只更新token和project_id,避免重建整个请求)
     async def refresh_credential_fast():
-        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url
+        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url, request_id
         if lease_tracker is not None:
             await lease_tracker.release()
         cred_result = await credential_manager.get_valid_credential(
@@ -1054,37 +1063,59 @@ async def _stream_request_inner(
         )
         if not cred_result:
             return None
-        current_file, credential_data = cred_result
+        new_file, new_data = cred_result
         if lease_tracker is not None:
             await lease_tracker.activate(
-                current_file, credential_data.pop("_image_lease_id", None)
+                new_file, new_data.pop("_image_lease_id", None)
             )
-        access_token = credential_data.get("access_token") or credential_data.get("token")
-        project_id = credential_data.get("project_id", "")
-        proxy_url = get_effective_proxy_url(credential_data)
-        if not access_token:
+        new_access_token = new_data.get("access_token") or new_data.get("token")
+        new_project_id = new_data.get("project_id", "")
+        if not new_access_token:
             return None
-        # 只更新token和project_id,不重建整个headers和payload
-        auth_headers["Authorization"] = f"Bearer {access_token}"
-        final_payload["project"] = project_id
+        new_payload, new_request_id = await wrap_cli_request(
+            inner_request,
+            model_name,
+            new_project_id,
+            user_email=new_data.get("user_email"),
+            credential_key=new_file,
+        )
+        current_file, credential_data = new_file, new_data
+        access_token, project_id = new_access_token, new_project_id
+        proxy_url = get_effective_proxy_url(new_data)
+        final_payload, request_id = new_payload, new_request_id
+        auth_headers["Authorization"] = f"Bearer {new_access_token}"
         return True
 
-    def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
-        nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url
-        if cred_result[0] in rate_limited_credentials and not image_request:
+    async def apply_cred_result(
+        cred_result: Tuple[str, Dict[str, Any]], *, rebuild_payload: bool = True
+    ) -> bool:
+        nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url, request_id
+        new_file, new_data = cred_result
+        if new_file in rate_limited_credentials and not image_request:
             return False
-        current_file, credential_data = cred_result
+        new_access_token = new_data.get("access_token") or new_data.get("token")
+        new_project_id = new_data.get("project_id", "")
+        if not new_access_token or not new_project_id:
+            return False
+        if rebuild_payload:
+            new_payload, new_request_id = await wrap_cli_request(
+                inner_request,
+                model_name,
+                new_project_id,
+                user_email=new_data.get("user_email"),
+                credential_key=new_file,
+            )
+            final_payload, request_id = new_payload, new_request_id
+        current_file, credential_data = new_file, new_data
         if lease_tracker is not None:
             lease_tracker.activate_reserved(
-                current_file, credential_data.pop("_image_lease_id", None)
+                new_file, new_data.pop("_image_lease_id", None)
             )
-        access_token = credential_data.get("access_token") or credential_data.get("token")
-        project_id = credential_data.get("project_id", "")
-        proxy_url = get_effective_proxy_url(credential_data)
-        if not access_token or not project_id:
-            return False
-        auth_headers["Authorization"] = f"Bearer {access_token}"
-        final_payload["project"] = project_id
+        access_token, project_id = new_access_token, new_project_id
+        proxy_url = get_effective_proxy_url(new_data)
+        auth_headers["Authorization"] = f"Bearer {new_access_token}"
+        if not rebuild_payload:
+            final_payload["project"] = new_project_id
         return True
 
     attempt = 0
@@ -1103,7 +1134,7 @@ async def _stream_request_inner(
         )
 
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
-        pacing_waited = await pace_credential(slot_holder)
+        pacing_waited = 0.0
 
         stream = stream_post_async(
             url=target_url,
@@ -1116,6 +1147,7 @@ async def _stream_request_inner(
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
+            pacing_waited += await pace_credential(slot_holder)
             if not image_request and (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -1248,7 +1280,7 @@ async def _stream_request_inner(
                                 if fallback is not None:
                                     model_name, final_payload, request_id, fallback_cred = fallback
                                     rate_limited_credentials.clear()
-                                    apply_cred_result(fallback_cred)
+                                    await apply_cred_result(fallback_cred, rebuild_payload=False)
                                     need_retry = True
                                     model_fell_back = True
                                     break  # 跳出内层循环，用降级模型重试
@@ -1363,7 +1395,7 @@ async def _stream_request_inner(
                     if fallback is not None:
                         model_name, final_payload, request_id, fallback_cred = fallback
                         rate_limited_credentials.clear()
-                        apply_cred_result(fallback_cred)
+                        await apply_cred_result(fallback_cred, rebuild_payload=False)
                         attempt = 0
                         continue
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
@@ -1384,6 +1416,14 @@ async def _stream_request_inner(
                 continue  # 重试
 
         except CredentialSlotWaitTimeout:
+            rate_limited_credentials.add(slot_holder)
+            if retry_config["retry_enabled"] and attempt < max_retries:
+                log.info(
+                    f"[PACING] 账号 {slot_holder} 本地槽位繁忙，尝试切换其他账号"
+                )
+                if await refresh_credential_fast():
+                    attempt += 1
+                    continue
             await record_billing_once(False, status_code=429)
             yield _credential_slot_backpressure_response()
             return
@@ -1511,6 +1551,7 @@ async def _non_stream_image_request_inner(
     attempted_credentials: Set[str] = set()
     last_response: Optional[Response] = None
     last_was_capacity = False
+    last_was_slot_backpressure = False
     last_request_id = f"image-{uuid.uuid4()}"
     billing_recorded = False
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
@@ -1606,13 +1647,14 @@ async def _non_stream_image_request_inner(
             release_credential_slot,
         )
 
-        pacing_waited = await pace_credential(current_file)
+        pacing_waited = 0.0
 
         started = time.monotonic()  # 兜底：槽位获取异常时 except 分支仍有耗时基准
         slot_acquired = False
         try:
             pacing_waited += await acquire_credential_slot(current_file)
             slot_acquired = True
+            pacing_waited += await pace_credential(current_file)
             started = time.monotonic()
 
             call_result = await _post_image_generate(
@@ -1623,8 +1665,10 @@ async def _non_stream_image_request_inner(
                 request_id=last_request_id,
             )
         except CredentialSlotWaitTimeout:
+            last_response = _credential_slot_backpressure_response()
+            last_was_slot_backpressure = True
             await lease_tracker.release()
-            return _credential_slot_backpressure_response()
+            continue
         except Exception as exc:
             elapsed = time.monotonic() - started
             await _record_image_account_outcome(
@@ -1643,6 +1687,7 @@ async def _non_stream_image_request_inner(
                 release_credential_slot(current_file)
 
         response = call_result.response
+        last_was_slot_backpressure = False
         elapsed = time.monotonic() - started
         status_code = response.status_code
         response_payload = _safe_response_json(response) if response.content else None
@@ -1747,6 +1792,8 @@ async def _non_stream_image_request_inner(
         status_code=last_response.status_code if last_response is not None else None,
     )
     if last_response is not None:
+        if last_was_slot_backpressure:
+            return last_response
         if not last_was_capacity:
             await _alert_all_accounts_unavailable_if_needed(
                 requested_model, attempted_credentials
@@ -1924,38 +1971,59 @@ async def non_stream_request(
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")
 
-    # 内部函数：快速更新凭证(只更新token和project_id,避免重建整个请求)
     async def refresh_credential_fast():
-        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url
+        nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url, request_id
         cred_result = await credential_manager.get_valid_credential(
             mode="antigravity", model_name=model_name,
             exclude_filenames=set(rate_limited_credentials),
         )
         if not cred_result:
             return None
-        current_file, credential_data = cred_result
-        access_token = credential_data.get("access_token") or credential_data.get("token")
-        project_id = credential_data.get("project_id", "")
-        proxy_url = get_effective_proxy_url(credential_data)
-        if not access_token:
+        new_file, new_data = cred_result
+        new_access_token = new_data.get("access_token") or new_data.get("token")
+        new_project_id = new_data.get("project_id", "")
+        if not new_access_token:
             return None
-        # 只更新token和project_id,不重建整个headers和payload
-        auth_headers["Authorization"] = f"Bearer {access_token}"
-        final_payload["project"] = project_id
+        new_payload, new_request_id = await wrap_cli_request(
+            inner_request,
+            model_name,
+            new_project_id,
+            user_email=new_data.get("user_email"),
+            credential_key=new_file,
+        )
+        current_file, credential_data = new_file, new_data
+        access_token, project_id = new_access_token, new_project_id
+        proxy_url = get_effective_proxy_url(new_data)
+        final_payload, request_id = new_payload, new_request_id
+        auth_headers["Authorization"] = f"Bearer {new_access_token}"
         return True
 
-    def apply_cred_result(cred_result: Tuple[str, Dict[str, Any]]) -> bool:
-        nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url
-        if cred_result[0] in rate_limited_credentials:
+    async def apply_cred_result(
+        cred_result: Tuple[str, Dict[str, Any]], *, rebuild_payload: bool = True
+    ) -> bool:
+        nonlocal current_file, credential_data, access_token, project_id, auth_headers, final_payload, proxy_url, request_id
+        new_file, new_data = cred_result
+        if new_file in rate_limited_credentials:
             return False
-        current_file, credential_data = cred_result
-        access_token = credential_data.get("access_token") or credential_data.get("token")
-        project_id = credential_data.get("project_id", "")
-        proxy_url = get_effective_proxy_url(credential_data)
-        if not access_token or not project_id:
+        new_access_token = new_data.get("access_token") or new_data.get("token")
+        new_project_id = new_data.get("project_id", "")
+        if not new_access_token or not new_project_id:
             return False
-        auth_headers["Authorization"] = f"Bearer {access_token}"
-        final_payload["project"] = project_id
+        if rebuild_payload:
+            new_payload, new_request_id = await wrap_cli_request(
+                inner_request,
+                model_name,
+                new_project_id,
+                user_email=new_data.get("user_email"),
+                credential_key=new_file,
+            )
+            final_payload, request_id = new_payload, new_request_id
+        current_file, credential_data = new_file, new_data
+        access_token, project_id = new_access_token, new_project_id
+        proxy_url = get_effective_proxy_url(new_data)
+        auth_headers["Authorization"] = f"Bearer {new_access_token}"
+        if not rebuild_payload:
+            final_payload["project"] = new_project_id
         return True
 
     attempt = 0
@@ -1971,12 +2039,13 @@ async def non_stream_request(
         )
 
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
-        pacing_waited = await pace_credential(slot_holder)
+        pacing_waited = 0.0
 
         slot_acquired = False
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
+            pacing_waited += await pace_credential(slot_holder)
             if (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -2156,7 +2225,7 @@ async def non_stream_request(
                             if fallback is not None:
                                 model_name, final_payload, request_id, fallback_cred = fallback
                                 rate_limited_credentials.clear()
-                                apply_cred_result(fallback_cred)
+                                await apply_cred_result(fallback_cred, rebuild_payload=False)
                                 attempt = 0
                                 continue
                         # 不重试，直接返回原始错误（上游 403 改写为 503）
@@ -2212,7 +2281,7 @@ async def non_stream_request(
                     if fallback is not None:
                         model_name, final_payload, request_id, fallback_cred = fallback
                         rate_limited_credentials.clear()
-                        apply_cred_result(fallback_cred)
+                        await apply_cred_result(fallback_cred, rebuild_payload=False)
                         attempt = 0
                         continue
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
@@ -2231,6 +2300,14 @@ async def non_stream_request(
                 continue  # 重试
 
         except CredentialSlotWaitTimeout:
+            rate_limited_credentials.add(slot_holder)
+            if retry_config["retry_enabled"] and attempt < max_retries:
+                log.info(
+                    f"[PACING] 账号 {slot_holder} 本地槽位繁忙，尝试切换其他账号"
+                )
+                if await refresh_credential_fast():
+                    attempt += 1
+                    continue
             await record_billing_once(False, status_code=429)
             return _credential_slot_backpressure_response()
         except Exception as e:
