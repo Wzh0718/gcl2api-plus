@@ -191,6 +191,17 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_403_RECHECK_ENABLED` ★ | 可恢复 403 账号是否定期复检解封；明确 account_forbidden/TOS 账号仅人工复检 | `true` |
 | `ANTIGRAVITY_403_RECHECK_INTERVAL` ★ | 复检轮询间隔（秒，最小 60） | `3600` |
 
+### 动态养号与渐进放量
+
+在「账号管理 → 凭证管理 → 动态养号与渐进放量」配置默认参数，并通过账号卡片的「养号」按钮或批量操作开启。功能只使用真实业务请求，不额外生成养号流量：
+
+- 账号和同一出口 IP 组分别受在飞并发、发起间隔和逐档成功窗口约束；目标账号并发为 `0` 时跟随现有每账号并发配置。
+- 取消养号后账号退出候选池但保留进度，可恢复或重新开始；「提前完成」会直接转为普通账号。
+- 429 会退避降档，验证/地区/代理异常会暂停，TOS/account_forbidden 永久退出且不参与自动复检。
+- 未开启养号的默认 `off` 账号和已完成的 `active` 账号继续走现有调度；养号状态由 SQLite 跨 Worker 共享。
+
+完整状态机和验收标准见 `docs/ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md`。
+
 ### 重试、封禁与输出
 
 | 变量 | 作用 | 默认值 |

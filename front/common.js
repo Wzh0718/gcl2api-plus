@@ -65,6 +65,7 @@ const AppState = {
     envLockedFields: new Set(),
     proxyGroups: [],
     proxyGroupsLoaded: false,
+    antigravityWarmup: { accounts: {}, ip_groups: {}, defaults: {} },
 
     // 日志管理
     logWebSocket: null,
@@ -201,6 +202,9 @@ function createCredsManager(type) {
                     }
                     this.updateStatsDisplay();
                     this.filteredData = this.data;
+                    if (type === 'antigravity') {
+                        await loadAntigravityWarmupOverview(false);
+                    }
                     this.renderList();
                     this.updatePagination();
 
@@ -327,6 +331,8 @@ function createCredsManager(type) {
                 batchBtnNames.push('DisableCredit');
                 batchBtnNames.push('ProxyGroup');
                 batchBtnNames.push('NetworkHealth');
+                batchBtnNames.push('WarmupStart');
+                batchBtnNames.push('WarmupCancel');
             }
             const batchBtns = batchBtnNames.map(action =>
                 document.getElementById(this.getElementId(`Batch${action}Btn`))
@@ -1159,6 +1165,9 @@ function createCredCard(credInfo, manager) {
 
     // 状态徽章
     const statusBadges = buildCredStatusBadges(credInfo, manager);
+    const warmupBadge = managerType === 'antigravity'
+        ? buildAntigravityWarmupBadge(AppState.antigravityWarmup.accounts[filename])
+        : '';
 
     // 路径ID
     const pathId = (managerType === 'antigravity' ? 'ag_' : '') + btoa(encodeURIComponent(filename)).replace(/[+/=]/g, '_');
@@ -1175,6 +1184,7 @@ function createCredCard(credInfo, manager) {
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="toggleAntigravityQuotaDetails('${pathId}')" title="查看该凭证的额度信息">查看额度</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="configureAntigravityNetwork('${filename}')" title="设置全局、直连、专属代理或代理组">网络策略</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}')" title="使用账号绑定代理检测出口 IP 与地区资格">检测出口</button>` : ''}
+        ${managerType === 'antigravity' ? `<button class="cred-btn" data-warmup-account="${escapeHtml(filename)}" title="配置真实业务流量渐进放量">养号</button>` : ''}
         ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="冷却当前节点，重新绑定代理节点并检测">重绑检测</button>` : ''}
         ${managerType === 'antigravity' ? (credInfo.enable_credit
             ? `<button class="cred-btn" data-filename="${filename}" data-action="disable_credit" title="关闭该凭证的Credit模式">关闭 Credit</button>`
@@ -1203,7 +1213,7 @@ function createCredCard(credInfo, manager) {
                     ${emailInfo}
                 </div>
             </div>
-            <div class="cred-status">${statusBadges}</div>
+            <div class="cred-status">${statusBadges}${warmupBadge}</div>
         </div>
         <div class="cred-actions">${actionButtons}</div>
         ${managerType === 'antigravity' ? buildAntigravityTierDegradedNotice(filename) + buildAntigravityQuotaOverviewInline(filename) : ''}
@@ -1236,8 +1246,258 @@ function createCredCard(credInfo, manager) {
             }
         });
     });
+    div.querySelectorAll('[data-warmup-account]').forEach(button => {
+        button.addEventListener('click', () => {
+            openAntigravityWarmupDialog(button.dataset.warmupAccount);
+        });
+    });
 
     return div;
+}
+
+const ANTIGRAVITY_WARMUP_CONFIG_FIELDS = [
+    ['account_initial_concurrency', '账号初始并发'],
+    ['account_target_concurrency', '账号目标并发（0=跟随现有配置）'],
+    ['account_initial_interval_ms', '账号初始发起间隔（ms）'],
+    ['account_target_interval_ms', '账号目标发起间隔（ms）'],
+    ['ip_initial_concurrency', 'IP 组初始并发'],
+    ['ip_target_concurrency', 'IP 组目标并发'],
+    ['ip_initial_interval_ms', 'IP 组初始发起间隔（ms）'],
+    ['ip_target_interval_ms', 'IP 组目标发起间隔（ms）'],
+    ['success_threshold', '每档真实成功请求数'],
+    ['window_seconds', '每档最短观察时间（秒）'],
+    ['max_level', '最大渐进档位'],
+];
+
+function buildAntigravityWarmupBadge(state) {
+    if (!state || state.status === 'off') return '';
+    const labels = {
+        warming: '养号中',
+        paused: '养号已暂停',
+        cancelled: '已取消养号',
+        active: '养号完成',
+        account_forbidden: 'TOS 永久退出',
+    };
+    const level = Number(state.level || 0) + 1;
+    const maxLevel = Number(state.config?.max_level || 3) + 1;
+    const label = labels[state.status] || state.status;
+    const progress = `档位 ${level}/${maxLevel}，本档成功 ${Number(state.success_count || 0)}`;
+    return `<span class="status-badge proxy-policy-badge" title="${progress}">${label}</span>`;
+}
+
+function buildAntigravityWarmupConfigFields(config, prefix, fields = ANTIGRAVITY_WARMUP_CONFIG_FIELDS) {
+    return fields.map(([key, label]) => `
+        <div class="proxy-dialog-field">
+            <label for="${prefix}${key}">${label}</label>
+            <input type="number" id="${prefix}${key}" data-warmup-key="${key}"
+                value="${Number(config[key] ?? 0)}" min="0" step="1" style="width: 100%;">
+        </div>
+    `).join('');
+}
+
+function readAntigravityWarmupConfigFields(container) {
+    const config = {};
+    container.querySelectorAll('[data-warmup-key]').forEach(input => {
+        config[input.dataset.warmupKey] = Number.parseInt(input.value, 10);
+    });
+    return config;
+}
+
+async function loadAntigravityWarmupOverview(showErrors = true) {
+    try {
+        const response = await fetch('./antigravity/warmup', { headers: getAuthHeaders() });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '加载养号状态失败');
+        AppState.antigravityWarmup = {
+            accounts: data.accounts || {},
+            ip_groups: data.ip_groups || {},
+            defaults: data.defaults || {},
+        };
+        renderAntigravityWarmupControls();
+        return true;
+    } catch (error) {
+        if (showErrors) showStatus(error.message, 'error');
+        return false;
+    }
+}
+
+function renderAntigravityWarmupControls() {
+    const defaultsForm = document.getElementById('antigravityWarmupDefaultsForm');
+    if (defaultsForm) {
+        defaultsForm.innerHTML = buildAntigravityWarmupConfigFields(
+            AppState.antigravityWarmup.defaults,
+            'warmup-default-'
+        );
+    }
+    const groupsContainer = document.getElementById('antigravityWarmupIpGroups');
+    if (!groupsContainer) return;
+    const groups = Object.values(AppState.antigravityWarmup.ip_groups || {});
+    groupsContainer.innerHTML = groups.length ? '<h5>出口 IP 组预算</h5>' + groups.map(group => `
+        <div class="proxy-dialog-field">
+            <code>${escapeHtml(group.ip_key)}</code>
+            <span>档位 ${Number(group.level || 0) + 1}，当前组并发 ${group.limits?.ip_concurrency || 1}</span>
+            <button type="button" class="batch-btn" data-warmup-ip="${encodeURIComponent(group.ip_key)}">配置</button>
+        </div>
+    `).join('') : '';
+    groupsContainer.querySelectorAll('[data-warmup-ip]').forEach(button => {
+        button.addEventListener('click', () => openAntigravityWarmupIpDialog(
+            decodeURIComponent(button.dataset.warmupIp)
+        ));
+    });
+}
+
+async function saveAntigravityWarmupDefaults() {
+    const form = document.getElementById('antigravityWarmupDefaultsForm');
+    if (!form) return;
+    try {
+        const response = await fetch('./antigravity/warmup/defaults', {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(readAntigravityWarmupConfigFields(form)),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '保存养号默认参数失败');
+        AppState.antigravityWarmup.defaults = data.defaults;
+        renderAntigravityWarmupControls();
+        showStatus('养号默认参数已保存', 'success');
+    } catch (error) {
+        showStatus(error.message, 'error');
+    }
+}
+
+async function antigravityWarmupAction(filename, action, config = null) {
+    const labels = { start: '开启', restart: '重新开始', cancel: '取消', resume: '恢复', complete: '提前完成' };
+    if (['cancel', 'complete'].includes(action) && !confirm(`确定要${labels[action]} ${filename} 的养号吗？`)) {
+        return false;
+    }
+    try {
+        const response = await fetch(`./antigravity/warmup/${encodeURIComponent(filename)}`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ action, config }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '养号操作失败');
+        showStatus(`${filename}：${labels[action]}养号成功`, 'success');
+        await AppState.antigravityCreds.refresh();
+        return true;
+    } catch (error) {
+        showStatus(error.message, 'error');
+        return false;
+    }
+}
+
+async function batchAntigravityWarmup(action) {
+    const manager = AppState.antigravityCreds;
+    const filenames = Array.from(manager.selectedFiles);
+    if (!filenames.length) {
+        showStatus('请先选择要养号的账号', 'error');
+        return;
+    }
+    const label = action === 'start' ? '开启' : '取消';
+    if (!confirm(`确定要批量${label} ${filenames.length} 个账号的养号吗？`)) return;
+    try {
+        const response = await fetch('./antigravity/warmup/batch', {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ filenames, action }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '批量养号操作失败');
+        const changed = Object.values(data.results || {}).filter(item => item.changed).length;
+        showStatus(`批量${label}养号完成：${changed}/${filenames.length} 个账号状态已变更`, 'success');
+        manager.selectedFiles.clear();
+        await manager.refresh();
+    } catch (error) {
+        showStatus(error.message, 'error');
+    }
+}
+
+function createAntigravityWarmupDialog(title) {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'proxy-policy-dialog';
+    dialog.setAttribute('aria-label', title);
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.appendChild(dialog);
+    return dialog;
+}
+
+function openAntigravityWarmupDialog(filename) {
+    const state = AppState.antigravityWarmup.accounts[filename];
+    const config = state?.config || AppState.antigravityWarmup.defaults;
+    const dialog = createAntigravityWarmupDialog(`配置养号：${filename}`);
+    dialog.innerHTML = `
+        <form class="proxy-policy-form" method="dialog">
+            <div class="proxy-dialog-head">
+                <h3>配置养号</h3>
+                <button type="button" class="proxy-dialog-close" data-warmup-close aria-label="关闭">×</button>
+            </div>
+            <p class="proxy-dialog-copy">${escapeHtml(filename)}；当前状态：${escapeHtml(state?.status || 'off')}。只使用真实业务流量。</p>
+            <div id="warmupAccountFields">${buildAntigravityWarmupConfigFields(config, 'warmup-account-')}</div>
+            <div class="proxy-dialog-actions">
+                <button type="button" class="batch-btn batch-enable" data-warmup-action="start">开启养号</button>
+                <button type="button" class="batch-btn" data-warmup-action="resume">恢复</button>
+                <button type="button" class="batch-btn batch-disable" data-warmup-action="cancel">取消养号</button>
+                <button type="button" class="batch-btn" data-warmup-action="complete">提前完成</button>
+                <button type="button" class="batch-btn" data-warmup-action="restart">重新开始</button>
+            </div>
+        </form>
+    `;
+    const fields = dialog.querySelector('#warmupAccountFields');
+    dialog.querySelector('[data-warmup-close]').addEventListener('click', () => dialog.close());
+    dialog.querySelectorAll('[data-warmup-action]').forEach(button => {
+        button.addEventListener('click', async () => {
+            button.disabled = true;
+            const action = button.dataset.warmupAction;
+            const config = ['start', 'restart'].includes(action)
+                ? readAntigravityWarmupConfigFields(fields)
+                : null;
+            if (await antigravityWarmupAction(filename, action, config)) dialog.close();
+            button.disabled = false;
+        });
+    });
+    dialog.showModal();
+}
+
+function openAntigravityWarmupIpDialog(ipKey) {
+    const state = AppState.antigravityWarmup.ip_groups[ipKey];
+    if (!state) return;
+    const fields = ANTIGRAVITY_WARMUP_CONFIG_FIELDS.filter(([key]) => key.startsWith('ip_') || ['success_threshold', 'window_seconds', 'max_level'].includes(key));
+    const dialog = createAntigravityWarmupDialog(`配置 IP 组：${ipKey}`);
+    dialog.innerHTML = `
+        <form class="proxy-policy-form" method="dialog">
+            <div class="proxy-dialog-head">
+                <h3>出口 IP 组渐进预算</h3>
+                <button type="button" class="proxy-dialog-close" data-warmup-close aria-label="关闭">×</button>
+            </div>
+            <p class="proxy-dialog-copy">${escapeHtml(ipKey)}；组内账号共享此预算。</p>
+            <div id="warmupIpFields">${buildAntigravityWarmupConfigFields(state.config, 'warmup-ip-', fields)}</div>
+            <div class="proxy-dialog-actions">
+                <button type="button" class="batch-btn batch-enable" data-warmup-save>保存组配置</button>
+            </div>
+        </form>
+    `;
+    const form = dialog.querySelector('#warmupIpFields');
+    dialog.querySelector('[data-warmup-close]').addEventListener('click', () => dialog.close());
+    dialog.querySelector('[data-warmup-save]').addEventListener('click', async event => {
+        event.currentTarget.disabled = true;
+        try {
+            const response = await fetch(`./antigravity/warmup/ip-groups/${encodeURIComponent(ipKey)}`, {
+                method: 'PUT',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(readAntigravityWarmupConfigFields(form)),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '保存 IP 组配置失败');
+            showStatus('IP 组养号预算已保存', 'success');
+            await loadAntigravityWarmupOverview();
+            dialog.close();
+        } catch (error) {
+            showStatus(error.message, 'error');
+            event.currentTarget.disabled = false;
+        }
+    });
+    dialog.showModal();
 }
 
 // =====================================================================

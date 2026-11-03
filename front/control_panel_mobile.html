@@ -1944,6 +1944,14 @@
                         style="background-color: #28a745;">打包下载</button>
                 </div>
 
+                <details class="card" id="antigravityWarmupSettings">
+                    <summary>动态养号与渐进放量</summary>
+                    <p>只使用真实业务流量；按账号和出口 IP 组逐步放量，不产生额外养号请求。</p>
+                    <div id="antigravityWarmupDefaultsForm"></div>
+                    <button type="button" class="btn btn-small" onclick="saveAntigravityWarmupDefaults()">保存养号默认参数</button>
+                    <div id="antigravityWarmupIpGroups"></div>
+                </details>
+
                 <!-- 批量操作控件 -->
                 <div class="card" style="margin: 15px 0;">
                     <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 16px;">批量操作</h4>
@@ -1975,6 +1983,10 @@
                             onclick="batchSwitchAntigravityProxyGroup()" disabled>批量切换网络策略</button>
                         <button class="btn btn-small" id="antigravityBatchNetworkHealthBtn"
                             onclick="batchCheckAntigravityNetworkHealth()" disabled>批量检测</button>
+                        <button class="btn btn-small" id="antigravityBatchWarmupStartBtn"
+                            onclick="batchAntigravityWarmup('start')" disabled>批量开启养号</button>
+                        <button class="btn btn-small btn-danger" id="antigravityBatchWarmupCancelBtn"
+                            onclick="batchAntigravityWarmup('cancel')" disabled>批量取消养号</button>
                         <button class="btn btn-small" onclick="refreshAllAntigravityEmails()">刷新所有邮箱</button>
                         <button class="btn btn-small" onclick="deduplicateAntigravityByEmail()">凭证一键去重</button>
                     </div>

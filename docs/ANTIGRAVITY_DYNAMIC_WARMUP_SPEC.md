@@ -169,11 +169,11 @@ def decision_for(account: WarmupState, ip_group: IpGroupBudget) -> WarmupDecisio
 
 #### Phase 1: 持久化状态机与租约
 
-- [ ] Task 1：新增养号状态、参数、账号/IP 组档位和租约的 SQLite 模型。
+- [x] Task 1：新增养号状态、参数、账号/IP 组档位和租约的 SQLite 模型。
   - Acceptance：迁移幂等；默认账号为 off；单/批取消保留进度；过期租约可清理。
   - Verify：SQLite 迁移与状态转换单元测试通过。
   - Files：`src/storage/sqlite_manager.py`、`src/storage_adapter.py`、`src/antigravity_dynamic_warmup.py`、对应测试。
-- [ ] Task 2：实现原子预算租约。
+- [x] Task 2：实现原子预算租约。
   - Acceptance：账号及 IP 组在飞和发起间隔均受控；并发事务不超预算；正常/异常路径均可释放。
   - Verify：多协程、多连接模拟多 Worker 的集成测试通过。
   - Files：`src/antigravity_dynamic_warmup.py`、`src/storage/sqlite_manager.py`、对应测试。
@@ -182,11 +182,11 @@ Checkpoint：未接入业务请求，现有 674 项测试不得回归。
 
 #### Phase 2: 真实流量渐进放量
 
-- [ ] Task 3：接入账号选择和请求租约生命周期。
+- [x] Task 3：接入账号选择和请求租约生命周期。
   - Acceptance：warming 账号先过全局预算再发上游；cancelled 取消后下一选择周期不可选；默认 off 普通账号路径不变。
   - Verify：流式、非流式、图片、换号、提前断开和异常释放测试通过。
   - Files：`src/credential_manager.py`、`src/api/antigravity.py`、`src/antigravity_dynamic_warmup.py`、对应测试。
-- [ ] Task 4：接入成功与失败反馈。
+- [x] Task 4：接入成功与失败反馈。
   - Acceptance：成功数量与观察时间同时满足才升档；429 退避降档；可恢复异常暂停；unknown_403 保持；TOS 永久退出。
   - Verify：状态机及真实请求结果反馈测试通过。
   - Files：`src/antigravity_dynamic_warmup.py`、`src/credential_manager.py`、`src/api/antigravity.py`、对应测试。
@@ -195,11 +195,11 @@ Checkpoint：真实业务请求可完成完整渐进周期，无额外养号请�
 
 #### Phase 3: UI 与生产发布
 
-- [ ] Task 5：提供单账号/批量养号 API 和 UI。
+- [x] Task 5：提供单账号/批量养号 API 和 UI。
   - Acceptance：单/批量开启、取消、恢复、提前完成及重新开始幂等；展示档位、进度和 IP 组预算；桌面和移动端可用。
   - Verify：API 参数/权限测试、前端语法检查和浏览器端到端验证通过。
   - Files：`src/panel/`、`front/common.js`、`front/control_panel.html`、`front/control_panel_mobile.html`、对应测试。
-- [ ] Task 6：文档、全量门禁与 GitHub Actions 发布。
+- [x] Task 6：文档、全量门禁与 GitHub Actions 发布。
   - Acceptance：新旧测试全过；Worker、副本、启动参数不变；保留回滚镜像并完成生产健康检查。
   - Verify：完整 pytest、compileall、前端检查、Actions 多架构构建和生产验证。
   - Files：`docs/CUSTOMIZATION.md`、本规格及必要代码文件。

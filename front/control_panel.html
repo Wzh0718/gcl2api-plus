@@ -2744,6 +2744,14 @@
                     <button class="download-all-btn" onclick="downloadAllAntigravityCreds()">打包下载所有文件</button>
                 </div>
 
+                <details class="batch-controls" id="antigravityWarmupSettings">
+                    <summary>动态养号与渐进放量</summary>
+                    <p class="proxy-dialog-copy">只使用真实业务流量；按账号和出口 IP 组逐步放量，不产生额外养号请求。</p>
+                    <div id="antigravityWarmupDefaultsForm"></div>
+                    <button type="button" class="batch-btn" onclick="saveAntigravityWarmupDefaults()">保存养号默认参数</button>
+                    <div id="antigravityWarmupIpGroups"></div>
+                </details>
+
                 <!-- 批量操作控件 -->
                 <div class="batch-controls">
                     <h4 style="margin-top: 0; margin-bottom: 10px;">批量操作</h4>
@@ -2770,6 +2778,10 @@
                             onclick="batchSwitchAntigravityProxyGroup()" disabled>批量切换网络策略</button>
                         <button class="batch-btn" id="antigravityBatchNetworkHealthBtn"
                             onclick="batchCheckAntigravityNetworkHealth()" disabled>批量检测</button>
+                        <button class="batch-btn batch-enable" id="antigravityBatchWarmupStartBtn"
+                            onclick="batchAntigravityWarmup('start')" disabled>批量开启养号</button>
+                        <button class="batch-btn batch-disable" id="antigravityBatchWarmupCancelBtn"
+                            onclick="batchAntigravityWarmup('cancel')" disabled>批量取消养号</button>
                         <button class="batch-btn batch-email" onclick="refreshAllAntigravityEmails()">刷新所有邮箱</button>
                         <button class="batch-btn" onclick="deduplicateAntigravityByEmail()">凭证一键去重</button>
                     </div>

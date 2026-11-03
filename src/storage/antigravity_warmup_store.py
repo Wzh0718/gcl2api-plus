@@ -76,6 +76,7 @@ class AntigravityWarmupStore:
         if action not in {"start", "cancel", "resume", "complete", "restart", "forbid"}:
             raise ValueError(f"不支持的养号操作: {action}")
         now = time.time()
+        defaults = await self.get_config("antigravity_warmup_defaults", {})
         results: Dict[str, Dict[str, Any]] = {}
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
@@ -118,7 +119,7 @@ class AntigravityWarmupStore:
                     if action in {"start", "restart"}:
                         status = "warming"
                         effective_config = normalize_warmup_config(
-                            config, base=previous_config
+                            config, base=previous_config or defaults
                         )
                         changed = True
                     elif action == "cancel":
@@ -458,3 +459,107 @@ class AntigravityWarmupStore:
             except Exception:
                 await db.rollback()
                 raise
+
+    async def list_antigravity_warmup(self) -> Dict[str, Dict[str, Any]]:
+        self._ensure_initialized()
+        from src.antigravity_dynamic_warmup import (
+            normalize_warmup_config,
+            warmup_ip_key,
+            warmup_limits,
+            warmup_selectable,
+        )
+
+        accounts: Dict[str, Dict[str, Any]] = {}
+        groups: Dict[str, Dict[str, Any]] = {}
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                """SELECT c.filename, COALESCE(w.status, 'off'),
+                          COALESCE(w.level, 0), COALESCE(w.success_count, 0),
+                          w.window_started_at, COALESCE(w.next_start_at, 0),
+                          COALESCE(w.config_json, '{}'), c.proxy_mode,
+                          c.bound_proxy_node_id, h.egress_ip, c.proxy_url
+                   FROM antigravity_credentials c
+                   LEFT JOIN antigravity_warmup_accounts w
+                     ON w.credential_name = c.filename
+                   LEFT JOIN antigravity_account_health h
+                     ON h.credential_name = c.filename
+                   ORDER BY c.filename"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                config = normalize_warmup_config(json.loads(row[6] or "{}"))
+                ip_key = warmup_ip_key(
+                    {
+                        "proxy_mode": row[7],
+                        "bound_proxy_node_id": row[8],
+                        "proxy_url": row[10],
+                    },
+                    {"egress_ip": row[9]},
+                )
+                accounts[row[0]] = {
+                    "credential_name": row[0],
+                    "status": row[1],
+                    "level": row[2],
+                    "success_count": row[3],
+                    "window_started_at": row[4],
+                    "next_start_at": row[5],
+                    "config": config,
+                    "limits": warmup_limits(config, row[2]),
+                    "selectable": warmup_selectable(row[1]),
+                    "ip_key": ip_key,
+                }
+
+            async with db.execute(
+                """SELECT ip_key, level, success_count, window_started_at,
+                          next_start_at, config_json
+                   FROM antigravity_warmup_ip_groups ORDER BY ip_key"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                config = normalize_warmup_config(json.loads(row[5] or "{}"))
+                groups[row[0]] = {
+                    "ip_key": row[0],
+                    "level": row[1],
+                    "success_count": row[2],
+                    "window_started_at": row[3],
+                    "next_start_at": row[4],
+                    "config": config,
+                    "limits": warmup_limits(config, row[1]),
+                }
+        return {"accounts": accounts, "ip_groups": groups}
+
+    async def set_antigravity_warmup_ip_config(
+        self, ip_key: str, config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        self._ensure_initialized()
+        from src.antigravity_dynamic_warmup import normalize_warmup_config
+
+        if not ip_key or len(ip_key) > 256:
+            raise ValueError("无效的 IP 组标识")
+        now = time.time()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                async with db.execute(
+                    """SELECT config_json FROM antigravity_warmup_ip_groups
+                       WHERE ip_key = ?""",
+                    (ip_key,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                previous = json.loads(row[0] or "{}") if row else {}
+                effective = normalize_warmup_config(config, base=previous)
+                await db.execute(
+                    """INSERT INTO antigravity_warmup_ip_groups (
+                           ip_key, config_json, updated_at
+                       ) VALUES (?, ?, ?)
+                       ON CONFLICT(ip_key) DO UPDATE SET
+                           config_json = excluded.config_json,
+                           updated_at = excluded.updated_at""",
+                    (ip_key, json.dumps(effective), now),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        groups = (await self.list_antigravity_warmup())["ip_groups"]
+        return groups[ip_key]
