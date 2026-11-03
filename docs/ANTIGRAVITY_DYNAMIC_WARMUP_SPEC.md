@@ -109,11 +109,11 @@ def decision_for(account: WarmupState, ip_group: IpGroupBudget) -> WarmupDecisio
 
 ### 状态与操作
 
-状态：`off / warming / paused / active / account_forbidden`。
+状态：`off / warming / paused / cancelled / active / account_forbidden`。
 
-- 开启养号：`off/paused -> warming`，从初始预算开始。
-- 取消养号：`warming/paused -> off`，立即停止渐进放量并将账号排除出候选池；不删除凭证、不清除历史进度。
-- 恢复养号：`off -> warming`，可从保留进度恢复；UI 另提供“重新开始”以清空进度。
+- 开启养号：`off/paused/cancelled -> warming`，从初始预算开始。
+- 取消养号：`warming/paused -> cancelled`，立即停止渐进放量并将账号排除出候选池；不删除凭证、不清除历史进度。默认 `off` 的普通账号仍正常参与号池。
+- 恢复养号：`cancelled -> warming`，可从保留进度恢复；UI 另提供“重新开始”以清空进度。
 - 提前完成：`warming/paused -> active`，立即按普通账号使用，明确二次确认。
 - TOS：任意状态 `-> account_forbidden`，禁用账号且不可自动恢复。
 - 单账号和批量操作使用同一状态转换函数，重复取消返回当前状态并报告 `already_inactive`，不报错。
@@ -183,7 +183,7 @@ Checkpoint：未接入业务请求，现有 674 项测试不得回归。
 #### Phase 2: 真实流量渐进放量
 
 - [ ] Task 3：接入账号选择和请求租约生命周期。
-  - Acceptance：warming 账号先过全局预算再发上游；off 取消后下一选择周期不可选；普通账号路径不变。
+  - Acceptance：warming 账号先过全局预算再发上游；cancelled 取消后下一选择周期不可选；默认 off 普通账号路径不变。
   - Verify：流式、非流式、图片、换号、提前断开和异常释放测试通过。
   - Files：`src/credential_manager.py`、`src/api/antigravity.py`、`src/antigravity_dynamic_warmup.py`、对应测试。
 - [ ] Task 4：接入成功与失败反馈。

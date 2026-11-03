@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from log import log
+from src.storage.antigravity_warmup_store import AntigravityWarmupStore
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
@@ -42,7 +43,7 @@ def _visible_error_codes(
     return [code for code in codes if str(code) != "429"]
 
 
-class SQLiteManager:
+class SQLiteManager(AntigravityWarmupStore):
     """SQLite 数据库管理器"""
 
     # 状态字段常量
@@ -325,6 +326,49 @@ class SQLiteManager:
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_ag_bound_proxy_node
             ON antigravity_credentials(bound_proxy_node_id)
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_warmup_accounts (
+                credential_name TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'off',
+                level INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at REAL,
+                next_start_at REAL NOT NULL DEFAULT 0,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL DEFAULT (unixepoch()),
+                updated_at REAL NOT NULL DEFAULT (unixepoch())
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_warmup_ip_groups (
+                ip_key TEXT PRIMARY KEY,
+                level INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at REAL,
+                next_start_at REAL NOT NULL DEFAULT 0,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL DEFAULT (unixepoch()),
+                updated_at REAL NOT NULL DEFAULT (unixepoch())
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_warmup_leases (
+                lease_id TEXT PRIMARY KEY,
+                credential_name TEXT NOT NULL,
+                ip_key TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_warmup_leases_account
+            ON antigravity_warmup_leases(credential_name, expires_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_warmup_leases_ip
+            ON antigravity_warmup_leases(ip_key, expires_at)
         """)
 
         # 代理组配置独立于 OAuth 凭证 JSON，支持运行时导入和切换。
