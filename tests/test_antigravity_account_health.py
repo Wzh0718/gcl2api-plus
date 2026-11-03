@@ -1146,7 +1146,7 @@ class AntigravityJetskiFingerprintTests(unittest.IsolatedAsyncioTestCase):
             antigravity, "_get_session_state", AsyncMock(return_value=state)
         ):
             return await antigravity.wrap_cli_request(
-                {"contents": []}, "gemini-test", "project-1",
+                {"contents": []}, "gemini-2.5-flash", "project-1",
                 user_email=user_email,
             )
 
