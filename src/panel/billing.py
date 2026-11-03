@@ -151,16 +151,47 @@ async def billing_summary(
     return await storage.get_billing_summary(_range(range), api_key_id=api_key_id)
 
 
+async def _sqlite_dashboard(
+    storage: Any, range_name: str, page_size: int,
+    api_key_id: str | None, *, degraded: bool = False,
+) -> Dict[str, Any]:
+    summary, accounts, models, keys = await asyncio.gather(
+        storage.get_billing_summary(range_name, api_key_id=api_key_id),
+        storage.get_billing_accounts(
+            range_name, 1, page_size, api_key_id=api_key_id
+        ),
+        storage.get_billing_models(
+            range_name, 1, page_size, api_key_id=api_key_id
+        ),
+        storage.get_billing_keys(range_name, 1, page_size),
+    )
+    return {
+        "source": "sqlite",
+        "degraded": degraded,
+        "scanned_keys": 0,
+        "summary": summary,
+        "accounts": accounts,
+        "models": models,
+        "keys": keys,
+    }
+
+
 @router.get("/billing/dashboard")
 async def billing_dashboard(
     range: str = "today", page_size: int = 10, api_key_id: str | None = None,
     _token: str = Depends(verify_panel_token),
 ):
-    """Prefer Redis for auto-refresh, but keep the SQLite-backed dashboard available."""
+    """Read the SQLite ledger by default; Redis is an explicit opt-in mirror."""
     storage = await get_storage_adapter()
-    from src.billing import BillingRedisUnavailable, get_billing_recorder
     range_name = _range(range)
     bounded_page_size = min(max(page_size, 1), 100)
+    source = os.getenv("BILLING_DASHBOARD_SOURCE", "sqlite").strip().lower()
+    if source != "redis":
+        return await _sqlite_dashboard(
+            storage, range_name, bounded_page_size, api_key_id
+        )
+
+    from src.billing import BillingRedisUnavailable, get_billing_recorder
     try:
         return await (await get_billing_recorder(storage)).get_redis_dashboard(
             range_name, bounded_page_size, api_key_id=api_key_id
@@ -169,25 +200,9 @@ async def billing_dashboard(
         log.warning(
             f"[BILLING] Redis dashboard unavailable; using SQLite: {type(exc).__name__}"
         )
-        summary, accounts, models, keys = await asyncio.gather(
-            storage.get_billing_summary(range_name, api_key_id=api_key_id),
-            storage.get_billing_accounts(
-                range_name, 1, bounded_page_size, api_key_id=api_key_id
-            ),
-            storage.get_billing_models(
-                range_name, 1, bounded_page_size, api_key_id=api_key_id
-            ),
-            storage.get_billing_keys(range_name, 1, bounded_page_size),
+        return await _sqlite_dashboard(
+            storage, range_name, bounded_page_size, api_key_id, degraded=True
         )
-        return {
-            "source": "sqlite",
-            "degraded": True,
-            "scanned_keys": 0,
-            "summary": summary,
-            "accounts": accounts,
-            "models": models,
-            "keys": keys,
-        }
 
 
 @router.get("/billing/accounts")

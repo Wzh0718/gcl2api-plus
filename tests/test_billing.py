@@ -105,6 +105,43 @@ def test_billing_prices_round_half_up_to_two_decimal_places():
 
 
 @pytest.mark.asyncio
+async def test_sqlite_billing_aggregates_exact_money_without_python_functions(tmp_path, monkeypatch):
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    from src.billing import SHANGHAI
+    from src.storage.sqlite_manager import SQLiteManager
+
+    storage = SQLiteManager()
+    await storage.initialize()
+    amount = "9007199254.74099301"
+    await storage.record_billing_usage(
+        request_id="exact-money", api_key_id="env",
+        billing_date=datetime.now(SHANGHAI).date().isoformat(),
+        credential_name="a.json", model="m", currency="CNY",
+        input_tokens=1, output_tokens=0, cache_tokens=0, thought_tokens=0,
+        total_tokens=1, input_cost=amount, output_cost="0.00000000",
+        cache_cost="0.00000000", total_cost=amount, success=True,
+        unknown_usage=False, dedupe_ttl_seconds=86400,
+    )
+
+    async def forbidden_money_registration(db):
+        raise AssertionError("看板聚合不得调用 Python 逐行金额函数")
+
+    storage._register_money_functions = forbidden_money_registration
+    summary, accounts, models, keys = await asyncio.gather(
+        storage.get_billing_summary("today"),
+        storage.get_billing_accounts("today", 1, 10),
+        storage.get_billing_models("today", 1, 10),
+        storage.get_billing_keys("today", 1, 10),
+    )
+
+    assert summary["total_cost"] == amount
+    assert accounts["items"][0]["total_cost"] == amount
+    assert models["items"][0]["total_cost"] == amount
+    assert keys["items"][0]["total_cost"] == amount
+    await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_billing_recorder_deduplicates_request_ids(tmp_path, monkeypatch):
     monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
     from src.storage.sqlite_manager import SQLiteManager
@@ -505,10 +542,83 @@ async def test_redis_dashboard_aggregates_usage_in_one_read_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_redis_dashboard_not_ready_skips_rebuild_and_releases_connection():
+    from src.billing import BillingRecorder, BillingRedisUnavailable
+
+    class NotReadyRedis:
+        def __init__(self):
+            self.closed = False
+
+        async def get(self, key):
+            return None
+
+        async def aclose(self):
+            self.closed = True
+
+    redis = NotReadyRedis()
+    recorder = BillingRecorder(object(), redis_client=redis)
+
+    async def unexpected_rebuild():
+        raise AssertionError("看板 GET 请求不得同步重建 Redis 镜像")
+
+    recorder.rebuild_redis = unexpected_rebuild
+    with pytest.raises(BillingRedisUnavailable, match="尚未就绪"):
+        await recorder.get_redis_dashboard("today")
+
+    assert redis.closed is True
+    assert recorder.redis.client is None
+
+
+@pytest.mark.asyncio
+async def test_billing_dashboard_uses_sqlite_by_default_without_touching_redis(monkeypatch):
+    from src.panel import billing as billing_panel
+    import src.billing as billing_module
+
+    monkeypatch.delenv("BILLING_DASHBOARD_SOURCE", raising=False)
+
+    class FakeStorage:
+        async def get_billing_summary(self, range_name, api_key_id=None):
+            return {"range": range_name, "total_tokens": 123, "api_key_id": api_key_id}
+
+        async def get_billing_accounts(self, range_name, page, page_size, api_key_id=None):
+            return {"items": [], "page": page, "page_size": page_size}
+
+        async def get_billing_models(self, range_name, page, page_size, api_key_id=None):
+            return {"items": [], "page": page, "page_size": page_size}
+
+        async def get_billing_keys(self, range_name, page, page_size):
+            return {"items": [], "page": page, "page_size": page_size}
+
+    storage = FakeStorage()
+
+    async def fake_get_storage_adapter():
+        return storage
+
+    async def forbidden_get_billing_recorder(received_storage):
+        raise AssertionError("默认 SQLite 看板不得读取或重建 Redis")
+
+    monkeypatch.setattr(billing_panel, "get_storage_adapter", fake_get_storage_adapter)
+    monkeypatch.setattr(billing_module, "get_billing_recorder", forbidden_get_billing_recorder)
+
+    dashboard = await billing_panel.billing_dashboard(
+        range="7d", page_size=10, api_key_id="key-a", _token="test-token"
+    )
+
+    assert dashboard["source"] == "sqlite"
+    assert dashboard["degraded"] is False
+    assert dashboard["scanned_keys"] == 0
+    assert dashboard["summary"] == {
+        "range": "7d", "total_tokens": 123, "api_key_id": "key-a"
+    }
+
+
+@pytest.mark.asyncio
 async def test_billing_dashboard_falls_back_to_sqlite_when_redis_is_unavailable(monkeypatch):
     from src.billing import BillingRedisUnavailable
     from src.panel import billing as billing_panel
     import src.billing as billing_module
+
+    monkeypatch.setenv("BILLING_DASHBOARD_SOURCE", "redis")
 
     class FakeStorage:
         async def get_billing_summary(self, range_name, api_key_id=None):
@@ -680,6 +790,68 @@ def test_quota_period_dashboard_uses_key_management_counters():
         "total_tokens": 1_520_000,
         "total_cost": "1.52000000",
     }]
+
+
+def test_tab_switch_starts_data_load_without_waiting_for_animation():
+    state = _run_common_js_slice(
+        "function switchTab",
+        "// 标签页数据加载",
+        """
+function makeElement(id, classNames) {
+  const classes = new Set(classNames);
+  return {
+    id,
+    style: {},
+    classList: {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+    },
+    setAttribute() {},
+    removeAttribute() {},
+    closest: () => null,
+  };
+}
+const current = makeElement('api-keysTab', ['tab-content', 'active']);
+const target = makeElement('billingTab', ['tab-content']);
+const sourceTab = makeElement('billingButton', ['tab']);
+const loads = [];
+const timers = [];
+const document = {
+  querySelector: selector => selector === '.tab-content.active'
+    ? [current, target].find(element => element.classList.contains('active'))
+    : null,
+  querySelectorAll: selector => selector === '.tab' ? [sourceTab] : [],
+  getElementById: id => id === 'billingTab' ? target : current,
+};
+function stopBillingAutoRefresh() {}
+function stopStatsAutoRefresh() {}
+function stopCallMonitorAutoRefresh() {}
+function disconnectWebSocket() {}
+function resetTabGroupLabels() {}
+function updateTabSlider() {}
+function closeTabDropdowns() {}
+function triggerTabDataLoad(tabName) { loads.push(tabName); }
+function setTimeout(callback, delay) { timers.push({callback, delay}); }
+function requestAnimationFrame() {}
+""",
+        """
+switchTab('billing', sourceTab);
+console.log(JSON.stringify({
+  loads,
+  targetActive: target.classList.contains('active'),
+  currentActive: current.classList.contains('active'),
+  timers: timers.length,
+}));
+""",
+    )
+
+    assert state == {
+        "loads": ["billing"],
+        "targetActive": True,
+        "currentActive": False,
+        "timers": 0,
+    }
 
 
 def test_billing_auto_refresh_keeps_one_visible_ten_second_timer():

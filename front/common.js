@@ -1540,59 +1540,33 @@ function switchTab(tabName, sourceTab = null) {
         }
     }
 
-    // 淡出当前内容
     if (currentContent) {
-        // 设置淡出过渡
-        currentContent.style.transition = 'opacity 0.18s ease-out, transform 0.18s ease-out';
-        currentContent.style.opacity = '0';
-        currentContent.style.transform = 'translateX(-12px)';
+        currentContent.classList.remove('active');
+        currentContent.setAttribute('aria-hidden', 'true');
+        currentContent.style.transition = '';
+        currentContent.style.opacity = '';
+        currentContent.style.transform = '';
+    }
 
-        setTimeout(() => {
-            currentContent.classList.remove('active');
-            currentContent.setAttribute('aria-hidden', 'true');
-            currentContent.style.transition = '';
-            currentContent.style.opacity = '';
-            currentContent.style.transform = '';
+    if (targetContent) {
+        targetContent.classList.add('active');
+        targetContent.setAttribute('aria-hidden', 'false');
 
-            // 淡入新内容
-            if (targetContent) {
-                // 先设置初始状态（在添加 active 类之前）
-                targetContent.style.opacity = '0';
-                targetContent.style.transform = 'translateX(12px)';
-                targetContent.style.transition = 'none'; // 暂时禁用过渡
+        if (currentContent) {
+            targetContent.style.opacity = '0';
+            targetContent.style.transform = 'translateX(12px)';
+            targetContent.style.transition = 'none';
+        }
 
-                // 添加 active 类使元素可见
-                targetContent.classList.add('active');
-                targetContent.setAttribute('aria-hidden', 'false');
+        triggerTabDataLoad(tabName);
 
-                // 使用双重 requestAnimationFrame 确保浏览器完成重绘
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        // 启用过渡并应用最终状态
-                        targetContent.style.transition = 'opacity 0.25s ease-out, transform 0.25s ease-out';
-                        targetContent.style.opacity = '1';
-                        targetContent.style.transform = 'translateX(0)';
-
-                        // 清理内联样式并执行数据加载
-                        setTimeout(() => {
-                            targetContent.style.transition = '';
-                            targetContent.style.opacity = '';
-                            targetContent.style.transform = '';
-
-                            // 动画完成后触发数据加载
-                            triggerTabDataLoad(tabName);
-                        }, 260);
-                    });
-                });
-            }
-        }, 180);
-    } else {
-        // 如果没有当前内容（首次加载），直接显示目标内容
-        if (targetContent) {
-            targetContent.classList.add('active');
-            targetContent.setAttribute('aria-hidden', 'false');
-            // 直接触发数据加载
-            triggerTabDataLoad(tabName);
+        if (currentContent) {
+            requestAnimationFrame(() => {
+                if (!targetContent.classList.contains('active')) return;
+                targetContent.style.transition = 'opacity 0.18s ease-out, transform 0.18s ease-out';
+                targetContent.style.opacity = '1';
+                targetContent.style.transform = 'translateX(0)';
+            });
         }
     }
 }
@@ -5292,7 +5266,7 @@ function restoreOfficialUrls() {
 }
 
 // =====================================================================
-// Redis Token 计费看板
+// Token 计费看板
 // =====================================================================
 let billingCurrency = 'CNY';
 
@@ -5484,7 +5458,7 @@ async function loadBillingDashboard({ includePricing = true, silent = false } = 
         }
         const [dashboardResponse, pricingResponse, apiKeysResponse] = await Promise.all(requests);
         const primaryData = await dashboardResponse.json();
-        if (!dashboardResponse.ok) throw new Error(primaryData.detail || (quotaPeriodView ? '加载密钥额度失败' : '加载 Redis 计费看板失败'));
+        if (!dashboardResponse.ok) throw new Error(primaryData.detail || (quotaPeriodView ? '加载密钥额度失败' : '加载计费看板失败'));
         const dashboard = quotaPeriodView ? buildBillingQuotaPeriodDashboard(primaryData) : primaryData;
         const pricing = pricingResponse ? await pricingResponse.json() : null;
         if (pricingResponse && !pricingResponse.ok) throw new Error(pricing.detail || '加载价格配置失败');

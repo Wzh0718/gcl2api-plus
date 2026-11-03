@@ -88,7 +88,8 @@ cp .env.example .env
 | `PASSWORD` | Shared password for legacy deployments | Highest priority when set |
 | `CREDENTIALS_DIR` | SQLite database and credentials directory | `./creds` |
 | `PROXY` | Global proxy | Use `http`, `https`, or `socks5` as needed |
-| `REDIS_URL` | Billing mirror and dashboard acceleration | Optional; SQLite remains the fallback |
+| `REDIS_URL` | Optional billing mirror | Optional; SQLite remains the primary ledger |
+| `BILLING_DASHBOARD_SOURCE` | Dashboard source: `sqlite` or `redis` | `sqlite`; an unavailable Redis mirror falls back to SQLite |
 | `REDIS_USER` / `REDIS_PASSWORD` | Separate Redis authentication | Recommended |
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | Model fallback chain after quota exhaustion | Comma-separated; empty disables it |
 | `MAX_NON_STREAM_BUFFER_BYTES` | Maximum non-stream response buffer | `16777216` |

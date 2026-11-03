@@ -103,7 +103,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 - `src/storage_adapter.py` 固定选择 SQLite。
 - `src/storage/sqlite_manager.py` 管理账号、配置、Proxy 上下文和账单数据。
 - 默认数据库为 `${CREDENTIALS_DIR:-./creds}/credentials.db`。
-- Redis 只作为计费汇总镜像；Redis 失败不能阻塞 SQLite 主记录，看板会自动回退 SQLite。
+- Redis 只作为计费汇总镜像，不能阻塞 SQLite 主记录。看板默认直接查询 SQLite 预聚合账本；只有 `BILLING_DASHBOARD_SOURCE=redis` 时才优先读取 Redis，镜像不可用或未就绪时自动回退 SQLite，看板 GET 请求不会同步重建镜像。
 
 ### Antigravity 账号 Proxy
 
@@ -212,11 +212,12 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | --- | --- | --- |
 | `BILLING_CURRENCY` ★ | 计费币种 | `CNY` |
 | `BILLING_DEDUPE_TTL_DAYS` ★ | 请求去重保留天数 | `7` |
+| `BILLING_DASHBOARD_SOURCE` ★ | 看板数据源：`sqlite` 或 `redis`；Redis 不可用或未就绪时回退 SQLite | `sqlite` |
 | `BILLING_REDIS_PREFIX` ★ | Redis 计费键前缀 | `gcli:billing` |
 | `BILLING_REDIS_TTL_DAYS` ★ | Redis 镜像保留天数 | `45` |
-| `BILLING_REDIS_SCAN_BATCH_SIZE` ★ | 看板单批扫描键数，最大 `1000` | `200` |
-| `BILLING_REDIS_SCAN_MAX_KEYS` ★ | 单次看板扫描安全上限，超过则拒绝响应 | `100000` |
-| `REDIS_URL` | Redis 地址；计费镜像与看板加速，不可用时自动回退 SQLite | 空 |
+| `BILLING_REDIS_SCAN_BATCH_SIZE` ★ | 显式 Redis 看板的单批扫描键数，最大 `1000` | `200` |
+| `BILLING_REDIS_SCAN_MAX_KEYS` ★ | 显式 Redis 看板的单次扫描安全上限，超过则回退 SQLite | `100000` |
+| `REDIS_URL` | Redis 地址；启用计费镜像，显式 Redis 看板不可用时自动回退 SQLite | 空 |
 | `REDIS_USER` ★ | Redis 用户名，推荐与密码分离配置（如 `default`） | 空 |
 | `REDIS_PASSWORD` ★ | Redis 密码，特殊字符无需 URL 编码 | 空 |
 

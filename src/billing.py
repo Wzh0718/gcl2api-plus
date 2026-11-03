@@ -611,9 +611,8 @@ class BillingRecorder:
         api_key_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not await self.redis.is_ready():
-            await self.rebuild_redis()
-            if not await self.redis.is_ready():
-                raise BillingRedisUnavailable("Redis 计费镜像尚未就绪")
+            await self.redis._discard_client()
+            raise BillingRedisUnavailable("Redis 计费镜像尚未就绪")
         return await self.redis.dashboard(range_name, page_size, api_key_id=api_key_id)
 
 

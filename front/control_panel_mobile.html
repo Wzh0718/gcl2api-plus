@@ -2605,7 +2605,7 @@
             </div>
 
             <div id="billingTab" class="tab-content">
-                <h3>Token 计费看板</h3><p>选择密钥后展示当前额度周期；历史范围每 10 秒从 Redis 自动刷新。</p>
+                <h3>Token 计费看板</h3><p>选择密钥后展示当前额度周期；历史范围每 10 秒自动刷新。</p>
                 <select id="billingApiKeyFilter" class="billing-key-filter" onchange="handleBillingApiKeyChange()"><option value="">全部密钥</option></select>
                 <select id="billingRange" onchange="loadBillingDashboard()"><option value="quota">额度周期</option><option value="today">当天</option><option value="7d">7天</option><option value="14d">14天</option><option value="30d">30天</option></select>
                 <button class="refresh-btn" onclick="loadBillingDashboard()">刷新</button>

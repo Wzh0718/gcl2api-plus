@@ -864,12 +864,12 @@ class SQLiteManager:
             raise RuntimeError("SQLite manager not initialized")
 
     @staticmethod
-    def _money_to_e8(value: Any) -> int:
-        """Convert an eight-decimal SQLite text amount to an exact integer."""
-        return int((Decimal(str(value or "0")) * Decimal(100_000_000)).to_integral_value())
-
-    async def _register_money_functions(self, db: aiosqlite.Connection) -> None:
-        await db.create_function("money_e8", 1, self._money_to_e8, deterministic=True)
+    def _money_e8_sql(column: str) -> str:
+        """Convert canonical non-negative eight-decimal text using SQLite integer arithmetic."""
+        return (
+            f"(CAST(SUBSTR({column}, 1, LENGTH({column}) - 9) AS INTEGER) * 100000000 "
+            f"+ CAST(SUBSTR({column}, -8) AS INTEGER))"
+        )
 
     def _get_table_name(self, mode: str) -> str:
         """根据 mode 获取对应的表名"""
@@ -2440,16 +2440,19 @@ class SQLiteManager:
         start_date, end_date = dates[-1], dates[0]
         key_filter = " AND api_key_id = ?" if api_key_id else ""
         params: Tuple[Any, ...] = (start_date, end_date, api_key_id) if api_key_id else (start_date, end_date)
+        input_cost_e8 = self._money_e8_sql("input_cost")
+        output_cost_e8 = self._money_e8_sql("output_cost")
+        cache_cost_e8 = self._money_e8_sql("cache_cost")
+        total_cost_e8 = self._money_e8_sql("total_cost")
         async with aiosqlite.connect(self._db_path) as db:
-            await self._register_money_functions(db)
             async with db.execute(
-                """SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                f"""SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
                           COALESCE(SUM(cache_tokens), 0), COALESCE(SUM(thought_tokens), 0),
                           COALESCE(SUM(total_tokens), 0),
-                          COALESCE(SUM(money_e8(input_cost)), 0),
-                          COALESCE(SUM(money_e8(output_cost)), 0),
-                          COALESCE(SUM(money_e8(cache_cost)), 0),
-                          COALESCE(SUM(money_e8(total_cost)), 0),
+                          COALESCE(SUM({input_cost_e8}), 0),
+                          COALESCE(SUM({output_cost_e8}), 0),
+                          COALESCE(SUM({cache_cost_e8}), 0),
+                          COALESCE(SUM({total_cost_e8}), 0),
                           COALESCE(SUM(success_count), 0), COALESCE(SUM(failed_count), 0),
                           COALESCE(SUM(unknown_usage_count), 0)
                    FROM billing_daily WHERE billing_date BETWEEN ? AND ?""" + key_filter,
@@ -2457,8 +2460,8 @@ class SQLiteManager:
             ) as cursor:
                 aggregate = await cursor.fetchone()
             async with db.execute(
-                """SELECT billing_date, COALESCE(SUM(total_tokens), 0),
-                          COALESCE(SUM(money_e8(total_cost)), 0)
+                f"""SELECT billing_date, COALESCE(SUM(total_tokens), 0),
+                          COALESCE(SUM({total_cost_e8}), 0)
                    FROM billing_daily WHERE billing_date BETWEEN ? AND ?""" + key_filter + """
                    GROUP BY billing_date ORDER BY billing_date ASC LIMIT 30""",
                 params,
@@ -2519,8 +2522,8 @@ class SQLiteManager:
         base_params: List[Any] = [start_date, end_date]
         if api_key_id:
             base_params.append(api_key_id)
+        total_cost_e8 = self._money_e8_sql("total_cost")
         async with aiosqlite.connect(self._db_path) as db:
-            await self._register_money_functions(db)
             async with db.execute(
                 f"SELECT COUNT(*) FROM (SELECT {dimension}, currency FROM billing_daily WHERE billing_date BETWEEN ? AND ?{key_filter} GROUP BY {dimension}, currency)",
                 base_params,
@@ -2528,7 +2531,7 @@ class SQLiteManager:
                 total = int((await cursor.fetchone())[0])
             async with db.execute(
                 f"""SELECT {dimension}, currency, COALESCE(SUM(total_tokens), 0),
-                           COALESCE(SUM(money_e8(total_cost)), 0),
+                           COALESCE(SUM({total_cost_e8}), 0),
                            COALESCE(SUM(success_count), 0), COALESCE(SUM(failed_count), 0),
                            COALESCE(SUM(unknown_usage_count), 0)
                     FROM billing_daily WHERE billing_date BETWEEN ? AND ?{key_filter}
@@ -2551,8 +2554,8 @@ class SQLiteManager:
         page = max(int(page), 1)
         page_size = min(max(int(page_size), 1), 100)
         offset = (page - 1) * page_size
+        total_cost_e8 = self._money_e8_sql("d.total_cost")
         async with aiosqlite.connect(self._db_path) as db:
-            await self._register_money_functions(db)
             async with db.execute(
                 """SELECT COUNT(*) FROM (
                        SELECT api_key_id, currency FROM billing_daily
@@ -2563,10 +2566,10 @@ class SQLiteManager:
             ) as cursor:
                 total = int((await cursor.fetchone())[0])
             async with db.execute(
-                """SELECT d.api_key_id, COALESCE(k.name, d.api_key_id),
+                f"""SELECT d.api_key_id, COALESCE(k.name, d.api_key_id),
                           COALESCE(k.key_prefix, ''), d.currency,
                           COALESCE(SUM(d.total_tokens), 0),
-                          COALESCE(SUM(money_e8(d.total_cost)), 0),
+                          COALESCE(SUM({total_cost_e8}), 0),
                           COALESCE(SUM(d.success_count), 0),
                           COALESCE(SUM(d.failed_count), 0),
                           COALESCE(SUM(d.unknown_usage_count), 0)
