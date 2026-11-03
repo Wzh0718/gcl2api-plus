@@ -504,3 +504,41 @@ async def test_fifteen_healthy_accounts_split_thirty_requests_evenly(monkeypatch
         f"Bearer token-{index:02d}": 2 for index in range(15)
     }
     assert all(_inflight(name) == 0 for name, _ in accounts)
+
+
+@pytest.mark.asyncio
+async def test_stream_unknown_model_returns_400_without_upstream(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        agy, "_get_available_models_for_credential", lambda **kwargs: _awaitable(set())
+    )
+
+    async def unexpected_stream(**kwargs):
+        raise AssertionError("未知模型不得触达上游")
+        yield
+
+    monkeypatch.setattr(agy, "stream_post_async", unexpected_stream)
+    chunks = [
+        item async for item in agy.stream_request(_body("gemini-stream-unknown-model"))
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].status_code == 400
+    assert json.loads(chunks[0].body)["error"]["status"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.asyncio
+async def test_non_stream_unknown_model_returns_400_without_upstream(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        agy, "_get_available_models_for_credential", lambda **kwargs: _awaitable(set())
+    )
+
+    async def unexpected_post(**kwargs):
+        raise AssertionError("未知模型不得触达上游")
+
+    monkeypatch.setattr(agy, "post_async", unexpected_post)
+    response = await agy.non_stream_request(_body("gemini-non-stream-unknown-model"))
+
+    assert response.status_code == 400
+    assert json.loads(response.body)["error"]["status"] == "INVALID_ARGUMENT"

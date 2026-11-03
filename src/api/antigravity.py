@@ -41,6 +41,7 @@ from src.antigravity_error_classifier import (
     Antigravity403Decision,
     classify_antigravity_403,
 )
+from src.antigravity_model_catalog import UnknownAntigravityModelError
 
 # 导入共同的基础功能
 from src.api.utils import (
@@ -295,20 +296,37 @@ async def wrap_cli_request(
     project_id: str,
     user_email: Optional[str] = None,
     credential_key: Optional[str] = None,
+    credential_data: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """
-    将 Gemini 格式请求包装成 Antigravity hub 格式（对齐 2.25.0 实抓信封）。
+    将 Gemini 格式请求包装成 Antigravity hub 格式（对齐 2.28.2 实抓信封）。
     返回 (payload, request_id)。
 
     user_email 为 None 或 gmail/googlemail 邮箱时保持 antigravity 指纹；
     其他邮箱（如企业/教育账号）改用 jetski 指纹（对齐 Antigravity-Manager）。
-    credential_key 用于派生账号级稳定 sessionId。
+    credential_key 用于派生账号级稳定 sessionId 和按账号刷新模型目录。
     """
     inner = dict(gemini_request)
 
     # 移除 safetySettings（CLI 不发送）
     inner.pop("safetySettings", None)
     is_image_request = is_antigravity_image_request(model, inner)
+
+    if not is_image_request:
+        from src.antigravity_model_catalog import (
+            UnknownAntigravityModelError,
+            get_model_enum,
+        )
+
+        try:
+            get_model_enum(model)
+        except UnknownAntigravityModelError:
+            if credential_key and credential_data:
+                await _get_available_models_for_credential(
+                    credential_name=credential_key,
+                    credential_data=credential_data,
+                )
+            get_model_enum(model)
 
     # 获取/更新会话状态
     state = await _get_session_state(inner, model, credential_key)
@@ -353,6 +371,19 @@ async def wrap_cli_request(
     }
     return payload, request_id
 
+
+def _model_enum_error_response(exc: UnknownAntigravityModelError) -> Response:
+    return Response(
+        content=json.dumps({
+            "error": {
+                "code": 400,
+                "message": str(exc),
+                "status": "INVALID_ARGUMENT",
+            }
+        }),
+        status_code=400,
+        media_type="application/json",
+    )
 
 
 def _upstream_trace_id(headers: Any) -> str:
@@ -891,6 +922,7 @@ async def _try_model_fallback(
         inner_request, next_model, credential_data.get("project_id", ""),
         user_email=credential_data.get("user_email"),
         credential_key=credential_key,
+        credential_data=credential_data,
     )
     log.warning(
         f"{log_prefix} 模型 {model_name} 配额耗尽且号池无可用凭证，降级到 {next_model}"
@@ -990,6 +1022,7 @@ async def _stream_request_inner(
         inner_request, model_name, project_id,
         user_email=credential_data.get("user_email"),
         credential_key=current_file,
+        credential_data=credential_data,
     )
 
     # 3. 调用stream_post_async进行请求
@@ -1078,6 +1111,7 @@ async def _stream_request_inner(
             new_project_id,
             user_email=new_data.get("user_email"),
             credential_key=new_file,
+            credential_data=new_data,
         )
         current_file, credential_data = new_file, new_data
         access_token, project_id = new_access_token, new_project_id
@@ -1104,6 +1138,7 @@ async def _stream_request_inner(
                 new_project_id,
                 user_email=new_data.get("user_email"),
                 credential_key=new_file,
+                credential_data=new_data,
             )
             final_payload, request_id = new_payload, new_request_id
         current_file, credential_data = new_file, new_data
@@ -1526,6 +1561,8 @@ async def stream_request(
     try:
         async for item in inner:
             yield item
+    except UnknownAntigravityModelError as exc:
+        yield _model_enum_error_response(exc)
     finally:
         # 显式关闭内层生成器：消费者提前断开时立即归还并发槽位/上游流/图片 lease，
         # 不依赖 async generator 被 GC 终结的时机（否则槽位可能被短暂计为在飞）。
@@ -1825,6 +1862,20 @@ async def _non_stream_image_request(
         await lease_tracker.release()
 
 
+def _convert_unknown_model_errors(func):
+    from functools import wraps
+
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except UnknownAntigravityModelError as exc:
+            return _model_enum_error_response(exc)
+
+    return wrapper
+
+
+@_convert_unknown_model_errors
 async def non_stream_request(
     body: Dict[str, Any],
     headers: Optional[Dict[str, str]] = None,
@@ -1925,6 +1976,7 @@ async def non_stream_request(
         inner_request, model_name, project_id,
         user_email=credential_data.get("user_email"),
         credential_key=current_file,
+        credential_data=credential_data,
     )
 
     # 3. 调用post_async进行请求
@@ -1990,6 +2042,7 @@ async def non_stream_request(
             new_project_id,
             user_email=new_data.get("user_email"),
             credential_key=new_file,
+            credential_data=new_data,
         )
         current_file, credential_data = new_file, new_data
         access_token, project_id = new_access_token, new_project_id
@@ -2016,6 +2069,7 @@ async def non_stream_request(
                 new_project_id,
                 user_email=new_data.get("user_email"),
                 credential_key=new_file,
+                credential_data=new_data,
             )
             final_payload, request_id = new_payload, new_request_id
         current_file, credential_data = new_file, new_data

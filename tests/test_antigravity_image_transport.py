@@ -80,17 +80,14 @@ async def test_agent_wrapper_matches_hub_envelope():
     with patch.object(antigravity, "_get_session_state", AsyncMock(return_value=state)):
         payload, _ = await antigravity.wrap_cli_request(
             {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
-            "gemini-3.1-pro-preview",
+            "gemini-3.8-flash-high",
             "project-1",
             user_email="agent@example.com",
         )
 
     assert payload["requestType"] == "agent"
-    # hub 轨迹不发 enabledCreditTypes（2026-10-21 实抓对齐）
     assert "enabledCreditTypes" not in payload
-    # hub 轨迹不强制 toolConfig
     assert "toolConfig" not in payload["request"]
-    # labels 9 键全集（未知模型 model_enum 回退为模型 ID）
     labels = payload["request"]["labels"]
     assert set(labels.keys()) == {
         "cascade_id", "root_cascade_id", "request_id", "trajectory_id",
@@ -100,12 +97,71 @@ async def test_agent_wrapper_matches_hub_envelope():
     assert labels["cascade_id"] == "conv"
     assert labels["root_cascade_id"] == "conv"
     assert labels["request_id"] == "traj-0"
-    assert labels["model_enum"] == "gemini-3.1-pro-preview"
+    assert labels["model_enum"] == "MODEL_PLACEHOLDER_M318"
     assert labels["used_non_gemini_model"] == "false"
-    # generationConfig 默认值（未知模型：仅 maxOutputTokens 65536，无 thinkingConfig）
     gen_cfg = payload["request"]["generationConfig"]
     assert gen_cfg["maxOutputTokens"] == 65536
-    assert "thinkingConfig" not in gen_cfg
+    assert gen_cfg["thinkingConfig"] == {
+        "includeThoughts": True,
+        "thinkingBudget": -1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_agent_wrapper_rejects_unknown_model_enum():
+    from src.api import antigravity
+
+    with pytest.raises(ValueError, match="model enum"):
+        await antigravity.wrap_cli_request(
+            {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
+            "gemini-unregistered-model",
+            "project-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_wrapper_refreshes_unknown_model_catalog_for_credential():
+    from src.api import antigravity
+    from src.antigravity_model_catalog import update_from_catalog
+
+    state = antigravity.AntigravitySessionState(
+        conversation_id="conv",
+        trajectory_id="traj",
+        session_id="sess",
+        step_index=0,
+        created_at=0.0,
+        last_used_at=0.0,
+    )
+
+    async def fetch_models(**kwargs):
+        assert kwargs["credential_name"] == "account.json"
+        assert kwargs["credential_data"]["access_token"] == "token"
+        update_from_catalog({
+            "gemini-directory-only-model": {
+                "model": "MODEL_PLACEHOLDER_M999",
+                "supportsThinking": True,
+                "thinkingBudget": -1,
+                "maxOutputTokens": 65536,
+            }
+        })
+        return {"gemini-directory-only-model"}
+
+    with (
+        patch.object(antigravity, "_get_session_state", AsyncMock(return_value=state)),
+        patch.object(
+            antigravity, "_get_available_models_for_credential", side_effect=fetch_models
+        ),
+    ):
+        payload, _ = await antigravity.wrap_cli_request(
+            {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]},
+            "gemini-directory-only-model",
+            "project-1",
+            credential_key="account.json",
+            credential_data={"access_token": "token"},
+        )
+
+    assert payload["request"]["labels"]["model_enum"] == "MODEL_PLACEHOLDER_M999"
+    assert payload["request"]["generationConfig"]["thinkingConfig"]["thinkingBudget"] == -1
 
 
 @pytest.mark.asyncio

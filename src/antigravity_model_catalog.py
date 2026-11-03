@@ -75,12 +75,20 @@ def update_from_catalog(models: Any) -> None:
                 pass
 
 
+class UnknownAntigravityModelError(ValueError):
+    """Raised when a model has no server-issued enum in the catalog."""
+
+    def __init__(self, model_id: str) -> None:
+        self.model_id = model_id
+        super().__init__(f"Unresolved Antigravity model enum: {model_id}")
+
+
 def get_model_enum(model_id: str) -> str:
-    """返回模型对应的服务端枚举名；未知模型回退为模型 ID 本身。"""
+    """返回服务端枚举名；未知模型不得回退为模型 ID。"""
     entry = _catalog.get(model_id)
     if entry and entry.get("enum"):
         return entry["enum"]
-    return model_id
+    raise UnknownAntigravityModelError(model_id)
 
 
 def get_model_info(model_id: str) -> Optional[Dict[str, Any]]:
