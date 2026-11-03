@@ -3032,7 +3032,7 @@ function _cmRenderKeyGroups(groups) {
         for (const account of visible) {
             const accountTokensTip = `输入 ${_cmFormatTokens(account.input_tokens)} / 输出 ${_cmFormatTokens(account.output_tokens)} / 缓存 ${_cmFormatTokens(account.cache_tokens)} / 思考 ${_cmFormatTokens(account.thought_tokens)}`;
             rowsHtml.push(`<tr class="cm-child-row">
-                <td class="cm-key-cell cm-child-cell" title="账号: ${_cmEscape(account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.credential_name || '-')}</td>
+                <td class="cm-key-cell cm-child-cell" title="账号: ${_cmEscape(account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.credential_name || '-')}${_cmWarmupBadge(account)}</td>
                 <td>${_cmKeyModelHtml(account)}</td>
                 <td>${_cmTaskLabel(account.task_type)} / ${_cmEscape(account.channel || 'antigravity')}</td>
                 <td>${_cmStatusCodeChip(account.last_status_code)}</td>
@@ -3059,6 +3059,16 @@ function _cmRenderKeyGroups(groups) {
     </table></div>`;
 }
 
+function _cmWarmupBadge(row) {
+    if (!row?.warmup_status) return '';
+    return buildAntigravityWarmupBadge({
+        status: row.warmup_status,
+        level: row.warmup_level,
+        success_count: row.warmup_success_count,
+        config: { max_level: row.warmup_max_level || 3 },
+    });
+}
+
 function _cmRenderGrouped(rows, view) {
     const firstHead = view === 'account' ? '账号' : 'API KEY';
     const body = rows.map(row => {
@@ -3067,7 +3077,7 @@ function _cmRenderGrouped(rows, view) {
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         return `<tr>
-            <td class="cm-key-cell" title="${title}: ${_cmEscape(name)}">${_cmMask(name)}</td>
+            <td class="cm-key-cell" title="${title}: ${_cmEscape(name)}">${_cmMask(name)}${_cmWarmupBadge(row)}</td>
             <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.last_status_code)}</td>
@@ -3107,7 +3117,7 @@ function _cmRenderRealtime(records) {
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${_cmEscape(row.credential_name)}">${_cmMask(row.credential_name)}</td>
+            <td class="cm-key-cell" title="账号: ${_cmEscape(row.credential_name)}">${_cmMask(row.credential_name)}${_cmWarmupBadge(row)}</td>
         </tr>`;
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
@@ -5889,6 +5899,7 @@ async function refreshUsageStats() {
             document.getElementById('totalFiles').textContent = aggData.total_files || 0;
             document.getElementById('avgCallsPerFile').textContent = (aggData.avg_calls_per_file || 0).toFixed(1);
 
+            await loadAntigravityWarmupOverview(false);
             renderUsageList();
 
             showStatus(`已加载 ${aggData.total_files || Object.keys(AppState.usageStatsData).length} 个文件的使用统计`, 'success');
@@ -5921,6 +5932,7 @@ function renderUsageList() {
         card.innerHTML = `
             <div class="usage-header">
                 <div class="usage-filename">${filename}</div>
+                ${buildAntigravityWarmupBadge(AppState.antigravityWarmup.accounts[filename])}
             </div>
             <div class="usage-info">
                 <div class="usage-info-item" style="grid-column: 1 / -1;">

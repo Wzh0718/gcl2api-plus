@@ -18,6 +18,7 @@ from src.storage.antigravity_warmup_store import AntigravityWarmupStore
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
+ROUTING_WINDOW_SECONDS = 60
 
 
 def _active_model_cooldowns(
@@ -90,6 +91,8 @@ class SQLiteManager(AntigravityWarmupStore):
             ("bound_proxy_node_id", "INTEGER"),
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
+            ("routing_window_started_at", "REAL"),
+            ("routing_window_count", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
             ("updated_at", "REAL DEFAULT (unixepoch())")
         ],
@@ -293,6 +296,8 @@ class SQLiteManager(AntigravityWarmupStore):
                 -- 轮换相关
                 rotation_order INTEGER DEFAULT 0,
                 call_count INTEGER DEFAULT 0,
+                routing_window_started_at REAL,
+                routing_window_count INTEGER DEFAULT 0,
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
@@ -1044,6 +1049,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     where_sql += f" AND filename NOT IN ({','.join('?' for _ in attempted_list)})"
                     params.extend(attempted_list)
 
+                routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
                 await db.execute("BEGIN IMMEDIATE")
                 try:
                     async with db.execute(f"""
@@ -1052,11 +1058,14 @@ class SQLiteManager(AntigravityWarmupStore):
                                proxy_group_id
                         FROM antigravity_credentials
                         WHERE {where_sql}
-                        ORDER BY COALESCE(call_count, 0) ASC,
+                        ORDER BY CASE
+                                     WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 0
+                                     ELSE COALESCE(routing_window_count, 0)
+                                 END ASC,
                                  COALESCE(rotation_order, 0) ASC,
                                  filename ASC
                         LIMIT 1
-                    """, params) as cursor:
+                    """, [*params, routing_cutoff]) as cursor:
                         row = await cursor.fetchone()
                     if not row:
                         await db.rollback()
@@ -1065,9 +1074,17 @@ class SQLiteManager(AntigravityWarmupStore):
                     await db.execute(
                         """UPDATE antigravity_credentials
                            SET call_count = COALESCE(call_count, 0) + 1,
+                               routing_window_started_at = CASE
+                                   WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                                   ELSE routing_window_started_at
+                               END,
+                               routing_window_count = CASE
+                                   WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
+                                   ELSE COALESCE(routing_window_count, 0) + 1
+                               END,
                                updated_at = unixepoch()
                            WHERE filename = ?""",
-                        (filename,),
+                        (routing_cutoff, current_time, routing_cutoff, filename),
                     )
                     await db.commit()
                 except Exception:
@@ -1111,13 +1128,30 @@ class SQLiteManager(AntigravityWarmupStore):
             where_sql += " AND COALESCE(call_count, 0) = ?"
             params.append(max(int(expected_call_count), 0))
 
+        routing_sql = ""
+        routing_params: List[Any] = []
+        if mode == "antigravity":
+            current_time = time.time()
+            routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
+            routing_sql = """ , routing_window_started_at = CASE
+                                    WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                                    ELSE routing_window_started_at
+                                END,
+                                routing_window_count = CASE
+                                    WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
+                                    ELSE COALESCE(routing_window_count, 0) + 1
+                                END"""
+            routing_params.extend((routing_cutoff, current_time, routing_cutoff))
+        params = [*routing_params, *params]
+
         try:
             async with self._selection_lock:
                 async with aiosqlite.connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     result = await db.execute(
                         f"""UPDATE {table_name}
-                            SET call_count = COALESCE(call_count, 0) + 1,
+                            SET call_count = COALESCE(call_count, 0) + 1
+                                {routing_sql},
                                 updated_at = unixepoch()
                             WHERE {where_sql}""",
                         params,
@@ -3323,7 +3357,8 @@ class SQLiteManager(AntigravityWarmupStore):
                     async with db.execute(f"""
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
-                               c.call_count, c.rotation_order, COALESCE(w.status, 'off')
+                               c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
+                               c.routing_window_started_at, c.routing_window_count
                         FROM {table_name} c
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
@@ -3356,6 +3391,11 @@ class SQLiteManager(AntigravityWarmupStore):
                                 "call_count": max(int(row[8] or 0), 0),
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
+                                "routing_count": (
+                                    max(int(row[12] or 0), 0)
+                                    if row[11] and row[11] > current_time - ROUTING_WINDOW_SECONDS
+                                    else 0
+                                ),
                             }
 
                         return states

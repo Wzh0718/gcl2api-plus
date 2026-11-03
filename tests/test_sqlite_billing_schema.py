@@ -308,6 +308,55 @@ async def test_antigravity_selection_balances_and_increments_call_count(
 
 
 @pytest.mark.asyncio
+async def test_antigravity_burst_uses_short_window_not_lifetime_call_count(
+    tmp_path, monkeypatch
+):
+    from collections import Counter
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    from src.storage.sqlite_manager import SQLiteManager
+    import aiosqlite
+
+    manager = SQLiteManager()
+    await manager.initialize()
+    for index in range(3):
+        await manager.store_credential(
+            f"burst-{index}.json",
+            {"access_token": str(index), "project_id": "project"},
+            mode="antigravity",
+        )
+    async with aiosqlite.connect(manager._db_path) as db:
+        await db.execute(
+            "UPDATE antigravity_credentials SET call_count = CASE filename "
+            "WHEN 'burst-0.json' THEN 1000000 WHEN 'burst-1.json' THEN 2000000 "
+            "ELSE 3000000 END"
+        )
+        await db.commit()
+
+    selected = [
+        (await manager.get_next_available_credential(mode="antigravity"))[0]
+        for _ in range(30)
+    ]
+    distribution = Counter(selected)
+
+    assert distribution == {f"burst-{index}.json": 10 for index in range(3)}
+    await manager.close()
+
+
+def test_image_ranking_uses_short_window_routing_count():
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    ranked = rank_antigravity_image_candidates(
+        {
+            "busy.json": {"call_count": 1000000, "routing_count": 8},
+            "idle.json": {"call_count": 2000000, "routing_count": 1},
+        },
+        model_name="gemini-3.1-flash-image",
+    )
+    assert ranked == ["idle.json", "busy.json"]
+
+
+@pytest.mark.asyncio
 async def test_antigravity_selection_backfills_usage_from_billing(
     tmp_path, monkeypatch
 ):
@@ -340,17 +389,25 @@ async def test_antigravity_selection_backfills_usage_from_billing(
 
     reloaded = SQLiteManager()
     await reloaded.initialize()
-    selected = await reloaded.get_next_available_credential(mode="antigravity")
     async with aiosqlite.connect(reloaded._db_path) as db:
         rows = await (
             await db.execute(
                 "SELECT filename, call_count FROM antigravity_credentials"
             )
         ).fetchall()
-    counts = {filename: count for filename, count in rows}
+    assert {filename: count for filename, count in rows} == {
+        "busy.json": 9,
+        "underused.json": 2,
+    }
 
-    assert selected[0] == "underused.json"
-    assert counts == {"busy.json": 9, "underused.json": 3}
+    selected = await reloaded.get_next_available_credential(mode="antigravity")
+    async with aiosqlite.connect(reloaded._db_path) as db:
+        total = await (await db.execute(
+            "SELECT SUM(call_count) FROM antigravity_credentials"
+        )).fetchone()
+    total = total[0]
+    assert selected is not None
+    assert total == 12
     await reloaded.close()
 
 

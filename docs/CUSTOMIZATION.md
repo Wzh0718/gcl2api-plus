@@ -183,7 +183,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 配额耗尽型 429 的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
-| `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按最少使用分配 | `15` |
+| `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按 60 秒短窗口均摊，不使用历史累计量选号 | `15` |
 | `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
 | `ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS` ★ | 检查结果有效期（秒，最小 60） | `1800` |
@@ -199,6 +199,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 - 取消养号后账号退出候选池但保留进度，可恢复或重新开始；「提前完成」会直接转为普通账号。
 - 429 会退避降档，验证/地区/代理异常会暂停，TOS/account_forbidden 永久退出且不参与自动复检。
 - 未开启养号的默认 `off` 账号和已完成的 `active` 账号继续走现有调度；养号状态由 SQLite 跨 Worker 共享。
+- 用量统计、调用监控聚合和实时记录会显示账号养号状态及档位；调度使用 60 秒短窗口均摊，历史 `call_count` 不参与选号。
 
 完整状态机和验收标准见 `docs/ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md`。
 

@@ -495,3 +495,39 @@ async def test_billing_record_feeds_call_monitor_exactly_once(tmp_path, monkeypa
 
     assert len(monitor.realtime()) == 1
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_call_monitor_exposes_warmup_status(tmp_path, monkeypatch):
+    from src.panel import call_monitor as routes
+
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    backend = adapter._backend
+    await backend.store_credential(
+        "acc-a.json", {"access_token": "dummy", "project_id": "project"},
+        mode="antigravity",
+    )
+    await backend.set_antigravity_warmup(
+        ["acc-a.json"], "start", {
+            "account_initial_interval_ms": 0, "account_target_interval_ms": 0
+        }
+    )
+    await backend.insert_call_record(**_record_kwargs("warming-call"))
+
+    async def get_adapter():
+        return adapter
+
+    monkeypatch.setattr(routes, "get_storage_adapter", get_adapter)
+    overview = await routes.call_monitor_overview(
+        view="account", range="today", _token=None
+    )
+    row = next(item for item in overview["rows"] if item["group_key"] == "acc-a.json")
+    assert row["warmup_status"] == "warming"
+    assert row["warmup_level"] == 0
+
+    realtime = await routes.call_monitor_realtime(
+        page=1, page_size=20, range="today", _token=None
+    )
+    assert realtime["records"][0]["warmup_status"] == "warming"
+    assert realtime["records"][0]["warmup_level"] == 0
+    await adapter.close()

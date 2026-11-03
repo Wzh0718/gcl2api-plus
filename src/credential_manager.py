@@ -83,7 +83,9 @@ def rank_antigravity_image_candidates(
             and current_time - latest_failure < IMAGE_CAPACITY_DEMOTION_SECONDS
         )
         health_priority = 1 if has_recent_failure else 0
-        call_count = max(int(state.get("call_count") or 0), 0)
+        call_count = max(
+            int(state.get("routing_count", state.get("call_count", 0)) or 0), 0
+        )
         rotation_order = max(int(state.get("rotation_order") or 0), 0)
         sort_key = (
             health_priority,

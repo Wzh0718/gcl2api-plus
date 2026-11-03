@@ -160,6 +160,21 @@ def _aggregate_from_buffer(
     return result
 
 
+async def _attach_warmup_status(rows: list[Dict[str, Any]], backend: Any) -> None:
+    list_warmup = getattr(backend, "list_antigravity_warmup", None)
+    if list_warmup is None:
+        return
+    accounts = (await list_warmup())["accounts"]
+    for row in rows:
+        name = row.get("credential_name") or row.get("group_key")
+        state = accounts.get(name, {})
+        config = state.get("config") or {}
+        row["warmup_status"] = state.get("status") or "off"
+        row["warmup_level"] = int(state.get("level") or 0)
+        row["warmup_success_count"] = int(state.get("success_count") or 0)
+        row["warmup_max_level"] = int(config.get("max_level") or 3)
+
+
 @router.get("/overview")
 async def call_monitor_overview(
     view: str = "account",
@@ -222,6 +237,7 @@ async def call_monitor_overview(
         if min_ts_getter is not None:
             oldest_ts = await min_ts_getter()
 
+    await _attach_warmup_status(rows, backend)
     range_secs = _range_seconds(range_name, since_ts, oldest_ts)
     return {
         "view": view,
@@ -270,6 +286,7 @@ async def call_monitor_realtime(
     else:
         counters = monitor.buffer_counters(since_ts=since_ts)
 
+    await _attach_warmup_status(paged["records"], storage._backend)
     total = int(paged["total"])
     page_size = int(paged["page_size"])
     total_pages = max(1, -(-total // page_size))
