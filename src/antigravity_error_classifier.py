@@ -10,6 +10,7 @@ class Antigravity403Decision:
 
     category: str
     disable_account: bool = False
+    tos_violation: bool = False
     invalidate_binding: bool = False
     cooldown_model: bool = False
     retry_after_rebind: bool = False
@@ -91,6 +92,7 @@ def classify_antigravity_403(
         return Antigravity403Decision(
             category="account_forbidden",
             disable_account=True,
+            tos_violation=True,
         )
 
     if binding_status in {"proxy_drift", "proxy_failed"}:

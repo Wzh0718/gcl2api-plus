@@ -708,8 +708,8 @@ async def _handle_antigravity_403(
 ) -> Antigravity403HandlingResult:
     """Persist a classified 403 and apply the disposal action for one account.
 
-    只有分类器确认是账号级权限拒绝，并且自动封禁开关允许 403 时，才禁用
-    整个账号。地区、模型、验证和未知 403 都保守处置，避免一次端点故障把
+    TOS 条款封禁无条件立即禁用；其他账号级权限拒绝仍受自动封禁开关控制。
+    地区、模型、验证和未知 403 都保守处置，避免一次端点故障把
     所有仍可发送消息的账号误标成不可用。
     """
     health = await credential_manager.get_antigravity_account_health(
@@ -764,6 +764,11 @@ async def _handle_antigravity_403(
         )
 
     if decision.disable_account:
+        if decision.tos_violation:
+            await credential_manager.set_cred_disabled(
+                credential_name, True, mode="antigravity"
+            )
+            return Antigravity403HandlingResult(decision, should_retry=True)
         if await check_should_auto_ban(403):
             await credential_manager.set_cred_disabled(
                 credential_name, True, mode="antigravity"

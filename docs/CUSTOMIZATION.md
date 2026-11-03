@@ -209,7 +209,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `RETRY_429_ENABLED` | 429 重试开关 | `true` |
 | `RETRY_429_MAX_RETRIES` | 429 最大重试次数 | `5` |
 | `RETRY_429_INTERVAL` | 429 重试间隔（秒） | `1` |
-| `AUTO_BAN` | 命中错误码自动封禁凭证 | `false` |
+| `AUTO_BAN` | 命中错误码自动封禁凭证；Antigravity 明确 TOS_VIOLATION 不受此开关影响，始终立即禁用 | `false` |
 | `AUTO_BAN_ERROR_CODES` | 触发封禁的状态码，逗号分隔 | `403` |
 | `ANTI_TRUNCATION_MAX_ATTEMPTS` | 流式抗截断最大续写尝试（`流式抗截断/` 前缀模型） | `3` |
 | `STREAM_IDLE_TIMEOUT` ★ | 上游流式空闲超时（秒），超时主动断开防僵尸流；`0` 禁用 | `300` |
