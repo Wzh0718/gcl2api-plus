@@ -66,6 +66,8 @@ def rank_antigravity_image_candidates(
     for filename, state in credential_states.items():
         if filename in excluded or state.get("disabled"):
             continue
+        if state.get("warmup_status") in {"paused", "cancelled", "account_forbidden"}:
+            continue
         cooldowns = state.get("model_cooldowns") or {}
         cooldown_until = cooldowns.get(model_name)
         if isinstance(cooldown_until, (int, float)) and cooldown_until > current_time:

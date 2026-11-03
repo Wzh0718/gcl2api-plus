@@ -171,6 +171,10 @@ async def record_api_call_success(
             credential_name, True, mode=mode, model_name=model_name,
             upstream_seconds=upstream_seconds, gateway_seconds=gateway_seconds
         )
+        if mode == "antigravity":
+            from src.antigravity_dynamic_warmup import note_dynamic_warmup_outcome
+
+            note_dynamic_warmup_outcome(credential_name, "success")
 
 
 async def record_api_call_error(
@@ -210,6 +214,10 @@ async def record_api_call_error(
             upstream_seconds=upstream_seconds,
             gateway_seconds=gateway_seconds
         )
+        if mode == "antigravity" and status_code == 429:
+            from src.antigravity_dynamic_warmup import note_dynamic_warmup_outcome
+
+            note_dynamic_warmup_outcome(credential_name, "rate_limited")
 
 
 # ==================== 429错误处理 ====================

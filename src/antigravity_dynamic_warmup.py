@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from contextvars import ContextVar
 from typing import Any, Mapping
+
+from src.storage_adapter import get_storage_adapter
 
 
 DEFAULT_WARMUP_CONFIG: dict[str, Any] = {
@@ -147,3 +150,47 @@ def warmup_ip_key(network: Mapping[str, Any], health: Mapping[str, Any]) -> str:
         return f"proxy:{digest}"
     mode = str(network.get("proxy_mode") or "inherit")
     return f"mode:{mode}"
+
+
+_WARMUP_LEASE: ContextVar[str | None] = ContextVar("antigravity_warmup_lease", default=None)
+_WARMUP_OUTCOME: ContextVar[str | None] = ContextVar("antigravity_warmup_outcome", default=None)
+
+
+async def acquire_dynamic_warmup_slot(credential_name: str) -> dict[str, Any]:
+    if not credential_name:
+        return {"enabled": False, "acquired": True, "lease_id": None}
+    storage = await get_storage_adapter()
+    state = await storage._backend.get_antigravity_warmup(credential_name)
+    status = state["status"]
+    if status in {"off", "active"}:
+        return {"enabled": False, "acquired": True, "lease_id": None}
+    if not state["selectable"]:
+        return {"enabled": True, "acquired": False, "reason": status, "retry_after": 0}
+
+    network = await storage.get_credential_network(credential_name, mode="antigravity")
+    health = await storage.get_antigravity_account_health(credential_name)
+    result = await storage._backend.acquire_antigravity_warmup_lease(
+        credential_name, warmup_ip_key(network, health)
+    )
+    if result.get("acquired") and result.get("lease_id"):
+        _WARMUP_LEASE.set(result["lease_id"])
+        _WARMUP_OUTCOME.set(None)
+    return result
+
+
+def note_dynamic_warmup_outcome(credential_name: str, outcome: str) -> None:
+    if credential_name and _WARMUP_LEASE.get() is not None:
+        _WARMUP_OUTCOME.set(outcome)
+
+
+async def release_dynamic_warmup_slot(credential_name: str) -> bool:
+    lease_id = _WARMUP_LEASE.get()
+    outcome = _WARMUP_OUTCOME.get()
+    _WARMUP_LEASE.set(None)
+    _WARMUP_OUTCOME.set(None)
+    if not lease_id:
+        return True
+    storage = await get_storage_adapter()
+    if outcome:
+        return await storage._backend.record_antigravity_warmup_result(lease_id, outcome)
+    return await storage._backend.release_antigravity_warmup_lease(lease_id)

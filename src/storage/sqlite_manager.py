@@ -1029,6 +1029,11 @@ class SQLiteManager(AntigravityWarmupStore):
                               AND pn.enabled = 1
                               AND (pn.cooldown_until IS NULL OR pn.cooldown_until <= ?)
                         )
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM antigravity_warmup_accounts w
+                        WHERE w.credential_name = antigravity_credentials.filename
+                          AND w.status IN ('paused', 'cancelled', 'account_forbidden')
                     )"""
                 if model_name:
                     json_path = '$."' + model_name.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -3316,10 +3321,12 @@ class SQLiteManager(AntigravityWarmupStore):
                 else:
                     # antigravity 模式
                     async with db.execute(f"""
-                        SELECT filename, disabled, error_codes, last_success,
-                               user_email, model_cooldowns, tier, enable_credit,
-                               call_count, rotation_order
-                        FROM {table_name}
+                        SELECT c.filename, c.disabled, c.error_codes, c.last_success,
+                               c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
+                               c.call_count, c.rotation_order, COALESCE(w.status, 'off')
+                        FROM {table_name} c
+                        LEFT JOIN antigravity_warmup_accounts w
+                          ON w.credential_name = c.filename
                     """) as cursor:
                         rows = await cursor.fetchall()
 
@@ -3348,6 +3355,7 @@ class SQLiteManager(AntigravityWarmupStore):
                                 "enable_credit": bool(row[7]) if row[7] is not None else False,
                                 "call_count": max(int(row[8] or 0), 0),
                                 "rotation_order": max(int(row[9] or 0), 0),
+                                "warmup_status": row[10],
                             }
 
                         return states

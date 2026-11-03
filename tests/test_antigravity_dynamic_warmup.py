@@ -171,3 +171,172 @@ async def test_failures_demote_pause_and_permanently_exclude(tmp_path, monkeypat
     state = await manager.get_antigravity_warmup("a.json")
     assert state["status"] == "account_forbidden"
     assert state["selectable"] is False
+
+
+@pytest.mark.asyncio
+async def test_selection_and_image_rank_skip_cancelled_accounts(tmp_path, monkeypatch):
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
+    await manager.set_antigravity_warmup(["a.json"], "cancel")
+
+    selected = await manager.get_next_available_credential(mode="antigravity")
+    assert selected[0] == "b.json"
+
+    states = await manager.get_all_credential_states(mode="antigravity")
+    ranked = rank_antigravity_image_candidates(
+        states, model_name="gemini-3.1-flash-image"
+    )
+    assert ranked == ["b.json"]
+
+
+@pytest.mark.asyncio
+async def test_pacing_lifecycle_records_success_and_releases_lease(tmp_path, monkeypatch):
+    from src import antigravity_pacing as pacing
+    from src.antigravity_dynamic_warmup import (
+        note_dynamic_warmup_outcome,
+        release_dynamic_warmup_slot,
+    )
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
+
+    class Adapter:
+        _backend = manager
+
+        async def get_credential_network(self, filename, mode="antigravity"):
+            return {"proxy_mode": "group", "bound_proxy_node_id": 1}
+
+        async def get_antigravity_account_health(self, filename):
+            return {}
+
+    adapter = Adapter()
+
+    async def get_adapter():
+        return adapter
+
+    monkeypatch.setattr("src.antigravity_dynamic_warmup.get_storage_adapter", get_adapter)
+    pacing.reset_state()
+    try:
+        await pacing.acquire_credential_slot("a.json")
+        with pytest.raises(pacing.CredentialSlotWaitTimeout):
+            await pacing.acquire_credential_slot("a.json")
+
+        note_dynamic_warmup_outcome("a.json", "success")
+        await release_dynamic_warmup_slot("a.json")
+        await pacing.acquire_credential_slot("a.json")
+        await release_dynamic_warmup_slot("a.json")
+    finally:
+        await release_dynamic_warmup_slot("a.json")
+        pacing.reset_state()
+
+    assert (await manager.get_antigravity_warmup("a.json"))["success_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_and_non_stream_requests_release_warmup_leases(tmp_path, monkeypatch):
+    from tests.test_antigravity_pacing_slots import _FakeResponse, _body, _patch_common
+    from src.api import antigravity as agy
+    from src.antigravity_dynamic_warmup import release_dynamic_warmup_slot
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.store_credential(
+        "cred1.json", {"access_token": "t", "project_id": "p"}, mode="antigravity"
+    )
+    await manager.set_antigravity_warmup(["cred1.json"], "start", TEST_CONFIG)
+    _patch_common(monkeypatch)
+
+    class Adapter:
+        _backend = manager
+
+        async def get_credential_network(self, filename, mode="antigravity"):
+            return {"proxy_mode": "group", "bound_proxy_node_id": 1}
+
+        async def get_antigravity_account_health(self, filename):
+            return {}
+
+    adapter = Adapter()
+
+    async def get_adapter():
+        return adapter
+
+    monkeypatch.setattr("src.antigravity_dynamic_warmup.get_storage_adapter", get_adapter)
+
+    async def success(_manager, name, **kwargs):
+        from src.antigravity_dynamic_warmup import note_dynamic_warmup_outcome
+
+        note_dynamic_warmup_outcome(name, "success")
+
+    monkeypatch.setattr(agy, "record_api_call_success", success)
+
+    async def fake_stream(**kwargs):
+        yield 'data: {"candidates": []}\n\n'
+
+    monkeypatch.setattr(agy, "stream_post_async", fake_stream)
+    _ = [item async for item in agy.stream_request(_body())]
+
+    async def fake_post(**kwargs):
+        return _FakeResponse(200, b'{"candidates":[]}')
+
+    monkeypatch.setattr(agy, "post_async", fake_post)
+    response = await agy.non_stream_request(_body())
+    assert response.status_code == 200
+    assert (await manager.get_antigravity_warmup("cred1.json"))["success_count"] == 2
+
+    lease = await manager.acquire_antigravity_warmup_lease("cred1.json", "node:1")
+    assert lease["acquired"] is True
+    await release_dynamic_warmup_slot("cred1.json")
+
+
+@pytest.mark.asyncio
+async def test_tos_response_permanently_excludes_warmup_account(tmp_path, monkeypatch):
+    from src import antigravity_pacing as pacing
+    from src.api import antigravity as agy
+    from src.antigravity_dynamic_warmup import release_dynamic_warmup_slot
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
+
+    class Adapter:
+        _backend = manager
+
+        async def get_credential_network(self, filename, mode="antigravity"):
+            return {"proxy_mode": "group", "bound_proxy_node_id": 1}
+
+        async def get_antigravity_account_health(self, filename):
+            return {}
+
+    adapter = Adapter()
+
+    async def get_adapter():
+        return adapter
+
+    async def empty_health(filename):
+        return {}
+
+    async def noop(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr("src.antigravity_dynamic_warmup.get_storage_adapter", get_adapter)
+    monkeypatch.setattr(agy.credential_manager, "get_antigravity_account_health", empty_health)
+    monkeypatch.setattr(agy.credential_manager, "update_antigravity_account_health", noop)
+    monkeypatch.setattr(agy.credential_manager, "set_cred_disabled", noop)
+    monkeypatch.setattr(agy, "check_should_auto_ban", noop)
+
+    await pacing.acquire_credential_slot("a.json")
+    result = await agy._handle_antigravity_403(
+        credential_name="a.json",
+        credential_data={},
+        model_name="gemini-2.5-flash",
+        error_text="Account disabled due to violation of terms of service",
+    )
+    await release_dynamic_warmup_slot("a.json")
+
+    assert result.decision.disable_account is True
+    state = await manager.get_antigravity_warmup("a.json")
+    assert state["status"] == "account_forbidden"
+    assert state["selectable"] is False
+    blocked = await manager.acquire_antigravity_warmup_lease("a.json", "node:1")
+    assert blocked["acquired"] is False
+    pacing.reset_state()

@@ -123,12 +123,7 @@ async def pace_credential(credential_name: str) -> float:
 
 
 async def acquire_credential_slot(credential_name: str) -> float:
-    """获取该账号的一个并发槽位；返回等待秒数。
-
-    - 有空位立即返回 0；
-    - 占满时等待释放，最多等 antigravity_pacing_slot_wait_seconds（默认 30 秒）；
-    - 超时抛出 CredentialSlotWaitTimeout，不占用槽位，由 API 层换号或最终返回 429。
-    """
+    """获取账号的养号租约和本地并发槽位；返回本地等待秒数。"""
     if not credential_name:
         return 0.0
     from config import (
@@ -136,49 +131,60 @@ async def acquire_credential_slot(credential_name: str) -> float:
         get_antigravity_pacing_enabled_sync,
         get_antigravity_pacing_slot_wait_seconds_sync,
     )
+    from src.antigravity_dynamic_warmup import (
+        acquire_dynamic_warmup_slot,
+        release_dynamic_warmup_slot,
+    )
 
-    if not get_antigravity_pacing_enabled_sync():
-        return 0.0
+    warmup = await acquire_dynamic_warmup_slot(credential_name)
+    if not warmup.get("acquired"):
+        raise CredentialSlotWaitTimeout(credential_name)
+    try:
+        if not get_antigravity_pacing_enabled_sync():
+            return 0.0
 
-    target = max(get_antigravity_pacing_concurrency_sync(), 1)
-    slot = _slot_for(credential_name)
-    # 面板下调立即生效；上调只通过 note_success() 逐步恢复（AIMD）
-    if slot.limit > target:
-        slot.limit = target
+        target = max(get_antigravity_pacing_concurrency_sync(), 1)
+        slot = _slot_for(credential_name)
+        # 面板下调立即生效；上调只通过 note_success() 逐步恢复（AIMD）
+        if slot.limit > target:
+            slot.limit = target
 
-    started = time.monotonic()
-    deadline = started + get_antigravity_pacing_slot_wait_seconds_sync()
-    while True:
-        if slot.inflight < slot.limit:
-            slot.inflight += 1
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            waited = time.monotonic() - started
-            now = time.monotonic()
-            if now - slot.last_backpressure_log > _BACKPRESSURE_LOG_INTERVAL:
-                slot.last_backpressure_log = now
-                log.warning(
-                    f"[PACING] 账号 {credential_name} 并发已满（上限 {slot.limit}，"
-                    f"在飞 {slot.inflight}），等待 {waited:.2f}s，触发本地背压"
-                )
-            raise CredentialSlotWaitTimeout(credential_name)
-        slot.wakeup.clear()
-        # clear 之后再确认一次，避免与同步 release（set）竞态丢唤醒
-        if slot.inflight < slot.limit:
-            continue
-        try:
-            await asyncio.wait_for(slot.wakeup.wait(), remaining)
-        except asyncio.TimeoutError:
-            continue
+        started = time.monotonic()
+        deadline = started + get_antigravity_pacing_slot_wait_seconds_sync()
+        while True:
+            if slot.inflight < slot.limit:
+                slot.inflight += 1
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                waited = time.monotonic() - started
+                now = time.monotonic()
+                if now - slot.last_backpressure_log > _BACKPRESSURE_LOG_INTERVAL:
+                    slot.last_backpressure_log = now
+                    log.warning(
+                        f"[PACING] 账号 {credential_name} 并发已满（上限 {slot.limit}，"
+                        f"在飞 {slot.inflight}），等待 {waited:.2f}s，触发本地背压"
+                    )
+                raise CredentialSlotWaitTimeout(credential_name)
+            slot.wakeup.clear()
+            # clear 之后再确认一次，避免与同步 release（set）竞态丢唤醒
+            if slot.inflight < slot.limit:
+                continue
+            try:
+                await asyncio.wait_for(slot.wakeup.wait(), remaining)
+            except asyncio.TimeoutError:
+                continue
 
-    waited = time.monotonic() - started
-    if waited >= 1.0:
-        log.debug(
-            f"[PACING] 账号 {credential_name} 并发排队 {waited:.2f}s"
-            f"（在飞 {slot.inflight}/{slot.limit}）"
-        )
-    return waited
+        waited = time.monotonic() - started
+        if waited >= 1.0:
+            log.debug(
+                f"[PACING] 账号 {credential_name} 并发排队 {waited:.2f}s"
+                f"（在飞 {slot.inflight}/{slot.limit}）"
+            )
+        return waited
+    except BaseException:
+        await release_dynamic_warmup_slot(credential_name)
+        raise
 
 
 def release_credential_slot(credential_name: str) -> None:

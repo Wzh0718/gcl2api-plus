@@ -42,6 +42,10 @@ from src.antigravity_error_classifier import (
     classify_antigravity_403,
 )
 from src.antigravity_model_catalog import UnknownAntigravityModelError
+from src.antigravity_dynamic_warmup import (
+    note_dynamic_warmup_outcome,
+    release_dynamic_warmup_slot,
+)
 
 # 导入共同的基础功能
 from src.api.utils import (
@@ -740,6 +744,15 @@ async def _handle_antigravity_403(
     await credential_manager.update_antigravity_account_health(
         credential_name, **updates
     )
+    if decision.category == "account_forbidden":
+        note_dynamic_warmup_outcome(credential_name, "forbidden")
+    elif decision.category in {
+        "validation_required",
+        "geo_blocked",
+        "proxy_drift",
+        "proxy_failed",
+    }:
+        note_dynamic_warmup_outcome(credential_name, "paused")
 
     # VALIDATION_REQUIRED 是临时性账号验证：只冷却模型并轮换凭证，
     # 即使自动封禁开关打开也不禁用账号（验证完成后账号仍可恢复）。
@@ -1491,6 +1504,7 @@ async def _stream_request_inner(
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(slot_holder)
+                await release_dynamic_warmup_slot(slot_holder)
             # 无论流被完整消费，还是因重试/返回/异常被中途放弃，都显式关闭上游流
             await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
 
@@ -1722,6 +1736,7 @@ async def _non_stream_image_request_inner(
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(current_file)
+                await release_dynamic_warmup_slot(current_file)
 
         response = call_result.response
         last_was_slot_backpressure = False
@@ -2391,6 +2406,7 @@ async def non_stream_request(
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(slot_holder)
+                await release_dynamic_warmup_slot(slot_holder)
 
     # 所有重试都失败，返回最后一次的原始错误（如果有）或500错误
     log.error("[ANTIGRAVITY] 所有重试均失败")
