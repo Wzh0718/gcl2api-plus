@@ -188,7 +188,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
 | `ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS` ★ | 检查结果有效期（秒，最小 60） | `1800` |
 | `ANTIGRAVITY_EGRESS_IP_CHECK_URL` ★ | 出口 IP 回显接口，返回至少 `{"ip":"..."}`；启用检查前必填 | 空 |
-| `ANTIGRAVITY_403_RECHECK_ENABLED` ★ | 403 封禁账号是否定期复检解封 | `true` |
+| `ANTIGRAVITY_403_RECHECK_ENABLED` ★ | 可恢复 403 账号是否定期复检解封；明确 account_forbidden/TOS 账号仅人工复检 | `true` |
 | `ANTIGRAVITY_403_RECHECK_INTERVAL` ★ | 复检轮询间隔（秒，最小 60） | `3600` |
 
 ### 重试、封禁与输出

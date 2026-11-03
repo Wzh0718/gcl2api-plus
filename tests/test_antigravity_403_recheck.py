@@ -39,7 +39,7 @@ class RecheckDisabled403AccountsTests(unittest.IsolatedAsyncioTestCase):
                 "manual.json": {"disabled": True},
             },
             healths={
-                "banned.json": {"last_403_category": "account_forbidden"},
+                "banned.json": {"last_403_category": "unknown_403"},
                 "active.json": {"last_403_category": "account_forbidden"},
                 # manual.json 被手动禁用，没有 403 记录，不应复检
                 "manual.json": {},
@@ -58,6 +58,23 @@ class RecheckDisabled403AccountsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["checked"], 1)
         check_mock.assert_awaited_once_with("banned.json")
+
+    async def test_account_forbidden_is_not_rechecked_automatically(self):
+        manager = _FakeCredentialManager(
+            statuses={"tos.json": {"disabled": True}},
+            healths={"tos.json": {"last_403_category": "account_forbidden"}},
+        )
+        check_mock = AsyncMock(return_value={"ok": True, "stages": {}})
+        with (
+            patch("src.antigravity_403_recheck.credential_manager", manager),
+            patch("src.antigravity_full_check.run_account_full_check", check_mock),
+        ):
+            result = await recheck_disabled_403_accounts()
+
+        self.assertEqual(result, {"checked": 0, "re_enabled": []})
+        check_mock.assert_not_awaited()
+        self.assertEqual(manager.disabled_calls, [])
+        self.assertEqual(manager.health_updates, [])
 
     async def test_passing_recheck_reenables_account_and_clears_403_record(self):
         manager = _FakeCredentialManager(

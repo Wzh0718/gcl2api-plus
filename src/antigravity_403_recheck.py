@@ -1,8 +1,8 @@
-"""Antigravity 403 封禁账号定期复检服务。
+"""Antigravity 可恢复 403 封禁账号定期复检服务。
 
 自动封禁（auto_ban）把因 403 被禁用的账号一直留在禁用状态。本服务按配置间隔
-对所有「因 403 被禁用」的账号跑一遍全链路检测（代理 → 出口资格 → 消息），
-全部通过则自动解除封禁重新投入使用，仍失败则保持封禁等待下一轮。
+对可恢复的 403 账号跑一遍全链路检测（代理 → 出口资格 → 消息），全部通过则
+自动解除封禁重新投入使用。明确 account_forbidden/TOS 的账号只接受人工复检。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from src.credential_manager import credential_manager
 
 
 async def recheck_disabled_403_accounts(concurrency: int = 3) -> dict[str, Any]:
-    """复检所有因 403 被禁用的 antigravity 账号，通过全链路检测则解除封禁。"""
+    """复检可恢复的 403 账号；明确账号级封禁仅允许人工复检。"""
     from src.antigravity_full_check import run_account_full_check
 
     statuses = await credential_manager.get_creds_status(mode="antigravity")
@@ -24,7 +24,10 @@ async def recheck_disabled_403_accounts(concurrency: int = 3) -> dict[str, Any]:
         if not state.get("disabled"):
             continue
         health = await credential_manager.get_antigravity_account_health(filename)
-        if not health.get("last_403_category"):
+        category = health.get("last_403_category")
+        if not category:
+            continue
+        if category == "account_forbidden":
             continue
         candidates.append(filename)
 

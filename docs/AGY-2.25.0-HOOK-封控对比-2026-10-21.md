@@ -1,5 +1,11 @@
 # agy 2.25.0 hook 实测：封控更新判断 × gcli2api 请求逻辑对照
 
+> **2026-11-03 复核：官方 hub 2.28.2 实抓已对齐**：
+> - Evidence：官方二进制 SHA256 `8015e953e72e7070ec739f5facc38f8ec3919b3800eb8d46dd09e2d61aa22cac`，`--stamp` 为 CL `1009437749`；本地 dummy token + 脱敏目录重放捕获见 `.agy-re/capture-2.28.2.log`（不入库）。
+> - Finding：2.28.2 与 2.25.0 的顶层字段、request 字段、labels 9 键、generationConfig、12 个工具及 sessionId 语义一致；系统提示词长度变化不影响网关透传。当前 Python 信封无需重写。
+> - Path：未知模型不再回退为 `model_enum=<模型ID>`，先按当前账号刷新目录，仍无枚举则在上游生成前返回 400；明确 account_forbidden/TOS 账号退出自动周期复检，仅保留人工复检。
+> - OAuth：本次未获得有效的官方 token 刷新 UA 轨迹，现有 OAuth UA 保持不变，不做猜测性修改。
+
 > **2026-10-21 更新：P0/P1 已落地**（测试 545 全过）：
 > - UA 切 hub 轨迹：`antigravity_hub_version=2.25.0` / `antigravity_hub_cl=1003475615`
 >   **面板「基础配置」页可直接修改（热更新，优先级：面板 > env > 默认）**；CLI 模板保留给 `antigravity_cli_version` 探测专用；
