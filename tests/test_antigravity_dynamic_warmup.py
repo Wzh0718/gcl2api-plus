@@ -30,7 +30,7 @@ async def make_manager(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_default_off_is_normal_and_cancel_is_not_selectable(tmp_path, monkeypatch):
+async def test_default_off_and_cancelled_warmup_allow_normal_requests(tmp_path, monkeypatch):
     manager = await make_manager(tmp_path, monkeypatch)
 
     initial = await manager.get_antigravity_warmup("a.json")
@@ -42,7 +42,7 @@ async def test_default_off_is_normal_and_cancel_is_not_selectable(tmp_path, monk
 
     cancelled = await manager.set_antigravity_warmup(["a.json"], "cancel")
     assert cancelled["a.json"]["state"]["status"] == "cancelled"
-    assert cancelled["a.json"]["state"]["selectable"] is False
+    assert cancelled["a.json"]["state"]["selectable"] is True
     assert cancelled["a.json"]["state"]["level"] == 0
 
     repeated = await manager.set_antigravity_warmup(["a.json"], "cancel")
@@ -174,21 +174,74 @@ async def test_failures_demote_pause_and_permanently_exclude(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_selection_and_image_rank_skip_cancelled_accounts(tmp_path, monkeypatch):
+async def test_selection_and_image_rank_include_cancelled_accounts(tmp_path, monkeypatch):
     from src.credential_manager import rank_antigravity_image_candidates
 
     manager = await make_manager(tmp_path, monkeypatch)
     await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
     await manager.set_antigravity_warmup(["a.json"], "cancel")
 
-    selected = await manager.get_next_available_credential(mode="antigravity")
-    assert selected[0] == "b.json"
+    selected = [
+        await manager.get_next_available_credential(mode="antigravity")
+        for _ in range(2)
+    ]
+    assert {item[0] for item in selected} == {"a.json", "b.json"}
 
     states = await manager.get_all_credential_states(mode="antigravity")
     ranked = rank_antigravity_image_candidates(
         states, model_name="gemini-3.1-flash-image"
     )
-    assert ranked == ["b.json"]
+    assert set(ranked) == {"a.json", "b.json"}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_warmup_bypasses_warmup_limits_and_leases(tmp_path, monkeypatch):
+    import aiosqlite
+    from src.antigravity_dynamic_warmup import acquire_dynamic_warmup_slot
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
+    await manager.set_antigravity_warmup(["a.json"], "cancel")
+
+    class Adapter:
+        _backend = manager
+
+    async def get_adapter():
+        return Adapter()
+
+    monkeypatch.setattr("src.antigravity_dynamic_warmup.get_storage_adapter", get_adapter)
+    expected = {"enabled": False, "acquired": True, "lease_id": None}
+    assert await acquire_dynamic_warmup_slot("a.json") == expected
+    assert await manager.acquire_antigravity_warmup_lease("a.json", "test-ip") == expected
+    async with aiosqlite.connect(manager._db_path) as db:
+        async with db.execute("SELECT COUNT(*) FROM antigravity_warmup_leases") as cursor:
+            assert (await cursor.fetchone())[0] == 0
+    await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["paused", "account_forbidden"])
+async def test_blocking_warmup_statuses_still_exclude_normal_and_image_requests(
+    tmp_path, monkeypatch, status
+):
+    import aiosqlite
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.set_antigravity_warmup(["a.json"], "start", TEST_CONFIG)
+    async with aiosqlite.connect(manager._db_path) as db:
+        await db.execute(
+            "UPDATE antigravity_warmup_accounts SET status = ? WHERE credential_name = ?",
+            (status, "a.json"),
+        )
+        await db.commit()
+    assert (await manager.get_next_available_credential(mode="antigravity"))[0] == "b.json"
+    states = await manager.get_all_credential_states(mode="antigravity")
+    assert rank_antigravity_image_candidates(
+        states, model_name="gemini-3.1-flash-image"
+    ) == ["b.json"]
+    assert (await manager.acquire_antigravity_warmup_lease("a.json", "test-ip"))["acquired"] is False
+    await manager.close()
 
 
 @pytest.mark.asyncio

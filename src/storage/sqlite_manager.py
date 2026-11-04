@@ -1038,7 +1038,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     AND NOT EXISTS (
                         SELECT 1 FROM antigravity_warmup_accounts w
                         WHERE w.credential_name = antigravity_credentials.filename
-                          AND w.status IN ('paused', 'cancelled', 'account_forbidden')
+                          AND w.status IN ('paused', 'account_forbidden')
                     )"""
                 if model_name:
                     json_path = '$."' + model_name.replace("\\", "\\\\").replace('"', '\\"') + '"'

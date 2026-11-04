@@ -24,7 +24,8 @@ DEFAULT_WARMUP_CONFIG: dict[str, Any] = {
     "lease_ttl_seconds": 300,
 }
 
-_NON_SELECTABLE_STATUSES = {"paused", "cancelled", "account_forbidden"}
+# Cancelling warmup returns the account to ordinary routing and pacing.
+_NON_SELECTABLE_STATUSES = {"paused", "account_forbidden"}
 
 
 def warmup_selectable(status: str) -> bool:
@@ -162,7 +163,7 @@ async def acquire_dynamic_warmup_slot(credential_name: str) -> dict[str, Any]:
     storage = await get_storage_adapter()
     state = await storage._backend.get_antigravity_warmup(credential_name)
     status = state["status"]
-    if status in {"off", "active"}:
+    if status in {"off", "active", "cancelled"}:
         return {"enabled": False, "acquired": True, "lease_id": None}
     if not state["selectable"]:
         return {"enabled": True, "acquired": False, "reason": status, "retry_after": 0}
