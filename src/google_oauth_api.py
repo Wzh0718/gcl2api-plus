@@ -27,7 +27,10 @@ from src.utils import get_antigravity_oauth_user_agent
 class TokenError(Exception):
     """Token相关错误"""
 
-    pass
+    def __init__(self, message, *, status_code=None, error_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 async def refresh_access_token_with_clients(
@@ -81,13 +84,20 @@ async def refresh_access_token_with_clients(
             return response.json(), client.key
 
         error_text = response.text or ""
-        errors.append(f"[{client.key}] HTTP {response.status_code}: {error_text[:200]}")
+        from src.antigravity_400_classifier import classify_antigravity_400
+
+        decision = classify_antigravity_400(error_text, source="oauth")
+        errors.append(f"[{client.key}] HTTP {response.status_code}: {decision.to_json()}")
         if not is_client_mismatch_error(response.status_code, error_text):
             # 非 client 不匹配错误，不再尝试后续 client
             break
         log.warning(f"client {client.key} 不匹配，尝试下一个 client")
 
-    raise TokenError("所有 OAuth client 刷新均失败: " + "; ".join(errors))
+    raise TokenError(
+        "所有 OAuth client 刷新均失败: " + "; ".join(errors),
+        status_code=response.status_code,
+        error_code=decision.reason.lower(),
+    )
 
 
 class Credentials:
