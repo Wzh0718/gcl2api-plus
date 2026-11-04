@@ -163,7 +163,7 @@ def decision_for(account: WarmupState, ip_group: IpGroupBudget) -> WarmupDecisio
 - 租约获取与账号/IP 组预算检查在同一个 `BEGIN IMMEDIATE` 事务中完成，同时检查在飞数量和下次允许发起时间，避免多 Worker 超额。
 - 租约在流式、非流式、图片请求的完成、异常、取消和客户端断开路径释放；过期租约只用于崩溃恢复，正常请求不得依赖过期释放。
 - 真实业务成功统一反馈到账号和 IP 组档位；健康检查、额度查询、403 复检不计入成功。
-- 未开启养号的账号继续走现有最少使用选择及进程内 pacing，不增加全局租约开销。
+- 未开启养号的账号继续走逐请求轮转选择及进程内 pacing，不增加全局租约开销。
 
 ### Task List
 

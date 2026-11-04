@@ -287,5 +287,6 @@ async def test_quota_guard_filters_credential_selection(monkeypatch):
     result = await manager.get_valid_credential(mode="antigravity", model_name="m-1")
     assert result is not None
     assert result[0] == "good-acc.json"
-    # 首次 probe 应带着 low-acc 排除
+    # 额度避让选中的账号直接使用，不能额外消耗一个轮转位置。
+    assert len(calls) == 1
     assert any("low-acc.json" in c for c in calls)

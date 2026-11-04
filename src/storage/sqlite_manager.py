@@ -93,6 +93,7 @@ class SQLiteManager(AntigravityWarmupStore):
             ("call_count", "INTEGER DEFAULT 0"),
             ("routing_window_started_at", "REAL"),
             ("routing_window_count", "INTEGER DEFAULT 0"),
+            ("routing_turn", "INTEGER DEFAULT 0"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
             ("updated_at", "REAL DEFAULT (unixepoch())")
         ],
@@ -298,6 +299,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 call_count INTEGER DEFAULT 0,
                 routing_window_started_at REAL,
                 routing_window_count INTEGER DEFAULT 0,
+                routing_turn INTEGER DEFAULT 0,
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
@@ -323,6 +325,10 @@ class SQLiteManager(AntigravityWarmupStore):
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_ag_rotation_order
             ON antigravity_credentials(rotation_order)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ag_routing_turn
+            ON antigravity_credentials(routing_turn)
         """)
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_ag_proxy_group
@@ -941,7 +947,7 @@ class SQLiteManager(AntigravityWarmupStore):
         获取一个可用凭证（负载均衡）
         - 未禁用
         - 如果提供了 model_name，还会检查模型级冷却和preview状态
-        - GeminiCLI 保持随机选择；Antigravity 使用原子最少使用选择
+        - GeminiCLI 保持随机选择；Antigravity 使用原子逐请求轮转
 
         Args:
             mode: 凭证模式 ("geminicli" 或 "antigravity")
@@ -1015,7 +1021,7 @@ class SQLiteManager(AntigravityWarmupStore):
         excluded: List[str],
         candidate_limit: int,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Atomically select and count the least-used Antigravity account."""
+        """Atomically take an eligible account from the queue and move it to the tail."""
         attempted = set(excluded)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
@@ -1058,14 +1064,11 @@ class SQLiteManager(AntigravityWarmupStore):
                                proxy_group_id
                         FROM antigravity_credentials
                         WHERE {where_sql}
-                        ORDER BY CASE
-                                     WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 0
-                                     ELSE COALESCE(routing_window_count, 0)
-                                 END ASC,
+                        ORDER BY COALESCE(routing_turn, 0) ASC,
                                  COALESCE(rotation_order, 0) ASC,
                                  filename ASC
                         LIMIT 1
-                    """, [*params, routing_cutoff]) as cursor:
+                    """, params) as cursor:
                         row = await cursor.fetchone()
                     if not row:
                         await db.rollback()
@@ -1074,6 +1077,8 @@ class SQLiteManager(AntigravityWarmupStore):
                     await db.execute(
                         """UPDATE antigravity_credentials
                            SET call_count = COALESCE(call_count, 0) + 1,
+                               routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                               FROM antigravity_credentials),
                                routing_window_started_at = CASE
                                    WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
                                    ELSE routing_window_started_at
@@ -1118,7 +1123,7 @@ class SQLiteManager(AntigravityWarmupStore):
         mode: str = "antigravity",
         expected_call_count: Optional[int] = None,
     ) -> bool:
-        """Atomically increment one account's fair-routing counter."""
+        """Atomically move a claimed image account to the routing queue tail."""
         self._ensure_initialized()
         filename = os.path.basename(filename)
         table_name = self._get_table_name(mode)
@@ -1133,7 +1138,10 @@ class SQLiteManager(AntigravityWarmupStore):
         if mode == "antigravity":
             current_time = time.time()
             routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
-            routing_sql = """ , routing_window_started_at = CASE
+            routing_sql = """ , routing_turn = (
+                                    SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                    FROM antigravity_credentials
+                                ), routing_window_started_at = CASE
                                     WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
                                     ELSE routing_window_started_at
                                 END,
@@ -3358,7 +3366,7 @@ class SQLiteManager(AntigravityWarmupStore):
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
                                c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
-                               c.routing_window_started_at, c.routing_window_count
+                               c.routing_window_started_at, c.routing_window_count, c.routing_turn
                         FROM {table_name} c
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
@@ -3391,6 +3399,7 @@ class SQLiteManager(AntigravityWarmupStore):
                                 "call_count": max(int(row[8] or 0), 0),
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
+                                "routing_turn": max(int(row[13] or 0), 0),
                                 "routing_count": (
                                     max(int(row[12] or 0), 0)
                                     if row[11] and row[11] > current_time - ROUTING_WINDOW_SECONDS

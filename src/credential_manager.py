@@ -39,17 +39,6 @@ _PROXY_CONNECT_ERROR_MARKERS = (
 )
 
 
-def _antigravity_tier_priority(tier: Any) -> int:
-    normalized = str(tier or "").strip().lower()
-    if "ultra" in normalized or "utrl" in normalized:
-        return 0
-    if "pro" in normalized:
-        return 1
-    if "free" in normalized:
-        return 2
-    return 3
-
-
 def rank_antigravity_image_candidates(
     credential_states: Dict[str, Dict[str, Any]],
     *,
@@ -58,7 +47,7 @@ def rank_antigravity_image_candidates(
     excluded_filenames: Optional[Set[str]] = None,
     now: Optional[float] = None,
 ) -> List[str]:
-    """Rank image accounts by live health, least use, then account tier."""
+    """Rank eligible image accounts by live health and their routing queue position."""
     current_time = time.time() if now is None else now
     runtime_health = runtime_health or {}
     excluded = excluded_filenames or set()
@@ -84,14 +73,11 @@ def rank_antigravity_image_candidates(
             and current_time - latest_failure < IMAGE_CAPACITY_DEMOTION_SECONDS
         )
         health_priority = 1 if has_recent_failure else 0
-        call_count = max(
-            int(state.get("routing_count", state.get("call_count", 0)) or 0), 0
-        )
+        routing_turn = max(int(state.get("routing_turn") or 0), 0)
         rotation_order = max(int(state.get("rotation_order") or 0), 0)
         sort_key = (
             health_priority,
-            call_count,
-            _antigravity_tier_priority(state.get("tier")),
+            routing_turn,
             rotation_order,
             filename,
         )
@@ -200,6 +186,7 @@ class CredentialManager:
         # 最多重试3次
         max_retries = 3
         attempted_filenames: set[str] = set(exclude_filenames or set())
+        preferred_result = None
 
         # quotaInfo 主动避让：额度快照低于阈值的账号本轮排除（在 429 之前换号）；
         # 若排除后无可用账号则回退为不避让（快照可能滞后，不宁可信其有）
@@ -223,6 +210,7 @@ class CredentialManager:
                             exclude_filenames=attempted_filenames | low,
                         )
                         if probe is not None:
+                            preferred_result = probe
                             log.info(
                                 f"[QUOTA GUARD] 模型 {model_name} 额度将尽，"
                                 f"本轮避让 {len(low)} 个账号"
@@ -237,11 +225,14 @@ class CredentialManager:
                 log.debug(f"[QUOTA GUARD] 避让检查失败（忽略，按不避让处理）: {e}")
 
         for attempt in range(max_retries):
-            result = await self._storage_adapter._backend.get_next_available_credential(
-                mode=mode,
-                model_name=model_name,
-                exclude_filenames=attempted_filenames,
-            )
+            if attempt == 0 and preferred_result is not None:
+                result = preferred_result
+            else:
+                result = await self._storage_adapter._backend.get_next_available_credential(
+                    mode=mode,
+                    model_name=model_name,
+                    exclude_filenames=attempted_filenames,
+                )
 
             # 如果没有可用凭证，直接返回None
             if not result:
@@ -334,7 +325,7 @@ class CredentialManager:
                     )
                     if not claimed:
                         # Another worker advanced this account after our snapshot.
-                        # Release the local lease and rank the refreshed counters.
+                        # Release the local lease and rank the refreshed routing queue.
                         await asyncio.sleep(0)
                         continue
 
