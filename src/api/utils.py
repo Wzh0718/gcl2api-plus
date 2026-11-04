@@ -99,6 +99,11 @@ async def handle_error_with_retry(
     Returns:
         bool: True表示需要继续重试，False表示不需要重试
     """
+    # AGY 400 is a request error, not sufficient evidence to disable an account.
+    # Retrying the same invalid payload across the pool can disable every account.
+    if mode == "antigravity" and status_code == 400:
+        return False
+
     # 优先检查自动封禁
     should_auto_ban = await check_should_auto_ban(status_code)
 
