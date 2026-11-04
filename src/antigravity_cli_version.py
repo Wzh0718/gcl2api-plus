@@ -259,6 +259,7 @@ async def _probe_version(candidate: str) -> Dict[str, Any]:
                 },
                 timeout=30.0,
                 proxy_url=proxy_url,
+                transport="antigravity",
             )
         except Exception as exc:
             attempts.append(

@@ -194,6 +194,7 @@ async def check_antigravity_account_health(
             headers=headers,
             timeout=30.0,
             proxy_url=proxy_url,
+            transport="antigravity",
         )
         payload = _response_payload(response)
         reason = _safe_reason(response, payload)

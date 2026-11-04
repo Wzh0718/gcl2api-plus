@@ -711,7 +711,9 @@ class CredentialManager:
                 await self._storage_adapter.store_credential(credential_name, updated_data, mode=mode)
 
             # 获取邮箱
-            email = await get_user_email(credentials)
+            email = await get_user_email(
+                credentials, antigravity=(mode == "antigravity")
+            )
 
             if email:
                 # 缓存邮箱地址

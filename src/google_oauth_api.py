@@ -68,6 +68,7 @@ async def refresh_access_token_with_clients(
                     "User-Agent": get_antigravity_oauth_user_agent(),
                 },
                 proxy_url=proxy_url,
+                transport="antigravity",
             )
         except Exception as e:
             # 网络错误（连接/超时等）不降级，直接失败
@@ -450,7 +451,9 @@ class ServiceAccount:
 
 
 # 工具函数
-async def get_user_info(credentials: Credentials) -> Optional[Dict[str, Any]]:
+async def get_user_info(
+    credentials: Credentials, *, antigravity: bool = False
+) -> Optional[Dict[str, Any]]:
     """获取用户信息"""
     await credentials.refresh_if_needed()
 
@@ -458,23 +461,28 @@ async def get_user_info(credentials: Credentials) -> Optional[Dict[str, Any]]:
         googleapis_base_url = await get_googleapis_proxy_url()
         userinfo_url = f"{googleapis_base_url.rstrip('/')}/oauth2/v2/userinfo"
         response = await get_async(
-            userinfo_url, headers={"Authorization": f"Bearer {credentials.access_token}"}, proxy_url=credentials.proxy_url
+            userinfo_url,
+            headers={"Authorization": f"Bearer {credentials.access_token}"},
+            proxy_url=credentials.proxy_url,
+            transport="antigravity" if antigravity else None,
         )
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        log.error(f"获取用户信息失败: {e}")
+        log.error(f"获取用户信息失败: {type(e).__name__}")
         return None
 
 
-async def get_user_email(credentials: Credentials) -> Optional[str]:
+async def get_user_email(
+    credentials: Credentials, *, antigravity: bool = False
+) -> Optional[str]:
     """获取用户邮箱地址"""
     try:
         # 确保凭证有效
         await credentials.refresh_if_needed()
 
         # 调用Google userinfo API获取邮箱
-        user_info = await get_user_info(credentials)
+        user_info = await get_user_info(credentials, antigravity=antigravity)
         if user_info:
             email = user_info.get("email")
             if email:
@@ -608,7 +616,7 @@ async def get_user_projects(credentials: Credentials) -> List[Dict[str, Any]]:
 
         log.info(f"API响应状态码: {response.status_code}")
         if response.status_code != 200:
-            log.error(f"API响应内容: {response.text}")
+            log.error(f"API 请求失败: HTTP {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
@@ -620,7 +628,7 @@ async def get_user_projects(credentials: Credentials) -> List[Dict[str, Any]]:
             log.info(f"获取到 {len(active_projects)} 个活跃项目")
             return active_projects
         else:
-            log.warning(f"获取项目列表失败: {response.status_code} - {response.text}")
+            log.warning(f"获取项目列表失败: HTTP {response.status_code}")
             return []
 
     except Exception as e:
@@ -764,6 +772,7 @@ async def warm_antigravity_environment(
                 headers=headers,
                 timeout=15.0,
                 proxy_url=proxy_url,
+                transport="antigravity",
             )
         except Exception as e:
             log.debug(
@@ -838,6 +847,7 @@ async def _try_load_code_assist(
                 headers=headers,
                 timeout=30.0,
                 proxy_url=proxy_url,
+                transport="antigravity",
             )
         except Exception as e:
             last_error = e
@@ -866,9 +876,6 @@ async def _try_load_code_assist(
         raise last_error  # type: ignore[misc]
 
     if response.status_code == 200:
-        response_text = response.text
-        log.debug(f"[loadCodeAssist] Response body: {response_text}")
-
         data = response.json()
         log.debug(f"[loadCodeAssist] Response JSON keys: {list(data.keys())}")
 
@@ -924,7 +931,6 @@ async def _try_load_code_assist(
             return None, None, credit_amount
     else:
         log.warning(f"[loadCodeAssist] Failed: HTTP {response.status_code}")
-        log.warning(f"[loadCodeAssist] Response body: {response.text[:500]}")
         raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
 
 
@@ -978,6 +984,7 @@ async def _try_onboard_user(
             headers=headers,
             timeout=30.0,
             proxy_url=proxy_url,
+            transport="antigravity",
         )
 
         log.debug(f"[onboardUser] Response status: {response.status_code}")
@@ -1012,7 +1019,6 @@ async def _try_onboard_user(
                 await asyncio.sleep(2)
         else:
             log.warning(f"[onboardUser] Failed: HTTP {response.status_code}")
-            log.warning(f"[onboardUser] Response body: {response.text[:500]}")
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
 
     log.error("[onboardUser] Timeout: Operation did not complete within 10 seconds")
@@ -1047,6 +1053,7 @@ async def _get_onboard_tier(
         headers=headers,
         timeout=30.0,
         proxy_url=proxy_url,
+        transport="antigravity",
     )
 
     if response.status_code == 200:

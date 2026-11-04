@@ -123,6 +123,19 @@ async def lifespan(app: FastAPI):
         log.error(f"凭证管理器初始化失败: {e}")
         global_credential_manager = None
 
+    # AGY 原生传输只在显式启用时启动；失败时不静默退回另一套指纹。
+    try:
+        from config import get_antigravity_native_transport_enabled
+
+        if await get_antigravity_native_transport_enabled():
+            from src.agy_native_transport import agy_native_transport
+
+            await agy_native_transport.start()
+            log.info("AGY Go 原生传输已启动")
+    except Exception as e:
+        log.error(f"AGY 原生传输启动失败: {type(e).__name__}")
+        raise
+
     # OAuth回调服务器将在需要时按需启动
 
     # 启动保活服务（未配置URL时自动跳过，零开销）
@@ -211,6 +224,13 @@ async def lifespan(app: FastAPI):
         log.info("凭证管理器已关闭")
     except Exception as e:
         log.error(f"关闭凭证管理器时出错: {e}")
+
+    try:
+        from src.agy_native_transport import agy_native_transport
+
+        await agy_native_transport.stop()
+    except Exception as e:
+        log.error(f"关闭 AGY 原生传输时出错: {type(e).__name__}")
 
     # 关闭复用的 Shadowsocks SOCKS5 监听器
     try:

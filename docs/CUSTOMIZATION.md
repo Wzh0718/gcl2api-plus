@@ -176,8 +176,13 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_CLI_AUTH_METHOD` ★ | User-Agent auth_method 字段 | `consumer` |
 | `ANTIGRAVITY_HUB_VERSION` ★ | 正式请求使用的 Antigravity hub 版本 | `2.28.2` |
 | `ANTIGRAVITY_HUB_CL` ★ | 与 hub 版本配套的 changelist，由官方二进制 `--stamp` 核验 | `1009437749` |
-| `ANTIGRAVITY_OAUTH_UA_VERSION` ★ | OAuth token 端点 UA 版本 | 跟随 `ANTIGRAVITY_HUB_VERSION` |
-| `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | OAuth token 端点完整 User-Agent 覆盖 | `vscode/1.X.X (Antigravity/{版本})` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_ENABLED` ★ | AGY/OAuth 使用 Go 原生传输；OAuth 为 HTTP/2、CloudCode 为无 ALPN 的 HTTP/1.1，helper 失败不静默降级 | `false` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_BINARY` ★ | Go helper 路径 | `native/agytransport/agytransport` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_SOCKET` ★ | helper 的 0600 Unix socket | `${CREDENTIALS_DIR}/agytransport.sock` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_ALLOWED_HOSTS` ★ | 默认 Google 主机之外额外允许的逗号分隔主机 | 空 |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_CA_FILE` ★ | 自定义 CA bundle；仅私有证书或本地 TLS 捕获需要 | 空 |
+| `ANTIGRAVITY_OAUTH_UA_VERSION` ★ | 非原生 OAuth UA 版本 | 跟随 `ANTIGRAVITY_HUB_VERSION` |
+| `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | 非原生 OAuth UA 覆盖；启用原生传输后由 Go 自动设置 UA | `vscode/1.X.X (Antigravity/{版本})` |
 | `ANTIGRAVITY_STREAM2NOSTREAM` ★ | 非流式请求改走流式 API 并收集为完整响应 | `false` |
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |

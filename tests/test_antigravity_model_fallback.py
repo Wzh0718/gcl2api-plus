@@ -142,7 +142,7 @@ async def test_non_stream_falls_back_to_next_model_on_quota_exhaustion(monkeypat
 
     sent_models = []
 
-    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None):
+    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None, transport=None):
         sent_models.append(json["model"])
         if json["model"] == "gemini-2.5-flash":
             return _FakeResponse(429, _quota_429_body().encode())
@@ -178,7 +178,7 @@ async def test_non_stream_no_fallback_when_chain_empty(monkeypatch):
         agy.credential_manager, "get_valid_credential", fake_get_valid_credential
     )
 
-    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None):
+    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None, transport=None):
         return _FakeResponse(429, _quota_429_body().encode())
 
     monkeypatch.setattr(agy, "post_async", fake_post_async)
@@ -212,7 +212,7 @@ async def test_non_stream_no_fallback_on_transient_429(monkeypatch):
         agy.credential_manager, "get_valid_credential", fake_get_valid_credential
     )
 
-    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None):
+    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None, transport=None):
         return _FakeResponse(429, b'{"error": {"reason": "RATE_LIMIT_EXCEEDED"}}')
 
     monkeypatch.setattr(agy, "post_async", fake_post_async)
@@ -244,7 +244,7 @@ async def test_non_stream_falls_back_when_retries_exhausted(monkeypatch):
 
     sent_models = []
 
-    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None):
+    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None, transport=None):
         sent_models.append(json["model"])
         if json["model"] == "gemini-2.5-flash":
             return _FakeResponse(429, _quota_429_body().encode())
@@ -279,7 +279,7 @@ async def test_stream_falls_back_when_retries_exhausted(monkeypatch):
 
     sent_models = []
 
-    async def fake_stream_post_async(url=None, body=None, native=False, headers=None, proxy_url=None):
+    async def fake_stream_post_async(url=None, body=None, native=False, headers=None, proxy_url=None, transport=None):
         sent_models.append(body["model"])
         if body["model"] == "gemini-2.5-flash":
             yield Response(content=_quota_429_body().encode(), status_code=429)
@@ -315,7 +315,7 @@ async def test_stream_returns_429_only_after_chain_exhausted(monkeypatch):
 
     sent_models = []
 
-    async def fake_stream_post_async(url=None, body=None, native=False, headers=None, proxy_url=None):
+    async def fake_stream_post_async(url=None, body=None, native=False, headers=None, proxy_url=None, transport=None):
         sent_models.append(body["model"])
         yield Response(content=_quota_429_body().encode(), status_code=429)
 

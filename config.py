@@ -509,6 +509,18 @@ def _sync_bool(key: str, env_var: str, default: bool) -> bool:
     return default
 
 
+def get_antigravity_native_transport_enabled_sync() -> bool:
+    return _sync_bool(
+        "antigravity_native_transport_enabled",
+        "ANTIGRAVITY_NATIVE_TRANSPORT_ENABLED",
+        False,
+    )
+
+
+async def get_antigravity_native_transport_enabled() -> bool:
+    return get_antigravity_native_transport_enabled_sync()
+
+
 def _sync_number(key: str, env_var: str, default: float, cast=float) -> float:
     cached = _get_cached_config(key)
     if cached is not None:
