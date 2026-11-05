@@ -6,6 +6,8 @@ import hashlib
 import json
 from typing import Any
 
+import config
+
 
 request_content: ContextVar[dict | None] = ContextVar("request_content", default=None)
 
@@ -37,6 +39,8 @@ def content_snapshot(payload: dict) -> dict:
 
 
 def build_request_features(upstream: dict | None = None) -> tuple[dict, dict]:
+    if not config.get_call_content_capture_enabled_sync():
+        return {}, {}
     details = {}
     incoming = request_content.get()
     if incoming is not None:
@@ -74,6 +78,12 @@ class RequestContentMiddleware:
         inference = path.startswith(("/v1/", "/v1beta/", "/antigravity/v1/", "/antigravity/v1beta/", "/vertex/v1/", "/vertex/v1beta/"))
         if scope["type"] != "http" or scope.get("method") != "POST" or not inference:
             return await self.app(scope, receive, send)
+        if not config.get_call_content_capture_enabled_sync():
+            token = request_content.set(None)
+            try:
+                return await self.app(scope, receive, send)
+            finally:
+                request_content.reset(token)
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").split(b";")[0].strip()
         token = request_content.set(None)
         chunks = bytearray()

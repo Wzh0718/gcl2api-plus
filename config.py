@@ -1003,6 +1003,11 @@ async def get_keepalive_interval() -> int:
     return int(await get_config_value("keepalive_interval", 60))
 
 
+def get_call_content_capture_enabled_sync() -> bool:
+    """Capture full client/upstream snapshots; disable to keep only usage metadata."""
+    return _sync_bool("call_content_capture_enabled", "CALL_CONTENT_CAPTURE_ENABLED", True)
+
+
 async def get_call_records_retention_days() -> int:
     """
     调用监控逐条记录的滚动保留天数，超过的记录会被自动清理。

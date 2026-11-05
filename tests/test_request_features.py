@@ -8,6 +8,41 @@ from src.request_features import (
 )
 
 
+@pytest.mark.asyncio
+async def test_capture_can_be_disabled_without_changing_request_or_usage(tmp_path, monkeypatch):
+    import config
+    from src.call_monitor import CallMonitor
+    from src.storage_adapter import StorageAdapter
+
+    monkeypatch.setenv("CALL_CONTENT_CAPTURE_ENABLED", "false")
+    monkeypatch.delitem(config._config_cache, "call_content_capture_enabled", raising=False)
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    raw = b'{"system":"private","messages":[{"role":"user","content":"secret"}]}'
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    try:
+        async def app(scope, receive, send):
+            assert (await receive())["body"] == raw
+            assert request_content.get() is None
+            assert build_request_features({"systemInstruction": {"parts": [{"text": "private"}]}}) == ({}, {})
+            await CallMonitor(adapter).record(
+                request_id="no-content", success=True, input_tokens=23, output_tokens=7,
+                total_tokens=30, total_cost="0.12345678", upstream_request={"contents": ["secret"]},
+            )
+        async def receive():
+            return {"type": "http.request", "body": raw}
+        await RequestContentMiddleware(app)(
+            {"type": "http", "method": "POST", "path": "/v1/messages",
+             "headers": [(b"content-type", b"application/json")]}, receive, None,
+        )
+        detail = await adapter._backend.get_call_record_content("no-content")
+        assert detail["request_details"] == detail["request_features"] == {}
+        row = (await adapter._backend.list_call_records())[0]
+        assert (row["input_tokens"], row["output_tokens"], row["total_tokens"], row["total_cost"]) == (23, 7, 30, "0.12345678")
+    finally:
+        await adapter.close()
+
+
 def test_protocol_snapshots_and_stable_fingerprints():
     payload = {
         "messages": [{"role": "system", "content": "规则"},

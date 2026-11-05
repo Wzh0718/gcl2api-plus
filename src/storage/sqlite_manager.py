@@ -15,6 +15,7 @@ import aiosqlite
 
 from log import log
 from src.storage.antigravity_warmup_store import AntigravityWarmupStore
+from src.storage.call_record_content import decode_details, encode_details
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
@@ -2828,6 +2829,8 @@ class SQLiteManager(AntigravityWarmupStore):
     ) -> None:
         """写入一条逐请求调用记录（由调用监控模块调用，计费去重后才触发）。"""
         self._ensure_initialized()
+        # Large conversation snapshots must not block the request event loop.
+        packed_details = await asyncio.to_thread(encode_details, request_details or {})
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """INSERT INTO call_records(
@@ -2845,7 +2848,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     max(int(cache_tokens), 0), max(int(thought_tokens), 0),
                     max(int(total_tokens), 0), total_cost, currency or "CNY",
                     json.dumps(request_features or {}, ensure_ascii=False),
-                    json.dumps(request_details or {}, ensure_ascii=False),
+                    packed_details,
                 ),
             )
             await db.commit()
@@ -2861,7 +2864,7 @@ class SQLiteManager(AntigravityWarmupStore):
         if row is None:
             return None
         return {"request_id": request_id, "request_features": json.loads(row[0] or "{}"),
-                "request_details": json.loads(row[1] or "{}")}
+                "request_details": await asyncio.to_thread(decode_details, row[1])}
 
     @staticmethod
     def _call_record_filters(
