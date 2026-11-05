@@ -2949,7 +2949,7 @@ function _cmKeyGroups(rows) {
         let group = groups.get(key);
         if (!group) {
             group = {
-                key, accounts: [], total: 0, successCount: 0, failedCount: 0,
+                key, name: row.api_key_name || '', accounts: [], total: 0, successCount: 0, failedCount: 0,
                 tps: 0, gatewayWeighted: 0, inputTokens: 0, outputTokens: 0,
                 cacheTokens: 0, thoughtTokens: 0, totalTokens: 0, totalCost: 0,
                 currency: row.currency || 'CNY', lastCalledAt: 0,
@@ -2958,6 +2958,7 @@ function _cmKeyGroups(rows) {
             };
             groups.set(key, group);
         }
+        if (!group.name && row.api_key_name) group.name = row.api_key_name;
         const total = Number(row.total || 0);
         group.accounts.push(row);
         group.total += total;
@@ -3014,7 +3015,7 @@ function _cmRenderKeyGroups(groups) {
                     title="${expanded ? '收起账号明细' : '展开账号明细'}"
                     onclick="toggleCallMonitorKey('${_cmEscape(group.key)}')">
                     <span class="cm-caret${expanded ? ' expanded' : ''}">▸</span>
-                    <span class="cm-key-text">${_cmMask(group.key)}</span>
+                    <span class="cm-key-text" title="API Key ID: ${_cmMask(group.key)}">${group.name ? _cmEscape(group.name) : _cmMask(group.key)}</span>
                     <span class="cm-group-accounts">${accountCount} 个账号</span>
                 </button>
             </td>

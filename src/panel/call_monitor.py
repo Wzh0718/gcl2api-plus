@@ -265,6 +265,8 @@ async def call_monitor_overview(
         if min_ts_getter is not None:
             oldest_ts = await min_ts_getter()
 
+    if view == "key":
+        await _attach_api_key_names(rows, backend)
     await _attach_account_emails(rows, backend)
     await _attach_warmup_status(rows, backend)
     range_secs = _range_seconds(range_name, since_ts, oldest_ts)

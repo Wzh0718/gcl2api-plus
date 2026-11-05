@@ -202,6 +202,10 @@ async def test_aggregate_key_account_usage_nests_by_key_and_account(tmp_path, mo
 @pytest.mark.asyncio
 async def test_overview_key_view_nests_key_and_account(tmp_path, monkeypatch):
     adapter = await _make_adapter(tmp_path, monkeypatch)
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(adapter._backend, "get_api_key_record", AsyncMock(
+        side_effect=lambda key: {"name": "生产调用密钥"} if key == "key-1" else None
+    ))
     import src.storage_adapter as sa
     from src.call_monitor import get_call_monitor
 
@@ -228,6 +232,7 @@ async def test_overview_key_view_nests_key_and_account(tmp_path, monkeypatch):
         ("key-2", "acc-b.json"),
     }
     assert all(row["group_key"] == row["api_key_id"] for row in resp["rows"])
+    assert all(row["api_key_name"] == ("生产调用密钥" if row["api_key_id"] == "key-1" else "未命名密钥") for row in resp["rows"])
     assert all("tps" in row for row in resp["rows"])
 
     # 账号视图继续沿用「账号 × 模型」口径
