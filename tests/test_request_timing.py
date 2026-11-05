@@ -72,6 +72,10 @@ async def test_timing_persists_without_content_capture_and_legacy_is_unknown(tmp
         rows = {r['request_id']: r for r in await adapter._backend.list_call_records()}
         assert rows['legacy']['downstream_first_byte_seconds'] is None
         assert rows['new']['upstream_first_byte_seconds'] is not None
+        assert rows['new']['upstream_response_seconds'] is not None
+        assert rows['new']['downstream_send_seconds'] >= 0
+        assert rows['legacy']['upstream_response_seconds'] is None
+        assert rows['legacy']['downstream_send_seconds'] is None
         assert rows['new']['response_total_seconds'] >= rows['new']['downstream_first_byte_seconds']
         assert monitor.realtime()[0]['response_total_seconds'] == rows['new']['response_total_seconds']
     finally:
@@ -212,5 +216,55 @@ async def test_httpx_inference_transport_captures_first_byte(monkeypatch, stream
             assert response.content == b'data: first\n\ndata: last\n\n'
         assert state.upstream_first_byte_seconds is not None
         assert len(closed) == 1
+    finally:
+        request_timing.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_downstream_send_time_excludes_waiting_for_upstream(monkeypatch):
+    import src.request_timing as timing_module
+    now = [0.0]
+    from types import SimpleNamespace
+    monkeypatch.setattr(timing_module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    states = []
+    async def app(scope, receive, send):
+        states.append(request_timing.get())
+        states[-1].started = now[0]
+        now[0] += 40  # Waiting for upstream: never counted as downstream send time.
+        await send({'type': 'http.response.body', 'body': b'first', 'more_body': True})
+        now[0] += 60  # Waiting for a later upstream chunk is also excluded.
+        await send({'type': 'http.response.body', 'body': b'last'})
+    async def send(message):
+        now[0] += 0.01
+    await RequestTimingMiddleware(app)({'type': 'http', 'method': 'POST', 'path': '/v1/messages'}, None, send)
+    state = states[0]
+    assert state.downstream_send_seconds == pytest.approx(0.02)
+    assert state.response_total_seconds == pytest.approx(100.02)
+    assert state.downstream_first_byte_seconds == pytest.approx(40)
+
+
+@pytest.mark.asyncio
+async def test_upstream_duration_ends_at_last_data_not_after_downstream_send(monkeypatch):
+    import src.request_timing as timing_module
+    from src.request_timing import RequestTiming
+    now = [0.0]
+    from types import SimpleNamespace
+    monkeypatch.setattr(timing_module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    state = RequestTiming()
+    token = request_timing.set(state)
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            now[0] = 5
+            yield b'first'
+            now[0] = 12
+            yield b'last'
+    try:
+        hook = timing_hook('https://example.com/v1internal:generateContent')
+        response = httpx.Response(200, stream=Body())
+        await hook(response)
+        async for chunk in response.aiter_bytes():
+            now[0] += 3  # Consumer processing or downstream transmission.
+        assert state.upstream_first_byte_seconds == 5
+        assert state.upstream_response_seconds == 12
     finally:
         request_timing.reset(token)

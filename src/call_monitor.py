@@ -127,7 +127,9 @@ class CallMonitor:
             row.update(timing_id=timing.timing_id,
                        upstream_first_byte_seconds=timing.upstream_first_byte_seconds,
                        downstream_first_byte_seconds=timing.downstream_first_byte_seconds,
-                       response_total_seconds=timing.response_total_seconds)
+                       response_total_seconds=timing.response_total_seconds,
+                       upstream_response_seconds=timing.upstream_response_seconds,
+                       downstream_send_seconds=timing.downstream_send_seconds)
         async with self._lock:
             self._buffer.append(row)
         try:
@@ -142,6 +144,7 @@ class CallMonitor:
         values = {
             "downstream_first_byte_seconds": timing.downstream_first_byte_seconds,
             "response_total_seconds": timing.response_total_seconds,
+            "downstream_send_seconds": timing.downstream_send_seconds,
         }
         # Existing bounded deque only; no per-request lookup cache is retained.
         async with self._lock:

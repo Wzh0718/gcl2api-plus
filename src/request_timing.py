@@ -16,6 +16,8 @@ class RequestTiming:
     upstream_first_byte_seconds: float | None = None
     downstream_first_byte_seconds: float | None = None
     response_total_seconds: float | None = None
+    upstream_response_seconds: float | None = None
+    downstream_send_seconds: float | None = None
     monitor: object = None
 
 
@@ -31,9 +33,13 @@ class _TimedStream(httpx.AsyncByteStream):
 
     async def __aiter__(self):
         async for chunk in self.stream:
-            if chunk and not self.seen:
-                self.seen = True
-                self.state.upstream_first_byte_seconds = time.monotonic() - self.started
+            if chunk:
+                elapsed = time.monotonic() - self.started
+                if not self.seen:
+                    self.seen = True
+                    self.state.upstream_first_byte_seconds = elapsed
+                # Last received data, not iterator teardown after downstream sends.
+                self.state.upstream_response_seconds = elapsed
             yield chunk
 
     async def aclose(self):
@@ -52,6 +58,7 @@ def timing_hook(url):
         return None
     started = time.monotonic()
     state.upstream_first_byte_seconds = None
+    state.upstream_response_seconds = None
 
     async def on_response(response):
         response.stream = _TimedStream(response.stream, state, started)
@@ -84,7 +91,15 @@ class RequestTimingMiddleware:
             if (message['type'] == 'http.response.body' and message.get('body')
                     and state.downstream_first_byte_seconds is None):
                 state.downstream_first_byte_seconds = time.monotonic() - state.started
-            await send(message)
+            if message['type'] == 'http.response.body':
+                send_started = time.monotonic()
+                try:
+                    await send(message)
+                finally:
+                    # Sum only ASGI write calls; upstream waits between chunks are excluded.
+                    state.downstream_send_seconds = (state.downstream_send_seconds or 0.0) + (time.monotonic() - send_started)
+            else:
+                await send(message)
             if message['type'] == 'http.response.body' and not message.get('more_body', False):
                 state.response_total_seconds = time.monotonic() - state.started
 

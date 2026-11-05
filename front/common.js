@@ -2704,20 +2704,20 @@ function _cmLatencyCell(row) {
     const measured = value => value !== null && value !== undefined
         && Number.isFinite(Number(value)) && Number(value) >= 0;
     const format = value => measured(value)
-        ? (Number(value) === 0 ? '0ms' : _cmFormatLatency(Number(value))) : '未采集';
-    const total = measured(row.response_total_seconds)
-        ? row.response_total_seconds : row.gateway_seconds;
+        ? (Number(value) < 1 ? `${(Number(value) * 1000).toFixed(2)}ms` : _cmFormatLatency(Number(value))) : '未采集';
+    const hasUpstream = measured(row.upstream_response_seconds);
+    const visible = hasUpstream ? format(row.upstream_response_seconds) : _cmFormatLatency(row.gateway_seconds);
     const tip = [
-        `上游首字节：${format(row.upstream_first_byte_seconds)}（本次上游尝试发起 → 收到首段响应数据）`,
-        `下游首字节：${format(row.downstream_first_byte_seconds)}（客户端请求进入服务 → 开始返回首段数据，含排队与重试）`,
-        `总耗时：${format(row.response_total_seconds)}（请求进入服务 → 响应发送完成）`,
-        '均为服务器端计时，不含客户端网络传输及反向代理缓冲；首段数据不一定是首个文本 token。',
-        '上游重试仅显示该条记录关联的最后一次尝试；历史记录无法补回首字节时间。',
+        `上游耗时：${format(row.upstream_response_seconds)}（本次上游尝试发起 → 收到最后一段响应数据）`,
+        `下游发送耗时：${format(row.downstream_send_seconds)}（累计写出响应正文的耗时，不含等待上游数据）`,
+        '下游测到应用向网络层写出，不代表客户端实际接收完成，也不包含反向代理缓冲。',
+        `上游首字节等待：${format(row.upstream_first_byte_seconds)}`,
+        `客户端响应等待：${format(row.downstream_first_byte_seconds)}（请求进入服务 → 开始返回正文）`,
+        `请求总耗时：${format(row.response_total_seconds)}（含等待和处理，不等于下游发送耗时）`,
+        '上游按该记录最后一次尝试计；流式收发可重叠，以上时间不能直接相加减。',
     ];
-    if (!measured(row.response_total_seconds)) {
-        tip.push(`原网关处理耗时：${format(row.gateway_seconds)}`);
-    }
-    return `<span tabindex="0" style="cursor:help;border-bottom:1px dotted currentColor" title="${_cmEscape(tip.join('\n'))}" aria-label="${_cmEscape(tip.join('；'))}">${_cmFormatLatency(total)}</span>`;
+    if (!hasUpstream) tip.push(`主列暂显示原网关处理耗时：${format(row.gateway_seconds)}；新指标不能由历史记录推算。`);
+    return `<span tabindex="0" style="cursor:help;border-bottom:1px dotted currentColor" title="${_cmEscape(tip.join('\n'))}" aria-label="${_cmEscape(tip.join('；'))}">${visible}</span>`;
 }
 
 function _cmFormatTokens(value) {
