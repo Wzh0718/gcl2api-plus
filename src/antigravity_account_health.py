@@ -181,6 +181,21 @@ async def check_antigravity_account_health(
             eligibility_checked_at=timestamp,
         )
 
+    if network.get("exclusive_assignment"):
+        in_use = await storage.is_antigravity_egress_ip_in_use(
+            credential_name, egress_ip
+        )
+        if in_use:
+            return await storage.update_antigravity_account_health(
+                credential_name,
+                egress_ip=egress_ip,
+                egress_country=egress_country,
+                binding_status="proxy_drift",
+                eligibility_status="unchecked",
+                eligibility_reason="Egress IP is already assigned to another account",
+                eligibility_checked_at=timestamp,
+            )
+
     headers = {
         "User-Agent": get_antigravity_user_agent(),
         "Authorization": f"Bearer {access_token}",
@@ -194,6 +209,7 @@ async def check_antigravity_account_health(
             headers=headers,
             timeout=30.0,
             proxy_url=proxy_url,
+            transport="antigravity",
         )
         payload = _response_payload(response)
         reason = _safe_reason(response, payload)

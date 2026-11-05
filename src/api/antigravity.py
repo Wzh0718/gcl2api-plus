@@ -496,6 +496,7 @@ async def _post_image_request(
         json=json_body,
         headers=headers,
         proxy_url=proxy_url,
+        transport="antigravity",
         timeout=timeout,
     )
     return response, host
@@ -1100,6 +1101,7 @@ async def _stream_request_inner(
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
                 request_model=original_model,
+                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
@@ -1195,6 +1197,7 @@ async def _stream_request_inner(
             native=native,
             headers=auth_headers,
             proxy_url=proxy_url,
+            transport="antigravity",
         )
         slot_acquired = False
         try:
@@ -1238,7 +1241,7 @@ async def _stream_request_inner(
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}, 响应: {error_body[:500] if error_body else '无'}")
+                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}")
                         last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_body)
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
@@ -1347,7 +1350,7 @@ async def _stream_request_inner(
                             return
                     else:
                         # 错误码不在禁用码当中，直接返回，无需重试
-                        log.error(f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}, 响应: {error_body[:500] if error_body else '无'}")
+                        log.error(f"[ANTIGRAVITY STREAM] 流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}")
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
                             None, mode="antigravity", model_name=model_name,
@@ -1608,6 +1611,7 @@ async def _non_stream_image_request_inner(
     last_response: Optional[Response] = None
     last_was_capacity = False
     last_was_slot_backpressure = False
+    final_payload = None
     last_request_id = f"image-{uuid.uuid4()}"
     billing_recorded = False
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
@@ -1636,6 +1640,7 @@ async def _non_stream_image_request_inner(
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=extract_model_version(response_payload),
                 request_model=requested_model,
+                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(
@@ -2039,6 +2044,7 @@ async def non_stream_request(
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
                 request_model=original_model,
+                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")
@@ -2146,6 +2152,7 @@ async def non_stream_request(
                 json=final_payload,
                 headers=auth_headers,
                 proxy_url=proxy_url,
+                transport="antigravity",
                 timeout=300.0
             )
             upstream_elapsed = time.monotonic() - attempt_started
@@ -2213,7 +2220,7 @@ async def non_stream_request(
                     pass
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}, 响应: {error_text[:500] if error_text else '无'}")
+                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}")
                     last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_text)
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
@@ -2311,7 +2318,7 @@ async def non_stream_request(
                         return _upstream_403_to_503(last_error_response)
                 else:
                     # 错误码不在禁用码当中，直接返回，无需重试
-                    log.error(f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}, 响应: {error_text[:500] if error_text else '无'}")
+                    log.error(f"[ANTIGRAVITY] 非流式请求失败，非重试错误码 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}")
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
                         None, mode="antigravity", model_name=model_name,
@@ -2462,6 +2469,7 @@ async def _post_with_host_fallback(
                 "json": json_body if json_body is not None else {},
                 "headers": headers,
                 "proxy_url": proxy_url,
+                "transport": "antigravity",
             }
             if timeout is not None:
                 kwargs["timeout"] = timeout
@@ -2506,6 +2514,7 @@ async def _post_image_generate(
                 json=json_body,
                 headers=headers,
                 proxy_url=proxy_url,
+                transport="antigravity",
                 timeout=timeout,
             )
         except Exception as exc:
@@ -2635,7 +2644,7 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
             log.info(f"[ANTIGRAVITY] Fetched {len(model_list)} available models")
             return model_list
         else:
-            log.error(f"[ANTIGRAVITY] Failed to fetch models ({response.status_code}): {response.text[:500]}")
+            log.error(f"[ANTIGRAVITY] Failed to fetch models: HTTP {response.status_code}")
             return []
 
     except Exception as e:
@@ -2745,7 +2754,7 @@ async def fetch_quota_info(
                 "groups": quota_groups
             }
         else:
-            log.error(f"[ANTIGRAVITY QUOTA] Failed to fetch quota ({response.status_code}): {response.text[:500]}")
+            log.error(f"[ANTIGRAVITY QUOTA] Failed to fetch quota: HTTP {response.status_code}")
             return {
                 "success": False,
                 "error": f"API返回错误: {response.status_code}"

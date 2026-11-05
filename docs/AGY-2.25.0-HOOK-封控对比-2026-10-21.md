@@ -1,5 +1,12 @@
 # agy 2.25.0 hook 实测：封控更新判断 × gcli2api 请求逻辑对照
 
+> **2026-11-04 原生传输与 OAuth 实抓**：
+> - 使用官方 2.28.2、隔离 HOME、dummy OAuth 凭证和 loopback TLS mock；脱敏 golden 为 `tests/fixtures/agy_transport_2.28.2.json`。
+> - OAuth token：HTTP/2、`Go-http-client/2.0`、ALPN `h2,http/1.1`、JA3 `03117a8ed39ef02427ebbc39f121275c`。旧 `vscode/1.X.X (Antigravity/...)` 猜测已移除，不再自动轮换 OAuth client。
+> - CloudCode/AGY：HTTP/1.1、不发送 ALPN、JA3 `9b7dcdf3f997f1fb7b4409c94cb7ef36`；头部顺序为 `Host / User-Agent / Content-Length / Authorization / Content-Type / Accept-Encoding`，没有多余 `Accept`。
+> - 本机 Go 标准库与官方两套 JA3、密码套件和扩展逐项一致，因此 `native/agytransport` 不需要 uTLS 或 Chrome/curl_cffi。Python → Go helper → loopback 的端到端复抓已复核上述结果。
+> - 代理组新增 `exclusive_assignment`：一账号一节点、重复出口 IP 拒绝、严格健康门禁。PX6 仅作为手动导入的个人 IPv4 来源，不接自动采购，也不承诺避免 TOS。
+
 > **2026-11-03 复核：官方 hub 2.28.2 实抓已对齐**：
 > - Evidence：官方二进制 SHA256 `8015e953e72e7070ec739f5facc38f8ec3919b3800eb8d46dd09e2d61aa22cac`，`--stamp` 为 CL `1009437749`；本地 dummy token + 脱敏目录重放捕获见 `.agy-re/capture-2.28.2.log`（不入库）。
 > - Finding：2.28.2 与 2.25.0 的顶层字段、request 字段、labels 9 键、generationConfig、12 个工具及 sessionId 语义一致；系统提示词长度变化不影响网关透传。当前 Python 信封无需重写。

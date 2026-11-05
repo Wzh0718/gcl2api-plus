@@ -55,7 +55,7 @@ async def _check_proxy_stage(
             json={},
             headers=build_antigravity_headers(token),
             timeout=30.0,
-            proxy_url=proxy_url,
+            proxy_url=proxy_url, transport="antigravity",
         )
     except Exception as exc:
         storage = await get_storage_adapter()
@@ -117,7 +117,7 @@ async def _check_message_stage(
             },
             headers=build_antigravity_headers(token),
             timeout=30.0,
-            proxy_url=proxy_url,
+            proxy_url=proxy_url, transport="antigravity",
         )
     except Exception as exc:
         return {"ok": False, "error": f"请求失败: {type(exc).__name__}: {exc}"}

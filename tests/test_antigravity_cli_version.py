@@ -446,18 +446,11 @@ class UserAgentBuilderTests(_StatelessCase):
             self.assertIn("antigravity/hub/2.25.0", get_antigravity_user_agent())
             self.assertNotIn("antigravity/cli", get_antigravity_user_agent())
 
-    async def test_oauth_user_agent_follows_hub_version(self):
+    async def test_oauth_user_agent_matches_official_go_capture(self):
         from src.utils import get_antigravity_oauth_user_agent
 
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch("src.utils.ANTIGRAVITY_OAUTH_UA_VERSION", ""),
-            patch("config.get_antigravity_hub_version_sync", lambda: "2.25.0"),
-        ):
-            self.assertEqual(
-                get_antigravity_oauth_user_agent(),
-                "vscode/1.X.X (Antigravity/2.25.0)",
-            )
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_antigravity_oauth_user_agent(), "Go-http-client/2.0")
 
     async def test_oauth_user_agent_env_explicit_override(self):
         from src.utils import get_antigravity_oauth_user_agent
@@ -468,18 +461,6 @@ class UserAgentBuilderTests(_StatelessCase):
             clear=True,
         ):
             self.assertEqual(get_antigravity_oauth_user_agent(), "custom-ua/1.0")
-
-    async def test_oauth_user_agent_version_pin(self):
-        from src.utils import get_antigravity_oauth_user_agent
-
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch("src.utils.ANTIGRAVITY_OAUTH_UA_VERSION", "1.1.1"),
-        ):
-            self.assertEqual(
-                get_antigravity_oauth_user_agent(),
-                "vscode/1.X.X (Antigravity/1.1.1)",
-            )
 
     async def test_build_headers_version_override(self):
         from src.api.antigravity import build_antigravity_headers

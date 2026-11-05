@@ -84,30 +84,15 @@ def get_antigravity_user_agent() -> str:
 # 兼容别名：导入期快照；新代码请用 get_antigravity_user_agent()。
 ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent()
 
-# Antigravity OAuth token 端点（exchange/refresh）使用的 User-Agent，
-# 对齐 Antigravity-Manager 的 NATIVE_OAUTH_USER_AGENT（vscode 部分固定为字面量 1.X.X）。
-# ANTIGRAVITY_OAUTH_UA_VERSION / ANTIGRAVITY_OAUTH_USER_AGENT env 可单独钉死；
-# 未钉死时版本跟随 hub 轨迹版本。
-ANTIGRAVITY_OAUTH_UA_VERSION = os.getenv("ANTIGRAVITY_OAUTH_UA_VERSION", "")
-
-
+# 官方 2.28.2 实抓：OAuth token 端点使用 Go 默认 HTTP/2 UA。
+# 原生传输会直接省略自定义 UA；此函数保留给少量探测与兼容调用。
 def get_antigravity_oauth_user_agent() -> str:
-    """构建 OAuth 端 User-Agent（env 可覆盖；版本默认跟随 hub 轨迹配置）。"""
     explicit = os.getenv("ANTIGRAVITY_OAUTH_USER_AGENT", "").strip()
-    if explicit:
-        return explicit
-    pinned = ANTIGRAVITY_OAUTH_UA_VERSION.strip()
-    if pinned:
-        return f"vscode/1.X.X (Antigravity/{pinned})"
-    from config import get_antigravity_hub_version_sync
-
-    return f"vscode/1.X.X (Antigravity/{get_antigravity_hub_version_sync()})"
+    return explicit or "Go-http-client/2.0"
 
 
-# 兼容别名：导入期快照；新代码请用 get_antigravity_oauth_user_agent()。
 ANTIGRAVITY_OAUTH_USER_AGENT = os.getenv(
-    "ANTIGRAVITY_OAUTH_USER_AGENT",
-    f"vscode/1.X.X (Antigravity/{os.getenv('ANTIGRAVITY_OAUTH_UA_VERSION', ANTIGRAVITY_CLI_VERSION)})",
+    "ANTIGRAVITY_OAUTH_USER_AGENT", "Go-http-client/2.0"
 )
 
 # OAuth Configuration - 标准模式

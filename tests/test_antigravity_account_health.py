@@ -271,6 +271,40 @@ class AntigravityNetworkCheckTests(unittest.IsolatedAsyncioTestCase):
             "http://proxy.example:8080",
         )
 
+    async def test_exclusive_group_rejects_an_egress_ip_used_by_another_account(self):
+        from src.antigravity_account_health import check_antigravity_account_health
+
+        class SharedIPStorage(_FakeHealthStorage):
+            async def is_antigravity_egress_ip_in_use(self, filename, egress_ip):
+                return egress_ip == "203.0.113.8"
+
+        storage = SharedIPStorage()
+        post_mock = AsyncMock()
+        with (
+            patch(
+                "src.antigravity_account_health.get_async",
+                AsyncMock(return_value=_FakeResponse(200, {"ip": "203.0.113.8"})),
+            ),
+            patch("src.antigravity_account_health.post_async", post_mock),
+        ):
+            result = await check_antigravity_account_health(
+                storage=storage,
+                credential_name="account.json",
+                access_token="token",
+                network={
+                    "proxy_mode": "group",
+                    "proxy_url": "http://proxy.example:8080",
+                    "exclusive_assignment": True,
+                },
+                ip_check_url="https://ip-check.example/json",
+                api_base_url="https://daily-cloudcode-pa.googleapis.com",
+                checked_at=1000.0,
+            )
+
+        self.assertEqual(result["binding_status"], "proxy_drift")
+        self.assertEqual(result["eligibility_status"], "unchecked")
+        post_mock.assert_not_awaited()
+
     async def test_ip_drift_stops_before_eligibility_request(self):
         from src.antigravity_account_health import check_antigravity_account_health
 
@@ -1104,6 +1138,37 @@ class AntigravityHealthGateTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await self._ready(manager)
         self.assertIsNotNone(result)
+
+    async def test_exclusive_group_requires_fresh_eligible_health_even_when_global_gate_is_off(self):
+        manager = self._make_manager(
+            {
+                "binding_status": "healthy",
+                "eligibility_status": "geo_blocked",
+                "eligibility_checked_at": time.time(),
+            }
+        )
+        with (
+            patch(
+                "config.get_antigravity_network_check_enabled",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "config.get_antigravity_network_check_ttl_seconds",
+                AsyncMock(return_value=300),
+            ),
+            patch.object(
+                manager._storage_adapter,
+                "resolve_credential_network",
+                AsyncMock(
+                    return_value={
+                        "proxy_mode": "group",
+                        "proxy_url": "http://proxy.example:8080",
+                        "exclusive_assignment": True,
+                    }
+                ),
+            ),
+        ):
+            self.assertIsNone(await self._ready(manager))
 
 
 class Antigravity403To503Tests(unittest.TestCase):

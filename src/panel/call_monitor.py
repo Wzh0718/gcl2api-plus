@@ -160,6 +160,21 @@ def _aggregate_from_buffer(
     return result
 
 
+async def _attach_account_emails(rows: list[Dict[str, Any]], backend: Any) -> None:
+    getter = getattr(backend, "get_all_credential_states", None)
+    if getter is None:
+        return
+    states_by_mode = {}
+    for row in rows:
+        mode = "vertex" if row.get("channel") == "vertex" else "antigravity"
+        if mode == "vertex":
+            continue
+        if mode not in states_by_mode:
+            states_by_mode[mode] = await getter(mode=mode)
+        name = row.get("credential_name") or row.get("group_key")
+        row["user_email"] = (states_by_mode[mode].get(name) or {}).get("user_email") or ""
+
+
 async def _attach_warmup_status(rows: list[Dict[str, Any]], backend: Any) -> None:
     list_warmup = getattr(backend, "list_antigravity_warmup", None)
     if list_warmup is None:
@@ -237,6 +252,7 @@ async def call_monitor_overview(
         if min_ts_getter is not None:
             oldest_ts = await min_ts_getter()
 
+    await _attach_account_emails(rows, backend)
     await _attach_warmup_status(rows, backend)
     range_secs = _range_seconds(range_name, since_ts, oldest_ts)
     return {
@@ -286,6 +302,7 @@ async def call_monitor_realtime(
     else:
         counters = monitor.buffer_counters(since_ts=since_ts)
 
+    await _attach_account_emails(paged["records"], storage._backend)
     await _attach_warmup_status(paged["records"], storage._backend)
     total = int(paged["total"])
     page_size = int(paged["page_size"])
@@ -308,3 +325,19 @@ async def call_monitor_realtime(
         },
         "records": paged["records"],
     }
+
+
+@router.get("/content")
+async def call_monitor_content(
+    request_id: str, _token: str = Depends(verify_panel_token),
+):
+    """Full content is loaded on demand behind panel authentication."""
+    storage = await get_storage_adapter()
+    getter = getattr(getattr(storage, "_backend", None), "get_call_record_content", None)
+    if getter is None:
+        raise HTTPException(status_code=404, detail="当前存储不支持请求详情")
+    content = await getter(request_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="记录不存在或已超过保留期")
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content, headers={"Cache-Control": "no-store"})

@@ -20,8 +20,7 @@ from config import (
 from log import log
 
 from src.httpx_client import get_async, post_async
-from src.oauth_clients import get_candidates, is_client_mismatch_error, list_clients
-from src.utils import get_antigravity_oauth_user_agent
+from src.oauth_clients import get_candidates, list_clients
 
 
 class TokenError(Exception):
@@ -35,58 +34,37 @@ async def refresh_access_token_with_clients(
     proxy_url: Any = ...,
     preferred_client_key: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[str]]:
-    """
-    多 client 降级刷新 access_token（对齐 Antigravity-Manager 的 refresh 语义）
-
-    按候选顺序（preferred → active → 其余）依次尝试注册表中的 OAuth client，
-    只有 "client 不匹配" 错误（400/401/403 或 unauthorized_client/invalid_client）
-    才尝试下一个；网络错误不降级，直接失败。
-
-    Returns:
-        (token_data, 成功使用的 client_key)
-
-    Raises:
-        TokenError: 全部 client 均失败
-    """
+    """Refresh through one stable OAuth client and the official Go transport profile."""
     oauth_base_url = await get_oauth_proxy_url()
     token_url = f"{oauth_base_url.rstrip('/')}/token"
+    client = get_candidates(preferred_client_key)[0]
+    data = {
+        "client_id": client.client_id,
+        "client_secret": client.client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+    try:
+        response = await post_async(
+            token_url,
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            proxy_url=proxy_url,
+            transport="antigravity",
+        )
+    except Exception as e:
+        error_msg = f"刷新请求异常 (client={client.key}): {type(e).__name__}"
+        log.error(error_msg)
+        raise TokenError(error_msg) from e
 
-    errors = []
-    for client in get_candidates(preferred_client_key):
-        data = {
-            "client_id": client.client_id,
-            "client_secret": client.client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }
-        try:
-            response = await post_async(
-                token_url,
-                data=data,
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": get_antigravity_oauth_user_agent(),
-                },
-                proxy_url=proxy_url,
-            )
-        except Exception as e:
-            # 网络错误（连接/超时等）不降级，直接失败
-            error_msg = f"刷新请求异常 (client={client.key}): {e}"
-            log.error(error_msg)
-            raise TokenError(error_msg) from e
-
-        if response.status_code == 200:
-            log.debug(f"Token刷新成功 (client={client.key})")
-            return response.json(), client.key
-
-        error_text = response.text or ""
-        errors.append(f"[{client.key}] HTTP {response.status_code}: {error_text[:200]}")
-        if not is_client_mismatch_error(response.status_code, error_text):
-            # 非 client 不匹配错误，不再尝试后续 client
-            break
-        log.warning(f"client {client.key} 不匹配，尝试下一个 client")
-
-    raise TokenError("所有 OAuth client 刷新均失败: " + "; ".join(errors))
+    if response.status_code == 200:
+        log.debug(f"Token刷新成功 (client={client.key})")
+        return response.json(), client.key
+    error_text = response.text or ""
+    raise TokenError(
+        f"OAuth client 刷新失败 (client={client.key}): "
+        f"HTTP {response.status_code}: {error_text[:200]}"
+    )
 
 
 class Credentials:
@@ -450,7 +428,9 @@ class ServiceAccount:
 
 
 # 工具函数
-async def get_user_info(credentials: Credentials) -> Optional[Dict[str, Any]]:
+async def get_user_info(
+    credentials: Credentials, *, antigravity: bool = False
+) -> Optional[Dict[str, Any]]:
     """获取用户信息"""
     await credentials.refresh_if_needed()
 
@@ -458,23 +438,28 @@ async def get_user_info(credentials: Credentials) -> Optional[Dict[str, Any]]:
         googleapis_base_url = await get_googleapis_proxy_url()
         userinfo_url = f"{googleapis_base_url.rstrip('/')}/oauth2/v2/userinfo"
         response = await get_async(
-            userinfo_url, headers={"Authorization": f"Bearer {credentials.access_token}"}, proxy_url=credentials.proxy_url
+            userinfo_url,
+            headers={"Authorization": f"Bearer {credentials.access_token}"},
+            proxy_url=credentials.proxy_url,
+            transport="antigravity" if antigravity else None,
         )
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        log.error(f"获取用户信息失败: {e}")
+        log.error(f"获取用户信息失败: {type(e).__name__}")
         return None
 
 
-async def get_user_email(credentials: Credentials) -> Optional[str]:
+async def get_user_email(
+    credentials: Credentials, *, antigravity: bool = False
+) -> Optional[str]:
     """获取用户邮箱地址"""
     try:
         # 确保凭证有效
         await credentials.refresh_if_needed()
 
         # 调用Google userinfo API获取邮箱
-        user_info = await get_user_info(credentials)
+        user_info = await get_user_info(credentials, antigravity=antigravity)
         if user_info:
             email = user_info.get("email")
             if email:
@@ -608,7 +593,7 @@ async def get_user_projects(credentials: Credentials) -> List[Dict[str, Any]]:
 
         log.info(f"API响应状态码: {response.status_code}")
         if response.status_code != 200:
-            log.error(f"API响应内容: {response.text}")
+            log.error(f"API 请求失败: HTTP {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
@@ -620,7 +605,7 @@ async def get_user_projects(credentials: Credentials) -> List[Dict[str, Any]]:
             log.info(f"获取到 {len(active_projects)} 个活跃项目")
             return active_projects
         else:
-            log.warning(f"获取项目列表失败: {response.status_code} - {response.text}")
+            log.warning(f"获取项目列表失败: HTTP {response.status_code}")
             return []
 
     except Exception as e:
@@ -763,7 +748,7 @@ async def warm_antigravity_environment(
                 json=body,
                 headers=headers,
                 timeout=15.0,
-                proxy_url=proxy_url,
+                proxy_url=proxy_url, transport="antigravity",
             )
         except Exception as e:
             log.debug(
@@ -837,7 +822,7 @@ async def _try_load_code_assist(
                 json=request_body,
                 headers=headers,
                 timeout=30.0,
-                proxy_url=proxy_url,
+                proxy_url=proxy_url, transport="antigravity",
             )
         except Exception as e:
             last_error = e
@@ -866,9 +851,6 @@ async def _try_load_code_assist(
         raise last_error  # type: ignore[misc]
 
     if response.status_code == 200:
-        response_text = response.text
-        log.debug(f"[loadCodeAssist] Response body: {response_text}")
-
         data = response.json()
         log.debug(f"[loadCodeAssist] Response JSON keys: {list(data.keys())}")
 
@@ -924,7 +906,6 @@ async def _try_load_code_assist(
             return None, None, credit_amount
     else:
         log.warning(f"[loadCodeAssist] Failed: HTTP {response.status_code}")
-        log.warning(f"[loadCodeAssist] Response body: {response.text[:500]}")
         raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
 
 
@@ -977,7 +958,7 @@ async def _try_onboard_user(
             json=request_body,
             headers=headers,
             timeout=30.0,
-            proxy_url=proxy_url,
+            proxy_url=proxy_url, transport="antigravity",
         )
 
         log.debug(f"[onboardUser] Response status: {response.status_code}")
@@ -1012,7 +993,6 @@ async def _try_onboard_user(
                 await asyncio.sleep(2)
         else:
             log.warning(f"[onboardUser] Failed: HTTP {response.status_code}")
-            log.warning(f"[onboardUser] Response body: {response.text[:500]}")
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
 
     log.error("[onboardUser] Timeout: Operation did not complete within 10 seconds")
@@ -1046,7 +1026,7 @@ async def _get_onboard_tier(
         json=request_body,
         headers=headers,
         timeout=30.0,
-        proxy_url=proxy_url,
+        proxy_url=proxy_url, transport="antigravity",
     )
 
     if response.status_code == 200:

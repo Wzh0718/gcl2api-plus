@@ -118,3 +118,5 @@ gcli2api_logs_*.txt
 # LCM agent session artifacts
 .lcm/
 .agy-re/
+/native/agytransport/agytransport
+!tests/fixtures/agy_transport_2.28.2.json

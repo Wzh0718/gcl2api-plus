@@ -30,6 +30,7 @@ from src.router.vertex.openai import router as vertex_openai_router
 from src.router.vertex.model_list import router as vertex_model_list_router
 from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
+from src.request_features import RequestContentMiddleware
 from src.keeplive import keepalive_service
 from src.antigravity_403_recheck import recheck_service
 from src.antigravity_cli_version import cli_version_service
@@ -123,6 +124,19 @@ async def lifespan(app: FastAPI):
         log.error(f"凭证管理器初始化失败: {e}")
         global_credential_manager = None
 
+    # AGY 原生传输只在显式启用时启动；失败时不静默退回另一套指纹。
+    try:
+        from config import get_antigravity_native_transport_enabled
+
+        if await get_antigravity_native_transport_enabled():
+            from src.agy_native_transport import agy_native_transport
+
+            await agy_native_transport.start()
+            log.info("AGY Go 原生传输已启动")
+    except Exception as e:
+        log.error(f"AGY 原生传输启动失败: {type(e).__name__}")
+        raise
+
     # OAuth回调服务器将在需要时按需启动
 
     # 启动保活服务（未配置URL时自动跳过，零开销）
@@ -212,6 +226,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"关闭凭证管理器时出错: {e}")
 
+    try:
+        from src.agy_native_transport import agy_native_transport
+
+        await agy_native_transport.stop()
+    except Exception as e:
+        log.error(f"关闭 AGY 原生传输时出错: {type(e).__name__}")
+
     # 关闭复用的 Shadowsocks SOCKS5 监听器
     try:
         from src.shadowsocks import close_shared_bridges
@@ -240,6 +261,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(RequestContentMiddleware)
 
 # 挂载路由器
 # GeminiCLI 路由已下线：/v1/models、/v1beta/models 等 OpenAI/Gemini 格式

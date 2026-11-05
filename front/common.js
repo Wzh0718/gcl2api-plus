@@ -744,6 +744,7 @@ function renderProxyGroups() {
                 <span><strong>${group.enabled_node_count || 0}</strong> 可用节点</span>
                 <span><strong>${group.assigned_account_count || 0}</strong> 绑定账号</span>
                 <span><strong>${escapeHtml(group.strategy || 'round_robin')}</strong> 策略</span>
+                ${group.exclusive_assignment ? '<span><strong>独占</strong> 一账号一 IP</span>' : ''}
             </div>
             <div class="proxy-node-preview">${nodes || '<span class="proxy-node-chip muted">等待导入节点</span>'}</div>
             <div class="proxy-card-actions">
@@ -758,13 +759,16 @@ async function createProxyGroup() {
     const name = document.getElementById('proxyGroupName')?.value.trim();
     const description = document.getElementById('proxyGroupDescription')?.value.trim() || '';
     const strategy = document.getElementById('proxyGroupStrategy')?.value || 'round_robin';
+    const exclusiveAssignment = Boolean(document.getElementById('proxyGroupExclusive')?.checked);
     if (!name) {
         showStatus('请填写代理组名称', 'error');
         return;
     }
     try {
         const response = await fetch('./proxy-groups', {
-            method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ name, description, strategy })
+            method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({
+                name, description, strategy, exclusive_assignment: exclusiveAssignment
+            })
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '创建代理组失败');
@@ -3032,7 +3036,7 @@ function _cmRenderKeyGroups(groups) {
         for (const account of visible) {
             const accountTokensTip = `输入 ${_cmFormatTokens(account.input_tokens)} / 输出 ${_cmFormatTokens(account.output_tokens)} / 缓存 ${_cmFormatTokens(account.cache_tokens)} / 思考 ${_cmFormatTokens(account.thought_tokens)}`;
             rowsHtml.push(`<tr class="cm-child-row">
-                <td class="cm-key-cell cm-child-cell" title="账号: ${_cmEscape(account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.credential_name || '-')}${_cmWarmupBadge(account)}</td>
+                <td class="cm-key-cell cm-child-cell" title="账号: ${_cmMask(account.user_email || account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.user_email || account.credential_name || '-')}${_cmWarmupBadge(account)}</td>
                 <td>${_cmKeyModelHtml(account)}</td>
                 <td>${_cmTaskLabel(account.task_type)} / ${_cmEscape(account.channel || 'antigravity')}</td>
                 <td>${_cmStatusCodeChip(account.last_status_code)}</td>
@@ -3072,12 +3076,12 @@ function _cmWarmupBadge(row) {
 function _cmRenderGrouped(rows, view) {
     const firstHead = view === 'account' ? '账号' : 'API KEY';
     const body = rows.map(row => {
-        const name = row.group_key;
-        const title = view === 'account' ? '凭证文件名' : 'API Key ID';
+        const name = view === 'account' ? (row.user_email || row.group_key) : row.group_key;
+        const title = view === 'account' ? '账号' : 'API Key ID';
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         return `<tr>
-            <td class="cm-key-cell" title="${title}: ${_cmEscape(name)}">${_cmMask(name)}${_cmWarmupBadge(row)}</td>
+            <td class="cm-key-cell" title="${title}: ${_cmMask(name)}">${_cmMask(name)}${_cmWarmupBadge(row)}</td>
             <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.last_status_code)}</td>
@@ -3100,8 +3104,84 @@ function _cmRenderGrouped(rows, view) {
     </table></div>`;
 }
 
+function _cmRequestFeatureCell(row, index) {
+    const features = row.request_features || {};
+    const feature = features.client || features.upstream;
+    if (!feature) return '<span>未采集（历史记录）</span>';
+    const digest = _cmEscape(feature.sha256 || '');
+    const parts = ['system', 'messages', 'tools'].map(part => {
+        const hash = _cmEscape(feature.parts?.[part]?.sha256 || '');
+        return hash ? `<code title="${part} SHA-256: ${hash}">${part[0].toUpperCase()}: ${hash.slice(0, 8)}</code>` : '';
+    }).filter(Boolean).join(' · ');
+    return `<div title="SHA-256: ${digest}"><code>${digest.slice(0, 12)}</code></div>
+        <div>${parts}</div>
+        <div>${feature.message_count || 0} 条消息 · ${feature.tool_count || 0} 个工具</div>
+        <button type="button" onclick="showCallMonitorContent(${index})">查看 system / messages / tools</button>`;
+}
+
+async function showCallMonitorContent(index) {
+    if (callMonitorState.mask) {
+        showStatus('请先关闭脱敏，再查看请求原文', 'info');
+        return;
+    }
+    const record = callMonitorState.lastData?.records?.[index];
+    if (!record) return;
+    try {
+        const response = await fetch(`./call-monitor/content?request_id=${encodeURIComponent(record.request_id)}`, {
+            headers: getAuthHeaders(), cache: 'no-store'
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '加载失败');
+        if (callMonitorState.mask) return;
+        document.getElementById('cmRequestContentDialog')?.remove();
+        const dialog = document.createElement('dialog');
+        dialog.id = 'cmRequestContentDialog';
+        dialog.style.cssText = 'width:min(1000px,92vw);max-height:85vh;overflow:auto;border:1px solid #cbd5e1;border-radius:12px;padding:24px;';
+        const heading = document.createElement('h3');
+        heading.id = 'cmRequestContentTitle';
+        dialog.setAttribute('aria-labelledby', heading.id);
+        heading.textContent = `请求详情 · ${record.request_id}`;
+        dialog.append(heading);
+        const close = document.createElement('button');
+        close.textContent = '关闭';
+        close.onclick = () => dialog.close();
+        dialog.append(close);
+        const stages = data.request_details || {};
+        for (const [stage, label] of [['client', '客户端原始请求'], ['upstream', '实际发送至上游']]) {
+            const title = document.createElement('h4');
+            title.textContent = label;
+            dialog.append(title);
+            const snapshot = stages[stage];
+            if (!snapshot) {
+                const empty = document.createElement('p');
+                empty.textContent = '未采集该阶段内容';
+                dialog.append(empty);
+                continue;
+            }
+            for (const part of ['system', 'messages', 'tools', 'parameters']) {
+                const section = document.createElement('details');
+                section.open = part === 'system';
+                const summary = document.createElement('summary');
+                const feature = data.request_features?.[stage]?.parts?.[part];
+                summary.textContent = `${part}${feature ? ` · ${feature.bytes} bytes · SHA-256 ${feature.sha256}` : ''}`;
+                const pre = document.createElement('pre');
+                pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;padding:12px;max-height:45vh;overflow:auto;';
+                pre.textContent = JSON.stringify(snapshot[part], null, 2);
+                section.append(summary, pre);
+                dialog.append(section);
+            }
+        }
+        // Keep the dialog outside the polling table so auto-refresh does not close it.
+        document.body.append(dialog);
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        dialog.showModal();
+    } catch (error) {
+        showStatus(`请求详情加载失败: ${error.message}`, 'error');
+    }
+}
+
 function _cmRenderRealtime(records) {
-    const body = records.map(row => {
+    const body = records.map((row, index) => {
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         const statusCell = row.success
@@ -3117,13 +3197,14 @@ function _cmRenderRealtime(records) {
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${_cmEscape(row.credential_name)}">${_cmMask(row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${_cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td>${_cmRequestFeatureCell(row, index)}</td>
         </tr>`;
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>API KEY</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>
+            <th>耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
@@ -3163,6 +3244,7 @@ function _cmPaginationBar(total, totalPages, infoText) {
 }
 
 function renderCallMonitor() {
+    if (callMonitorState.mask) document.getElementById('cmRequestContentDialog')?.remove();
     const content = document.getElementById('callMonitorContent');
     const data = callMonitorState.lastData;
     if (!content || !data) return;

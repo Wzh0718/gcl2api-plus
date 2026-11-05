@@ -1,0 +1,20 @@
+{
+  "source": "official language_server 2.28.2, isolated dummy capture",
+  "binary_sha256": "8015e953e72e7070ec739f5facc38f8ec3919b3800eb8d46dd09e2d61aa22cac",
+  "oauth": {
+    "http_version": "HTTP/2.0",
+    "user_agent": "Go-http-client/2.0",
+    "alpn": ["h2", "http/1.1"],
+    "ja3_md5": "03117a8ed39ef02427ebbc39f121275c",
+    "cipher_suites": [49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 4865, 4866, 4867],
+    "extensions": [0, 11, 65281, 23, 18, 5, 10, 13, 50, 16, 43, 51]
+  },
+  "cloudcode": {
+    "http_version": "HTTP/1.1",
+    "alpn": [],
+    "ja3_md5": "9b7dcdf3f997f1fb7b4409c94cb7ef36",
+    "cipher_suites": [49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 4865, 4866, 4867],
+    "extensions": [0, 11, 65281, 23, 18, 5, 10, 13, 50, 43, 51],
+    "header_order": ["Host", "User-Agent", "Content-Length", "Authorization", "Content-Type", "Accept-Encoding"]
+  }
+}

@@ -16,8 +16,8 @@ async def test_warmup_fires_official_environment_calls():
 
     calls = []
 
-    async def fake_post(url, json=None, headers=None, timeout=None, proxy_url=None):
-        calls.append({"url": url, "json": json, "proxy_url": proxy_url})
+    async def fake_post(url, json=None, headers=None, timeout=None, proxy_url=None, transport=None):
+        calls.append({"url": url, "json": json, "proxy_url": proxy_url, "transport": transport})
 
         class _Resp:
             status_code = 200

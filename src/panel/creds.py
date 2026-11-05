@@ -1805,6 +1805,7 @@ async def test_credential(
             headers=headers,
             timeout=30.0,
             proxy_url=credentials.proxy_url if mode == "antigravity" else ...,
+            transport="antigravity" if mode == "antigravity" else None,
         )
 
         # 返回实际的状态码和详细信息
@@ -1839,6 +1840,7 @@ async def test_credential(
                             headers=headers,
                             timeout=30.0,
                             proxy_url=credentials.proxy_url if mode == "antigravity" else ...,
+            transport="antigravity" if mode == "antigravity" else None,
                         )
 
                         preview_status = preview_response.status_code

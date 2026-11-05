@@ -67,35 +67,27 @@ async def test_refresh_single_client_success(proxy_urls, monkeypatch):
     assert token_data["access_token"] == "at-1"
     assert client_key == oauth_clients.BUILTIN_CLIENT_KEY
     assert post_mock.await_count == 1
-    # token 请求带 Antigravity UA header
-    headers = post_mock.await_args.kwargs["headers"]
-    assert "Antigravity/" in headers["User-Agent"]
+    call = post_mock.await_args.kwargs
+    assert call["transport"] == "antigravity"
+    assert "User-Agent" not in call["headers"]
 
 
-async def test_refresh_fallback_on_invalid_client(proxy_urls, monkeypatch):
+async def test_refresh_invalid_client_does_not_rotate(proxy_urls, monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_OAUTH_CLIENTS", "secondary|sid|ssec")
     reset_oauth_clients()
 
     post_mock = AsyncMock(
-        side_effect=[
-            FakeResponse(401, text='{"error": "invalid_client"}'),
-            FakeResponse(200, {"access_token": "at-2", "expires_in": 3600}),
-        ]
+        return_value=FakeResponse(401, text='{"error": "invalid_client"}')
     )
     monkeypatch.setattr("src.google_oauth_api.post_async", post_mock)
 
-    token_data, client_key = await refresh_access_token_with_clients(
-        "rt-1", preferred_client_key="secondary"
-    )
+    with pytest.raises(TokenError):
+        await refresh_access_token_with_clients(
+            "rt-1", preferred_client_key="secondary"
+        )
 
-    assert token_data["access_token"] == "at-2"
-    assert client_key == oauth_clients.BUILTIN_CLIENT_KEY
-    assert post_mock.await_count == 2
-    # 第一次用 preferred client，降级后用 active（内置）client
-    first_call_data = post_mock.await_args_list[0].kwargs["data"]
-    second_call_data = post_mock.await_args_list[1].kwargs["data"]
-    assert first_call_data["client_id"] == "sid"
-    assert second_call_data["client_id"] != "sid"
+    assert post_mock.await_count == 1
+    assert post_mock.await_args.kwargs["data"]["client_id"] == "sid"
 
 
 async def test_refresh_network_error_no_fallback(proxy_urls, monkeypatch):

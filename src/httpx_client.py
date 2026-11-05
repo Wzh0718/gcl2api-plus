@@ -10,8 +10,13 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
 
-from config import get_proxy_config, get_stream_idle_timeout
+from config import (
+    get_antigravity_native_transport_enabled_sync,
+    get_proxy_config,
+    get_stream_idle_timeout,
+)
 from log import log
+from src.agy_native_transport import agy_native_transport, antigravity_profile_for_url
 from src.shadowsocks import shadowsocks_proxy_context
 
 
@@ -91,7 +96,12 @@ async def get_async(
     url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 30.0, **kwargs
 ) -> httpx.Response:
     """通用异步GET请求"""
+    transport = kwargs.pop("transport", None)
     proxy_url = kwargs.pop("proxy_url", ...)
+    if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
+        return await agy_native_transport.request(
+            "GET", url, headers=headers, proxy_url=proxy_url, timeout=timeout
+        )
     async with http_client.get_client(timeout=timeout, proxy_url=proxy_url, **kwargs) as client:
         return await client.get(url, headers=headers)
 
@@ -105,7 +115,18 @@ async def post_async(
     **kwargs,
 ) -> httpx.Response:
     """通用异步POST请求"""
+    transport = kwargs.pop("transport", None)
     proxy_url = kwargs.pop("proxy_url", ...)
+    if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
+        return await agy_native_transport.request(
+            "POST",
+            url,
+            headers=headers,
+            data=data,
+            json=json,
+            proxy_url=proxy_url,
+            timeout=timeout,
+        )
     async with http_client.get_client(timeout=timeout, proxy_url=proxy_url, **kwargs) as client:
         return await client.post(url, data=data, json=json, headers=headers)
 
@@ -150,7 +171,28 @@ async def stream_post_async(
         )
         return
 
+    transport = kwargs.pop("transport", None)
     proxy_url = kwargs.pop("proxy_url", ...)
+    if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
+        async with agy_native_transport.stream(
+            "POST", url, headers=headers, json=body, proxy_url=proxy_url
+        ) as r:
+            if r.status_code != 200:
+                from fastapi import Response
+                yield Response(
+                    await r.aread(),
+                    r.status_code,
+                    get_decoded_response_headers(r.headers),
+                )
+                return
+            chunk_iter = r.aiter_bytes() if native else r.aiter_lines()
+            idle_timeout = await get_stream_idle_timeout()
+            if idle_timeout > 0:
+                chunk_iter = _idle_watch(chunk_iter, idle_timeout, url)
+            async for chunk in chunk_iter:
+                yield chunk
+        return
+
     async with http_client.get_streaming_client(proxy_url=proxy_url, **kwargs) as client:
         async with client.stream("POST", url, json=body, headers=headers) as r:
             # 错误直接返回

@@ -1,4 +1,13 @@
 # Multi-stage build for gcli2api
+FROM golang:1.26 AS agytransport-builder
+ARG TARGETOS
+ARG TARGETARCH
+ENV CGO_ENABLED=0
+WORKDIR /src
+COPY native/agytransport/go.mod ./
+COPY native/agytransport/*.go ./
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/agytransport .
+
 FROM python:3.13-slim as base
 
 # OCI 元数据：GitHub Container Registry 的包页面用 description 展示包描述。
@@ -47,6 +56,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
+COPY --from=agytransport-builder /out/agytransport /app/native/agytransport/agytransport
 
 # Expose port
 EXPOSE 7861

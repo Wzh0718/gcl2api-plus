@@ -91,8 +91,12 @@ class CallMonitor:
         total_cost: str = "0.00000000",
         currency: str = "CNY",
         created_at: Optional[float] = None,
+        upstream_request: Optional[dict] = None,
     ) -> None:
         """记录一次调用。任何持久化失败都不影响请求主流程。"""
+        from src.request_features import build_request_features
+
+        features, details = build_request_features(upstream_request)
         row: Dict[str, Any] = {
             "request_id": request_id,
             "created_at": float(created_at if created_at is not None else time.time()),
@@ -113,13 +117,14 @@ class CallMonitor:
             "total_tokens": max(int(total_tokens), 0),
             "total_cost": total_cost,
             "currency": currency or "CNY",
+            "request_features": features,
         }
         async with self._lock:
             self._buffer.append(row)
         try:
             insert = self._backend_method("insert_call_record")
             if insert is not None:
-                await insert(**row)
+                await insert(**row, request_details=details)
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
         await self._maybe_cleanup()

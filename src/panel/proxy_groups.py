@@ -28,6 +28,7 @@ class ProxyGroupCreateRequest(BaseModel):
     description: str = Field(default="", max_length=500)
     strategy: Literal["round_robin", "random", "failover"] = "round_robin"
     enabled: bool = True
+    exclusive_assignment: bool = False
 
 
 class ProxyGroupUpdateRequest(BaseModel):
@@ -35,6 +36,7 @@ class ProxyGroupUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     strategy: Literal["round_robin", "random", "failover"] | None = None
     enabled: bool | None = None
+    exclusive_assignment: bool | None = None
 
 
 class ProxyImportRequest(BaseModel):
@@ -175,6 +177,7 @@ async def create_proxy_group(
                 description=payload.description,
                 strategy=payload.strategy,
                 enabled=payload.enabled,
+                exclusive_assignment=payload.exclusive_assignment,
             )
         )
     except ValueError as exc:

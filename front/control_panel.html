@@ -3003,6 +3003,7 @@
                                     <label>组名称<input id="proxyGroupName" class="config-input" placeholder="例如：香港主线路"></label>
                                     <label>说明<input id="proxyGroupDescription" class="config-input" placeholder="可选，用于区分用途"></label>
                                     <label>切换策略<select id="proxyGroupStrategy" class="config-input"><option value="round_robin">轮询</option><option value="failover">故障优先</option><option value="random">随机</option></select></label>
+                                    <label class="proxy-check"><input id="proxyGroupExclusive" type="checkbox"> 一账号一节点，强制独立出口与健康检查</label>
                                     <button type="button" class="proxy-primary-action" onclick="createProxyGroup()">创建代理组</button>
                                 </div>
                                 <div class="proxy-editor-card">

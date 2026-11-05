@@ -445,7 +445,6 @@ async def complete_auth_flow(
                 # 如果需要自动检测项目ID且没有提供项目ID
                 if flow_data.get("auto_project_detection", False) and not project_id:
                     log.info("尝试通过API获取用户项目列表...")
-                    log.info(f"使用的token: {credentials.access_token[:20]}...")
                     log.info(f"Token过期时间: {credentials.expires_at}")
                     user_projects = await get_user_projects(credentials)
 
@@ -650,9 +649,7 @@ async def asyncio_complete_auth_flow(
             try:
                 log.info("调用flow.exchange_code...")
                 credentials = await flow.exchange_code(auth_code)
-                log.info(
-                    f"成功获取凭证，token前缀: {credentials.access_token[:20] if credentials.access_token else 'None'}..."
-                )
+                log.info("成功获取凭证")
 
                 log.info(
                     f"检查是否需要项目检测: auto_project_detection={flow_data.get('auto_project_detection')}, project_id={project_id}"
@@ -919,14 +916,14 @@ async def add_antigravity_account_by_refresh_token(
     """
     通过 refresh_token 直接导入 Antigravity 账号（RT 登录）
 
-    流程对齐 Antigravity-Manager 的 account_service.add_account：
-    1. 多 client 降级刷新换 access_token
+    流程：
+    1. 固定 OAuth client 刷新换 access_token
     2. userinfo 获取 email
     3. loadCodeAssist/onboardUser 解析 project_id
     4. 保存凭证（含 oauth_client_key）
     """
     try:
-        # 步骤1：多 client 刷新换 access_token
+        # 步骤1：固定 client 刷新换 access_token
         token_data, client_key = await refresh_access_token_with_clients(
             refresh_token, proxy_url=proxy_url
         )
@@ -951,7 +948,7 @@ async def add_antigravity_account_by_refresh_token(
         )
 
         # 步骤2：获取用户邮箱
-        user_info = await get_user_info(credentials)
+        user_info = await get_user_info(credentials, antigravity=True)
         email = user_info.get("email") if user_info else None
         if not email:
             return {

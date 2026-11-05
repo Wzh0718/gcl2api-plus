@@ -207,6 +207,10 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.get_antigravity_account_health(filename)
 
+    async def is_antigravity_egress_ip_in_use(self, filename: str, egress_ip: str) -> bool:
+        self._ensure_initialized()
+        return await self._backend.is_antigravity_egress_ip_in_use(filename, egress_ip)
+
     async def update_antigravity_account_health(
         self, filename: str, **updates: Any
     ) -> Dict[str, Any]:

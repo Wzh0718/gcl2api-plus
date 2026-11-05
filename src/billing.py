@@ -504,7 +504,8 @@ class BillingRecorder:
                     status_code: Optional[int] = None,
                     gateway_seconds: Optional[float] = None,
                     upstream_model: Optional[str] = None,
-                    request_model: Optional[str] = None) -> bool:
+                    request_model: Optional[str] = None,
+                    upstream_request: Optional[dict] = None) -> bool:
         if not request_id:
             return False
         metrics = usage or calculate_usage_metrics(usage_metadata)
@@ -556,6 +557,7 @@ class BillingRecorder:
                     channel=channel,
                     model_name=model,
                     request_model=request_model or "",
+                    upstream_request=upstream_request,
                     upstream_model=upstream_model or "",
                     task_type=task_type or ("image" if "image" in (model or "").lower() else "chat"),
                     success=success,

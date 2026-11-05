@@ -105,12 +105,13 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 - 默认数据库为 `${CREDENTIALS_DIR:-./creds}/credentials.db`。
 - Redis 只作为计费汇总镜像，不能阻塞 SQLite 主记录。看板默认直接查询 SQLite 预聚合账本；只有 `BILLING_DASHBOARD_SOURCE=redis` 时才优先读取 Redis，镜像不可用或未就绪时自动回退 SQLite，看板 GET 请求不会同步重建镜像。
 
-### Antigravity 账号 Proxy
+### Antigravity 账号 Proxy 与独立出口
 
-- `proxy_mode` 支持 `inherit`、`custom` 和 `direct`。
-- `src/api/antigravity.py:get_effective_proxy_url` 是有效代理入口。
-- 账号重试切换会同时切换凭证、Token、Project、Proxy 和请求体。
-- OAuth、项目发现、额度检查和 Antigravity 请求使用同一账号网络上下文。
+- `proxy_mode` 支持 `inherit`、`custom`、`direct` 和 `group`；代理组账号固定保存 `bound_proxy_node_id`，不会逐请求轮换。
+- 代理组启用 `exclusive_assignment` 后，节点只能绑定一个账号，节点不足时失败关闭；实际 `egress_ip` 与其他账号重复、IP 漂移、代理失败、地区不合格或检查过期都会阻止请求。
+- 独占组必须配置可信的 `ANTIGRAVITY_EGRESS_IP_CHECK_URL`，且始终要求 TTL 内 `healthy + eligible`，不沿用普通账号的检测失败放行逻辑。
+- PX6 可手动导入 **IPv4 Individual（version=4）** 的 `host:port:user:pass`，一账号至少准备一个节点并开启续费；不要选 IPv4 Shared。PX6 个人代理不等于住宅或低风控 IP，系统仍需实测出口和资格。
+- `src/api/antigravity.py:get_effective_proxy_url` 是有效代理入口。账号重试切换会同时切换凭证、Token、Project、Proxy 和请求体；OAuth、项目发现、额度检查和生成请求使用同一账号网络上下文。
 
 ### Token 计费
 
@@ -176,8 +177,12 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_CLI_AUTH_METHOD` ★ | User-Agent auth_method 字段 | `consumer` |
 | `ANTIGRAVITY_HUB_VERSION` ★ | 正式请求使用的 Antigravity hub 版本 | `2.28.2` |
 | `ANTIGRAVITY_HUB_CL` ★ | 与 hub 版本配套的 changelist，由官方二进制 `--stamp` 核验 | `1009437749` |
-| `ANTIGRAVITY_OAUTH_UA_VERSION` ★ | OAuth token 端点 UA 版本 | 跟随 `ANTIGRAVITY_HUB_VERSION` |
-| `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | OAuth token 端点完整 User-Agent 覆盖 | `vscode/1.X.X (Antigravity/{版本})` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_ENABLED` ★ | AGY/OAuth 使用 Go 原生传输；OAuth 为 HTTP/2、CloudCode 为无 ALPN 的 HTTP/1.1，helper 失败不静默降级 | `false` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_BINARY` ★ | Go helper 路径 | `native/agytransport/agytransport` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_SOCKET` ★ | helper 的 0600 Unix socket | `${CREDENTIALS_DIR}/agytransport.sock` |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_ALLOWED_HOSTS` ★ | 默认 Google 主机之外额外允许的逗号分隔主机 | 空 |
+| `ANTIGRAVITY_NATIVE_TRANSPORT_CA_FILE` ★ | 自定义 CA bundle；仅私有证书或本地 TLS 捕获需要 | 空 |
+| `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | 兼容探测用 UA 覆盖；正式原生刷新省略自定义 UA，使用官方 `Go-http-client/2.0` | `Go-http-client/2.0` |
 | `ANTIGRAVITY_STREAM2NOSTREAM` ★ | 非流式请求改走流式 API 并收集为完整响应 | `false` |
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |

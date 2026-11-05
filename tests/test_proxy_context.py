@@ -95,6 +95,8 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
     # 新增监控字段：状态码与网关耗时（动态值，单独校验）
     assert record.pop("status_code") == 200
     assert record.pop("gateway_seconds") >= 0
+    # Snapshot follows the final account after retry, matching the payload actually sent.
+    assert record.pop("upstream_request") == calls[1]["json"]
     assert record == {
         "request_id": "request-1", "credential_name": "two.json", "model": "gemini-test",
         "usage_metadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}, "success": True,

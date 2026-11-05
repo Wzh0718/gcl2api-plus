@@ -96,6 +96,9 @@ class SQLiteManager(AntigravityWarmupStore):
             ("created_at", "REAL DEFAULT (unixepoch())"),
             ("updated_at", "REAL DEFAULT (unixepoch())")
         ],
+        "proxy_groups": [
+            ("exclusive_assignment", "INTEGER NOT NULL DEFAULT 0")
+        ],
         "credential_model_stats": [
             ("upstream_total_seconds", "REAL NOT NULL DEFAULT 0"),
             ("upstream_timed_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -171,6 +174,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     # 逐请求记录补充客户端原始请求模型列，用于
                     # 「原始请求 → 网关执行（降级后）→ 上游物理模型」三段对比。
                     await self._migrate_call_records_request_model(db)
+                    await self._migrate_call_records_content(db)
 
                     # 修复可能包含路径的凭证文件名
                     await self._repair_credential_filenames(db)
@@ -384,6 +388,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 description TEXT NOT NULL DEFAULT '',
                 strategy TEXT NOT NULL DEFAULT 'round_robin',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                exclusive_assignment INTEGER NOT NULL DEFAULT 0,
                 cursor INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL DEFAULT (unixepoch()),
                 updated_at REAL NOT NULL DEFAULT (unixepoch())
@@ -668,6 +673,14 @@ class SQLiteManager(AntigravityWarmupStore):
                 "ALTER TABLE call_records ADD COLUMN request_model TEXT NOT NULL DEFAULT ''"
             )
             log.info("Added request_model column to call_records")
+
+    async def _migrate_call_records_content(self, db: aiosqlite.Connection) -> None:
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_call_records_request_id ON call_records(request_id)")
+        async with db.execute("PRAGMA table_info(call_records)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        for name in ("request_features", "request_details"):
+            if name not in columns:
+                await db.execute(f"ALTER TABLE call_records ADD COLUMN {name} TEXT NOT NULL DEFAULT '{{}}'")
 
     async def _migrate_billing_daily_api_keys(self, db: aiosqlite.Connection) -> None:
         """Upgrade the legacy billing primary key without losing aggregates."""
@@ -1301,9 +1314,11 @@ class SQLiteManager(AntigravityWarmupStore):
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
-                          a.bound_proxy_node_id, n.name, n.proxy_url
+                          a.bound_proxy_node_id, n.name, n.proxy_url,
+                          COALESCE(g.exclusive_assignment, 0)
                    FROM antigravity_credentials a
                    LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
+                   LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
                    WHERE a.filename = ?""",
                 (filename,),
             ) as cursor:
@@ -1322,6 +1337,7 @@ class SQLiteManager(AntigravityWarmupStore):
             "bound_proxy_node_id": row[3],
             "bound_proxy_node_name": row[4],
             "bound_proxy_url": row[5],
+            "exclusive_assignment": bool(row[6]),
         }
 
     async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
@@ -1364,7 +1380,11 @@ class SQLiteManager(AntigravityWarmupStore):
 
                 if selected_node is None:
                     selected_node = await self._select_proxy_group_node(
-                        db, group_id, advance=True, commit=False
+                        db,
+                        group_id,
+                        advance=True,
+                        commit=False,
+                        credential_name=filename,
                     )
                     await db.execute(
                         """UPDATE antigravity_credentials
@@ -1416,6 +1436,19 @@ class SQLiteManager(AntigravityWarmupStore):
             "last_403_at": None,
             "updated_at": None,
         }
+
+    async def is_antigravity_egress_ip_in_use(
+        self, filename: str, egress_ip: str
+    ) -> bool:
+        self._ensure_initialized()
+        filename = os.path.basename(filename)
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                """SELECT 1 FROM antigravity_account_health
+                   WHERE egress_ip = ? AND credential_name <> ? LIMIT 1""",
+                (egress_ip, filename),
+            ) as cursor:
+                return await cursor.fetchone() is not None
 
     async def update_antigravity_account_health(
         self, filename: str, **updates: Any
@@ -1533,6 +1566,7 @@ class SQLiteManager(AntigravityWarmupStore):
         description: str = "",
         strategy: str = "round_robin",
         enabled: bool = True,
+        exclusive_assignment: bool = False,
     ) -> Dict[str, Any]:
         """Create a proxy group and return its public shape."""
         self._ensure_initialized()
@@ -1544,9 +1578,16 @@ class SQLiteManager(AntigravityWarmupStore):
         async with aiosqlite.connect(self._db_path) as db:
             try:
                 cursor = await db.execute(
-                    """INSERT INTO proxy_groups(name, description, strategy, enabled)
-                       VALUES (?, ?, ?, ?)""",
-                    (name, str(description or "").strip(), strategy, int(bool(enabled))),
+                    """INSERT INTO proxy_groups(
+                           name, description, strategy, enabled, exclusive_assignment
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        name,
+                        str(description or "").strip(),
+                        strategy,
+                        int(bool(enabled)),
+                        int(bool(exclusive_assignment)),
+                    ),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc).upper():
@@ -1560,8 +1601,8 @@ class SQLiteManager(AntigravityWarmupStore):
         self._ensure_initialized()
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
-                """SELECT id, name, description, strategy, enabled, cursor,
-                          created_at, updated_at
+                """SELECT id, name, description, strategy, enabled,
+                          exclusive_assignment, cursor, created_at, updated_at
                    FROM proxy_groups WHERE id = ?""",
                 (int(group_id),),
             ) as cursor:
@@ -1588,9 +1629,10 @@ class SQLiteManager(AntigravityWarmupStore):
             "description": row[2],
             "strategy": row[3],
             "enabled": bool(row[4]),
-            "cursor": row[5],
-            "created_at": row[6],
-            "updated_at": row[7],
+            "exclusive_assignment": bool(row[5]),
+            "cursor": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
             "assigned_account_count": assigned_count,
             "node_count": node_count,
             "enabled_node_count": enabled_node_count,
@@ -1615,7 +1657,7 @@ class SQLiteManager(AntigravityWarmupStore):
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
                 """SELECT g.id, g.name, g.description, g.strategy, g.enabled,
-                          g.cursor, g.created_at, g.updated_at,
+                          g.exclusive_assignment, g.cursor, g.created_at, g.updated_at,
                           COUNT(n.id) AS node_count,
                           COALESCE(SUM(CASE WHEN n.enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled_node_count,
                           (SELECT COUNT(*) FROM antigravity_credentials a
@@ -1643,12 +1685,13 @@ class SQLiteManager(AntigravityWarmupStore):
                         "description": row[2],
                         "strategy": row[3],
                         "enabled": bool(row[4]),
-                        "cursor": row[5],
-                        "created_at": row[6],
-                        "updated_at": row[7],
-                        "node_count": row[8],
-                        "enabled_node_count": row[9],
-                        "assigned_account_count": row[10],
+                        "exclusive_assignment": bool(row[5]),
+                        "cursor": row[6],
+                        "created_at": row[7],
+                        "updated_at": row[8],
+                        "node_count": row[9],
+                        "enabled_node_count": row[10],
+                        "assigned_account_count": row[11],
                         "nodes": [
                             {
                                 "id": node[0],
@@ -1669,7 +1712,7 @@ class SQLiteManager(AntigravityWarmupStore):
 
     async def update_proxy_group(self, group_id: int, **updates: Any) -> Dict[str, Any]:
         self._ensure_initialized()
-        allowed = {"name", "description", "strategy", "enabled"}
+        allowed = {"name", "description", "strategy", "enabled", "exclusive_assignment"}
         values = {key: value for key, value in updates.items() if key in allowed and value is not None}
         if not values:
             return await self.get_proxy_group(group_id)
@@ -1681,10 +1724,21 @@ class SQLiteManager(AntigravityWarmupStore):
             raise ValueError("代理组策略必须是 round_robin、random 或 failover")
         if "enabled" in values:
             values["enabled"] = int(bool(values["enabled"]))
+        if "exclusive_assignment" in values:
+            values["exclusive_assignment"] = int(bool(values["exclusive_assignment"]))
         values["updated_at"] = time.time()
         assignments = ", ".join(f"{key} = ?" for key in values)
         params = list(values.values()) + [int(group_id)]
         async with aiosqlite.connect(self._db_path) as db:
+            if values.get("exclusive_assignment"):
+                async with db.execute(
+                    """SELECT bound_proxy_node_id FROM antigravity_credentials
+                       WHERE proxy_group_id = ? AND bound_proxy_node_id IS NOT NULL
+                       GROUP BY bound_proxy_node_id HAVING COUNT(*) > 1 LIMIT 1""",
+                    (int(group_id),),
+                ) as cursor:
+                    if await cursor.fetchone():
+                        raise ValueError("代理组已有共享节点绑定，请先解除重复绑定再启用独占")
             try:
                 result = await db.execute(
                     f"UPDATE proxy_groups SET {assignments} WHERE id = ?", params
@@ -1781,34 +1835,45 @@ class SQLiteManager(AntigravityWarmupStore):
 
     async def _select_proxy_group_node(
         self, db: aiosqlite.Connection, group_id: int, advance: bool = True,
-        commit: bool = True,
+        commit: bool = True, credential_name: str = "",
     ) -> Optional[Dict[str, Any]]:
         current_time = time.time()
         async with db.execute(
-            "SELECT strategy, enabled, cursor FROM proxy_groups WHERE id = ?",
+            "SELECT strategy, enabled, exclusive_assignment, cursor FROM proxy_groups WHERE id = ?",
             (int(group_id),),
         ) as cursor:
             group = await cursor.fetchone()
         if not group or not group[1]:
             return None
-        strategy, group_cursor = group[0], group[2]
+        strategy, exclusive, group_cursor = group[0], bool(group[2]), group[3]
+        occupied_sql = ""
+        params: List[Any] = [int(group_id), current_time]
+        if exclusive:
+            occupied_sql = """AND NOT EXISTS (
+                SELECT 1 FROM antigravity_credentials a
+                WHERE a.bound_proxy_node_id = proxy_group_nodes.id
+                  AND a.filename <> ?
+            )"""
+            params.append(credential_name)
         async with db.execute(
-            """SELECT id, name, proxy_url FROM proxy_group_nodes
+            f"""SELECT id, name, proxy_url FROM proxy_group_nodes
                WHERE group_id = ? AND enabled = 1
                  AND (cooldown_until IS NULL OR cooldown_until <= ?)
+                 {occupied_sql}
                ORDER BY id""",
-            (int(group_id), current_time),
+            params,
         ) as cursor:
             nodes = await cursor.fetchall()
         if not nodes:
             return None
         if strategy == "random":
             async with db.execute(
-                """SELECT id, name, proxy_url FROM proxy_group_nodes
+                f"""SELECT id, name, proxy_url FROM proxy_group_nodes
                    WHERE group_id = ? AND enabled = 1
                      AND (cooldown_until IS NULL OR cooldown_until <= ?)
+                     {occupied_sql}
                    ORDER BY RANDOM() LIMIT 1""",
-                (int(group_id), current_time),
+                params,
             ) as cursor:
                 selected = await cursor.fetchone()
         elif strategy == "failover":
@@ -2718,13 +2783,14 @@ class SQLiteManager(AntigravityWarmupStore):
         "request_id", "created_at", "api_key_id", "credential_name", "channel",
         "model_name", "request_model", "upstream_model", "task_type", "success", "status_code", "gateway_seconds",
         "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
-        "total_tokens", "total_cost", "currency",
+        "total_tokens", "total_cost", "currency", "request_features",
     )
 
     @classmethod
     def _call_record_row(cls, row: Tuple[Any, ...]) -> Dict[str, Any]:
         item = dict(zip(cls._CALL_RECORD_COLUMNS, row))
         item["success"] = bool(item["success"])
+        item["request_features"] = json.loads(item.get("request_features") or "{}")
         return item
 
     async def insert_call_record(
@@ -2749,6 +2815,8 @@ class SQLiteManager(AntigravityWarmupStore):
         total_tokens: int = 0,
         total_cost: str = "0.00000000",
         currency: str = "CNY",
+        request_features: Optional[Dict[str, Any]] = None,
+        request_details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """写入一条逐请求调用记录（由调用监控模块调用，计费去重后才触发）。"""
         self._ensure_initialized()
@@ -2758,8 +2826,8 @@ class SQLiteManager(AntigravityWarmupStore):
                         request_id, created_at, api_key_id, credential_name, channel,
                         model_name, request_model, upstream_model, task_type, success, status_code, gateway_seconds,
                         input_tokens, output_tokens, cache_tokens, thought_tokens,
-                        total_tokens, total_cost, currency
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        total_tokens, total_cost, currency, request_features, request_details
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id, float(created_at), api_key_id or "env",
                     os.path.basename(credential_name or ""), channel or "antigravity",
@@ -2768,9 +2836,24 @@ class SQLiteManager(AntigravityWarmupStore):
                     max(int(input_tokens), 0), max(int(output_tokens), 0),
                     max(int(cache_tokens), 0), max(int(thought_tokens), 0),
                     max(int(total_tokens), 0), total_cost, currency or "CNY",
+                    json.dumps(request_features or {}, ensure_ascii=False),
+                    json.dumps(request_details or {}, ensure_ascii=False),
                 ),
             )
             await db.commit()
+
+    async def get_call_record_content(self, request_id: str) -> Optional[Dict[str, Any]]:
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                "SELECT request_features, request_details FROM call_records "
+                "WHERE request_id = ? ORDER BY id DESC LIMIT 1", (request_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {"request_id": request_id, "request_features": json.loads(row[0] or "{}"),
+                "request_details": json.loads(row[1] or "{}")}
 
     @staticmethod
     def _call_record_filters(

@@ -439,23 +439,32 @@ class CredentialManager:
         *,
         force: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Gate one account on a fresh, stable IP and eligible region when enabled."""
+        """Gate account health, with fail-closed semantics for exclusive proxy groups."""
         await self._ensure_initialized()
         from config import (
+            get_antigravity_egress_ip_check_url,
             get_antigravity_network_check_enabled,
             get_antigravity_network_check_ttl_seconds,
         )
         from .antigravity_account_health import account_health_check_is_fresh
         from .antigravity_account_health import account_health_has_negative_evidence
-
-        if not await get_antigravity_network_check_enabled():
-            return credential_data
+        from .antigravity_account_health import account_health_is_fresh_eligible
 
         network = await self._storage_adapter.resolve_credential_network(
             credential_name, mode="antigravity"
         )
+        exclusive = bool(network.get("exclusive_assignment"))
         credential_data = dict(credential_data)
         credential_data.update(network)
+        if not exclusive and not await get_antigravity_network_check_enabled():
+            return credential_data
+        if exclusive and not await get_antigravity_egress_ip_check_url():
+            log.warning(
+                "[ANTIGRAVITY HEALTH] exclusive account has no IP echo URL: "
+                f"credential={credential_name}"
+            )
+            return None
+
         health = await self._storage_adapter.get_antigravity_account_health(
             credential_name
         )
@@ -463,6 +472,15 @@ class CredentialManager:
         if not force and account_health_check_is_fresh(
             health, ttl_seconds=ttl_seconds
         ):
+            if exclusive and not account_health_is_fresh_eligible(
+                health, ttl_seconds=ttl_seconds
+            ):
+                log.warning(
+                    "[ANTIGRAVITY HEALTH] exclusive account failed strict cached gate: "
+                    f"credential={credential_name}, binding={health.get('binding_status')}, "
+                    f"eligibility={health.get('eligibility_status')}"
+                )
+                return None
             if account_health_has_negative_evidence(health):
                 log.warning(
                     "[ANTIGRAVITY HEALTH] cached ineligible account skipped: "
@@ -473,9 +491,6 @@ class CredentialManager:
             if health.get("binding_status") != "healthy" or health.get(
                 "eligibility_status"
             ) != "eligible":
-                # 检测设施故障留下的状态不含账号证据，放行；代理真挂了
-                # 请求会自己失败并走正常重试。geo_blocked 是明确的放行
-                # 状态（见 account_health_has_negative_evidence），只记 info。
                 message = (
                     "[ANTIGRAVITY HEALTH] cached check inconclusive, allowing request: "
                     f"credential={credential_name}, binding={health.get('binding_status')}, "
@@ -494,6 +509,15 @@ class CredentialManager:
             credential_name,
             credential_data,
         )
+        if exclusive and not account_health_is_fresh_eligible(
+            result, ttl_seconds=ttl_seconds
+        ):
+            log.warning(
+                "[ANTIGRAVITY HEALTH] exclusive account failed strict fresh gate: "
+                f"credential={credential_name}, binding={result.get('binding_status')}, "
+                f"eligibility={result.get('eligibility_status')}"
+            )
+            return None
         if account_health_has_negative_evidence(result):
             log.warning(
                 "[ANTIGRAVITY HEALTH] account rejected before request: "
@@ -711,7 +735,9 @@ class CredentialManager:
                 await self._storage_adapter.store_credential(credential_name, updated_data, mode=mode)
 
             # 获取邮箱
-            email = await get_user_email(credentials)
+            email = await get_user_email(
+                credentials, antigravity=(mode == "antigravity")
+            )
 
             if email:
                 # 缓存邮箱地址

@@ -365,6 +365,71 @@ class ProxyGroupStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(old_node["failure_count"], 0)
         self.assertIsNotNone(old_node["cooldown_until"])
 
+    async def test_exclusive_group_binding_is_unique_sticky_and_exhausted(self):
+        group = await self.manager.create_proxy_group(
+            name="PX6 独占出口",
+            strategy="round_robin",
+            exclusive_assignment=True,
+        )
+        self.assertTrue(group["exclusive_assignment"])
+        await self.manager.import_proxy_group_nodes(
+            group["id"],
+            [
+                {"name": "px6-a", "proxy_url": "http://proxy-a.example:8080"},
+                {"name": "px6-b", "proxy_url": "http://proxy-b.example:8080"},
+            ],
+        )
+        for filename in ("one.json", "two.json", "three.json"):
+            await self.manager.store_credential(
+                filename, {"access_token": filename}, mode="antigravity"
+            )
+        await self.manager.batch_update_credential_network(
+            ["one.json", "two.json", "three.json"],
+            proxy_mode="group",
+            proxy_group_id=group["id"],
+            mode="antigravity",
+        )
+
+        first = await self.manager.resolve_credential_network("one.json")
+        second = await self.manager.resolve_credential_network("two.json")
+        exhausted = await self.manager.resolve_credential_network("three.json")
+
+        self.assertNotEqual(first["proxy_node_id"], second["proxy_node_id"])
+        self.assertIsNone(exhausted["proxy_url"])
+        for _ in range(100):
+            repeated = await self.manager.resolve_credential_network("one.json")
+            self.assertEqual(repeated["proxy_node_id"], first["proxy_node_id"])
+
+    async def test_exclusive_group_concurrent_first_binding_never_shares_node(self):
+        group = await self.manager.create_proxy_group(
+            name="单节点独占",
+            exclusive_assignment=True,
+        )
+        await self.manager.import_proxy_group_nodes(
+            group["id"],
+            [{"name": "only", "proxy_url": "http://proxy-a.example:8080"}],
+        )
+        for filename in ("one.json", "two.json"):
+            await self.manager.store_credential(
+                filename, {"access_token": filename}, mode="antigravity"
+            )
+            await self.manager.update_credential_network(
+                filename,
+                proxy_mode="group",
+                proxy_group_id=group["id"],
+                mode="antigravity",
+            )
+
+        first, second = await asyncio.gather(
+            self.manager.resolve_credential_network("one.json"),
+            self.manager.resolve_credential_network("two.json"),
+        )
+
+        self.assertEqual(
+            sorted(bool(item["proxy_url"]) for item in (first, second)),
+            [False, True],
+        )
+
     async def test_account_health_persists_egress_eligibility_and_403_state(self):
         await self.manager.store_credential(
             "health.json",
