@@ -96,6 +96,9 @@ class CallMonitor:
         """记录一次调用。任何持久化失败都不影响请求主流程。"""
         from src.request_features import build_request_features
 
+        from src.request_timing import request_timing
+
+        timing = request_timing.get()
         features, details = build_request_features(upstream_request)
         row: Dict[str, Any] = {
             "request_id": request_id,
@@ -119,6 +122,12 @@ class CallMonitor:
             "currency": currency or "CNY",
             "request_features": features,
         }
+        if timing is not None:
+            timing.monitor = self
+            row.update(timing_id=timing.timing_id,
+                       upstream_first_byte_seconds=timing.upstream_first_byte_seconds,
+                       downstream_first_byte_seconds=timing.downstream_first_byte_seconds,
+                       response_total_seconds=timing.response_total_seconds)
         async with self._lock:
             self._buffer.append(row)
         try:
@@ -128,6 +137,20 @@ class CallMonitor:
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
         await self._maybe_cleanup()
+
+    async def finish_timing(self, timing) -> None:
+        values = {
+            "downstream_first_byte_seconds": timing.downstream_first_byte_seconds,
+            "response_total_seconds": timing.response_total_seconds,
+        }
+        # Existing bounded deque only; no per-request lookup cache is retained.
+        async with self._lock:
+            for row in self._buffer:
+                if row.get("timing_id") == timing.timing_id:
+                    row.update(values)
+        update = self._backend_method("update_call_record_timing")
+        if update is not None:
+            await update(timing.timing_id, **values)
 
     # ------------------------------------------------------------------
     # 读取

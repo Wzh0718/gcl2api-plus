@@ -2700,6 +2700,26 @@ function _cmFormatLatency(seconds) {
     return `${seconds.toFixed(2)}s`;
 }
 
+function _cmLatencyCell(row) {
+    const measured = value => value !== null && value !== undefined
+        && Number.isFinite(Number(value)) && Number(value) >= 0;
+    const format = value => measured(value)
+        ? (Number(value) === 0 ? '0ms' : _cmFormatLatency(Number(value))) : '未采集';
+    const total = measured(row.response_total_seconds)
+        ? row.response_total_seconds : row.gateway_seconds;
+    const tip = [
+        `上游首字节：${format(row.upstream_first_byte_seconds)}（本次上游尝试发起 → 收到首段响应数据）`,
+        `下游首字节：${format(row.downstream_first_byte_seconds)}（客户端请求进入服务 → 开始返回首段数据，含排队与重试）`,
+        `总耗时：${format(row.response_total_seconds)}（请求进入服务 → 响应发送完成）`,
+        '均为服务器端计时，不含客户端网络传输及反向代理缓冲；首段数据不一定是首个文本 token。',
+        '上游重试仅显示该条记录关联的最后一次尝试；历史记录无法补回首字节时间。',
+    ];
+    if (!measured(row.response_total_seconds)) {
+        tip.push(`原网关处理耗时：${format(row.gateway_seconds)}`);
+    }
+    return `<span tabindex="0" style="cursor:help;border-bottom:1px dotted currentColor" title="${_cmEscape(tip.join('\n'))}" aria-label="${_cmEscape(tip.join('；'))}">${_cmFormatLatency(total)}</span>`;
+}
+
 function _cmFormatTokens(value) {
     const n = Number(value || 0);
     return n.toLocaleString('en-US');
@@ -3194,7 +3214,7 @@ function _cmRenderRealtime(records) {
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.status_code)}</td>
             <td>${statusCell}</td>
-            <td>${_cmFormatLatency(row.gateway_seconds)}</td>
+            <td>${_cmLatencyCell(row)}</td>
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>

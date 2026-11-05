@@ -18,6 +18,7 @@ from config import (
 from log import log
 from src.agy_native_transport import agy_native_transport, antigravity_profile_for_url
 from src.shadowsocks import shadowsocks_proxy_context
+from src.request_timing import add_timing_hook
 
 
 def get_decoded_response_headers(headers: Any) -> Dict[str, str]:
@@ -127,6 +128,7 @@ async def post_async(
             proxy_url=proxy_url,
             timeout=timeout,
         )
+    add_timing_hook(kwargs, url)
     async with http_client.get_client(timeout=timeout, proxy_url=proxy_url, **kwargs) as client:
         return await client.post(url, data=data, json=json, headers=headers)
 
@@ -193,6 +195,7 @@ async def stream_post_async(
                 yield chunk
         return
 
+    add_timing_hook(kwargs, url)
     async with http_client.get_streaming_client(proxy_url=proxy_url, **kwargs) as client:
         async with client.stream("POST", url, json=body, headers=headers) as r:
             # 错误直接返回

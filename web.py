@@ -31,6 +31,7 @@ from src.router.vertex.model_list import router as vertex_model_list_router
 from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
 from src.request_features import RequestContentMiddleware
+from src.request_timing import RequestTimingMiddleware
 from src.keeplive import keepalive_service
 from src.antigravity_403_recheck import recheck_service
 from src.antigravity_cli_version import cli_version_service
@@ -263,6 +264,7 @@ app.add_middleware(
 )
 
 app.add_middleware(RequestContentMiddleware)
+app.add_middleware(RequestTimingMiddleware)
 
 # 挂载路由器
 # GeminiCLI 路由已下线：/v1/models、/v1beta/models 等 OpenAI/Gemini 格式

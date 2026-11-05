@@ -13,6 +13,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from src.shadowsocks import shadowsocks_proxy_context
+from src.request_timing import add_timing_hook
 
 
 def encode_request_body(data: Any, json: Any) -> Optional[bytes]:
@@ -184,11 +185,13 @@ class AgyNativeTransport:
         proxy_url: Any = ...,
         timeout: float = 30.0,
     ) -> httpx.Response:
+        timing_kwargs = {}
+        add_timing_hook(timing_kwargs, url)
         await self.start()
         async with self._upstream_proxy(proxy_url) as resolved_proxy:
             transport = httpx.AsyncHTTPTransport(uds=str(self._socket()))
             async with httpx.AsyncClient(
-                transport=transport, timeout=httpx.Timeout(timeout + 5.0, connect=30.0)
+                **timing_kwargs, transport=transport, timeout=httpx.Timeout(timeout + 5.0, connect=30.0)
             ) as client:
                 return await client.request(
                     method,
@@ -214,11 +217,13 @@ class AgyNativeTransport:
         proxy_url: Any = ...,
         timeout: float = 300.0,
     ) -> AsyncGenerator[httpx.Response, None]:
+        timing_kwargs = {}
+        add_timing_hook(timing_kwargs, url)
         await self.start()
         async with self._upstream_proxy(proxy_url) as resolved_proxy:
             transport = httpx.AsyncHTTPTransport(uds=str(self._socket()))
             async with httpx.AsyncClient(
-                transport=transport, timeout=httpx.Timeout(None, connect=30.0)
+                **timing_kwargs, transport=transport, timeout=httpx.Timeout(None, connect=30.0)
             ) as client:
                 async with client.stream(
                     method,

@@ -177,6 +177,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     # 「原始请求 → 网关执行（降级后）→ 上游物理模型」三段对比。
                     await self._migrate_call_records_request_model(db)
                     await self._migrate_call_records_content(db)
+                    await self._migrate_call_records_timing(db)
 
                     # 修复可能包含路径的凭证文件名
                     await self._repair_credential_filenames(db)
@@ -680,6 +681,16 @@ class SQLiteManager(AntigravityWarmupStore):
                 "ALTER TABLE call_records ADD COLUMN request_model TEXT NOT NULL DEFAULT ''"
             )
             log.info("Added request_model column to call_records")
+
+    async def _migrate_call_records_timing(self, db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA table_info(call_records)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        for name, kind in (("timing_id", "TEXT"), ("upstream_first_byte_seconds", "REAL"),
+                           ("downstream_first_byte_seconds", "REAL"), ("response_total_seconds", "REAL")):
+            if name not in columns:
+                await db.execute(f"ALTER TABLE call_records ADD COLUMN {name} {kind}")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_call_records_timing_id "
+                         "ON call_records(timing_id) WHERE timing_id IS NOT NULL")
 
     async def _migrate_call_records_content(self, db: aiosqlite.Connection) -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_call_records_request_id ON call_records(request_id)")
@@ -2793,6 +2804,7 @@ class SQLiteManager(AntigravityWarmupStore):
         "model_name", "request_model", "upstream_model", "task_type", "success", "status_code", "gateway_seconds",
         "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
         "total_tokens", "total_cost", "currency", "request_features",
+        "timing_id", "upstream_first_byte_seconds", "downstream_first_byte_seconds", "response_total_seconds",
     )
 
     @classmethod
@@ -2826,6 +2838,10 @@ class SQLiteManager(AntigravityWarmupStore):
         currency: str = "CNY",
         request_features: Optional[Dict[str, Any]] = None,
         request_details: Optional[Dict[str, Any]] = None,
+        timing_id: Optional[str] = None,
+        upstream_first_byte_seconds: Optional[float] = None,
+        downstream_first_byte_seconds: Optional[float] = None,
+        response_total_seconds: Optional[float] = None,
     ) -> None:
         """写入一条逐请求调用记录（由调用监控模块调用，计费去重后才触发）。"""
         self._ensure_initialized()
@@ -2837,8 +2853,9 @@ class SQLiteManager(AntigravityWarmupStore):
                         request_id, created_at, api_key_id, credential_name, channel,
                         model_name, request_model, upstream_model, task_type, success, status_code, gateway_seconds,
                         input_tokens, output_tokens, cache_tokens, thought_tokens,
-                        total_tokens, total_cost, currency, request_features, request_details
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        total_tokens, total_cost, currency, request_features, request_details,
+                        timing_id, upstream_first_byte_seconds, downstream_first_byte_seconds, response_total_seconds
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id, float(created_at), api_key_id or "env",
                     os.path.basename(credential_name or ""), channel or "antigravity",
@@ -2848,8 +2865,22 @@ class SQLiteManager(AntigravityWarmupStore):
                     max(int(cache_tokens), 0), max(int(thought_tokens), 0),
                     max(int(total_tokens), 0), total_cost, currency or "CNY",
                     json.dumps(request_features or {}, ensure_ascii=False),
-                    packed_details,
+                    packed_details, timing_id, upstream_first_byte_seconds,
+                    downstream_first_byte_seconds, response_total_seconds,
                 ),
+            )
+            await db.commit()
+
+    async def update_call_record_timing(
+        self, timing_id: str, *, downstream_first_byte_seconds: Optional[float],
+        response_total_seconds: Optional[float],
+    ) -> None:
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                "UPDATE call_records SET downstream_first_byte_seconds = ?, "
+                "response_total_seconds = ? WHERE timing_id = ?",
+                (downstream_first_byte_seconds, response_total_seconds, timing_id),
             )
             await db.commit()
 
