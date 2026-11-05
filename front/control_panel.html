@@ -2127,7 +2127,7 @@
             .billing-key-filter { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="./front/control_panel.css?v=cooldown-inplace-20261020">
+    <link rel="stylesheet" href="./front/control_panel.css?v=px6-api-20261105">
 </head>
 
 <body>
@@ -3009,6 +3009,16 @@
                                 <div class="proxy-editor-card">
                                     <h5>实时导入节点</h5>
                                     <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
+                                    <details>
+                                        <summary>从 PX6 API Key 获取已有代理</summary>
+                                        <p class="config-note">填写 PX6 API Key 验证并读取账号下的有效代理，再导入上方选择的代理组。Key 仅用于本次读取，不保存。</p>
+                                        <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
+                                        <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
+                                        <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
+                                        <button id="proxyPX6PreviewButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies()">验证并查看已有 IP</button>
+                                        <button id="proxyPX6ImportButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies(true)">导入目标代理组</button>
+                                        <div id="proxyPX6Result" role="status" aria-live="polite"></div>
+                                    </details>
                                     <label>代理列表<textarea id="proxyImportContent" class="proxy-textarea" placeholder="可粘贴 Clash YAML、ss:// URI 或每行一个代理：\n- name: 住宅号池2\n  type: ss\n  server: host\n  port: 31002\n  cipher: aes-256-gcm\n  password: pass\nname|socks5://127.0.0.1:7891"></textarea></label>
                                     <label class="proxy-check"><input id="proxyImportReplace" type="checkbox"> 替换该组已有节点</label>
                                     <button type="button" class="proxy-secondary-action" onclick="importProxyGroupNodes()">导入并立即生效</button>
@@ -3539,7 +3549,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=cooldown-inplace-20261020"></script>
+    <script src="./front/common.js?v=px6-api-20261105"></script>
 
 </body>
 

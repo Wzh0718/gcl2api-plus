@@ -6,10 +6,11 @@ import os
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from src.antigravity_full_check import run_account_full_check
 from src.proxy_groups import mask_proxy_url, normalize_proxy_url, parse_proxy_import
+from src.px6 import PX6Error, fetch_owned_proxies
 from src.credential_manager import credential_manager
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
@@ -228,6 +229,46 @@ async def import_proxy_group_nodes(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {**result, "nodes": [{**node, "proxy_url": mask_proxy_url(node["proxy_url"])} for node in nodes]}
+
+
+class PX6ImportRequest(BaseModel):
+    api_key: SecretStr
+    protocol: Literal["http", "socks5"] = "http"
+    replace: bool = False
+
+
+@router.post("/proxy-groups/px6/preview")
+async def preview_px6_proxies(
+    payload: PX6ImportRequest,
+    _token: str = Depends(verify_panel_token),
+):
+    try:
+        result = await fetch_owned_proxies(payload.api_key.get_secret_value(), payload.protocol)
+    except PX6Error as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"count": len(result["nodes"]), "items": result["items"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/proxy-groups/{group_id}/px6")
+async def import_px6_proxies(
+    group_id: int,
+    payload: PX6ImportRequest,
+    _token: str = Depends(verify_panel_token),
+):
+    storage = await get_storage_adapter()
+    try:
+        await storage.get_proxy_group(group_id)
+        result = await fetch_owned_proxies(payload.api_key.get_secret_value(), payload.protocol)
+        if not result["nodes"]:
+            raise PX6Error("PX6 账户下没有有效的 HTTP / SOCKS5 代理，未修改代理组")
+        imported = await storage.import_proxy_group_nodes(group_id, result["nodes"], replace=payload.replace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    from fastapi.responses import JSONResponse
+    return JSONResponse({**imported, "count": len(result["nodes"]), "items": result["items"]},
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/creds/network/batch")

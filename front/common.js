@@ -6303,3 +6303,53 @@ function autoSetKeepaliveUrl() {
     const url = `${window.location.protocol}//${window.location.host}`;
     document.getElementById('keepaliveUrl').value = url;
 }
+
+async function fetchPX6Proxies(importNodes = false) {
+    const keyInput = document.getElementById('proxyPX6ApiKey');
+    const apiKey = keyInput?.value.trim();
+    const groupId = Number(document.getElementById('proxyImportGroupId')?.value || 0);
+    const result = document.getElementById('proxyPX6Result');
+    const previewButton = document.getElementById('proxyPX6PreviewButton');
+    const importButton = document.getElementById('proxyPX6ImportButton');
+    if (!apiKey || (importNodes && !groupId)) {
+        showStatus(importNodes ? '请选择目标代理组并填写 PX6 API Key' : '请填写 PX6 API Key', 'error');
+        return;
+    }
+    if (previewButton.disabled) return;
+    previewButton.disabled = importButton.disabled = true;
+    result.textContent = importNodes ? '正在获取并导入已有代理…' : '正在验证 Key 并读取已有代理…';
+    try {
+        const response = await fetch(importNodes ? `./proxy-groups/${groupId}/px6` : './proxy-groups/px6/preview', {
+            method: 'POST', headers: getAuthHeaders(), cache: 'no-store',
+            body: JSON.stringify({api_key: apiKey,
+                protocol: document.getElementById('proxyPX6Protocol').value,
+                replace: Boolean(document.getElementById('proxyPX6Replace').checked)})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'PX6 请求失败，请检查输入');
+        result.replaceChildren();
+        const summary = document.createElement('p');
+        summary.textContent = importNodes
+            ? `导入完成：新增 ${data.imported_count}，更新 ${data.updated_count}。`
+            : `Key 验证成功，找到 ${data.count} 个有效代理。`;
+        result.append(summary);
+        if (data.items?.length) {
+            const details = document.createElement('details');
+            const heading = document.createElement('summary');
+            heading.textContent = '查看 IP、协议和到期时间';
+            const list = document.createElement('pre');
+            list.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;';
+            list.textContent = data.items.map(item => `${item.ip} · ${item.protocol.toUpperCase()} · ${item.country || '-'} · 到期 ${item.expires_at || '未知'}`).join('\n');
+            details.append(heading, list);
+            result.append(details);
+        }
+        if (importNodes) {
+            keyInput.value = '';
+            await loadProxyGroups({silent: true});
+        }
+    } catch (error) {
+        result.textContent = error.message;
+    } finally {
+        previewButton.disabled = importButton.disabled = false;
+    }
+}
