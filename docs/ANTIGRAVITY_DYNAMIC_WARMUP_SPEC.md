@@ -112,7 +112,7 @@ def decision_for(account: WarmupState, ip_group: IpGroupBudget) -> WarmupDecisio
 状态：`off / warming / paused / cancelled / active / account_forbidden`。
 
 - 开启养号：`off/paused/cancelled -> warming`，从初始预算开始。
-- 取消养号：`warming/paused -> cancelled`，立即停止渐进放量并将账号排除出候选池；不删除凭证、不清除历史进度。默认 `off` 的普通账号仍正常参与号池。
+- 取消养号：`warming/paused -> cancelled`，立即停止渐进放量，账号恢复普通选号和常规限流，不再申请养号租约；不删除凭证、不清除历史进度。账号禁用、模型冷却及封禁检查继续生效。默认 `off` 的普通账号仍正常参与号池。
 - 恢复养号：`cancelled -> warming`，可从保留进度恢复；UI 另提供“重新开始”以清空进度。
 - 提前完成：`warming/paused -> active`，立即按普通账号使用，明确二次确认。
 - TOS：任意状态 `-> account_forbidden`，禁用账号且不可自动恢复。
@@ -163,7 +163,7 @@ def decision_for(account: WarmupState, ip_group: IpGroupBudget) -> WarmupDecisio
 - 租约获取与账号/IP 组预算检查在同一个 `BEGIN IMMEDIATE` 事务中完成，同时检查在飞数量和下次允许发起时间，避免多 Worker 超额。
 - 租约在流式、非流式、图片请求的完成、异常、取消和客户端断开路径释放；过期租约只用于崩溃恢复，正常请求不得依赖过期释放。
 - 真实业务成功统一反馈到账号和 IP 组档位；健康检查、额度查询、403 复检不计入成功。
-- 未开启养号的账号继续走现有最少使用选择及进程内 pacing，不增加全局租约开销。
+- 未开启养号的账号继续走逐请求轮转选择及进程内 pacing，不增加全局租约开销。
 
 ### Task List
 
@@ -183,7 +183,7 @@ Checkpoint：未接入业务请求，现有 674 项测试不得回归。
 #### Phase 2: 真实流量渐进放量
 
 - [x] Task 3：接入账号选择和请求租约生命周期。
-  - Acceptance：warming 账号先过全局预算再发上游；cancelled 取消后下一选择周期不可选；默认 off 普通账号路径不变。
+  - Acceptance：warming 账号先过全局预算再发上游；cancelled 取消后下一选择周期按普通账号参与调度、不受养号预算限制；默认 off 普通账号路径不变。
   - Verify：流式、非流式、图片、换号、提前断开和异常释放测试通过。
   - Files：`src/credential_manager.py`、`src/api/antigravity.py`、`src/antigravity_dynamic_warmup.py`、对应测试。
 - [x] Task 4：接入成功与失败反馈。

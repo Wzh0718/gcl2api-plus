@@ -100,3 +100,28 @@ async def test_agy_user_info_uses_native_transport():
 
     assert result["email"] == "dummy@example.invalid"
     assert get_mock.await_args.kwargs["transport"] == "antigravity"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "upstream_error, expected_reason",
+    [("invalid_grant", "invalid_grant"), ("invalid_client", "invalid_client"),
+     ("invalid_request", "invalid_request")],
+)
+async def test_fixed_client_refresh_preserves_sanitized_oauth_diagnosis(
+    upstream_error, expected_reason,
+):
+    from src.google_oauth_api import TokenError, refresh_access_token_with_clients
+
+    response = httpx.Response(400, json={
+        "error": upstream_error,
+        "error_description": "private-upstream-response",
+    })
+    post_mock = AsyncMock(return_value=response)
+    with patch("src.google_oauth_api.post_async", post_mock):
+        with pytest.raises(TokenError) as caught:
+            await refresh_access_token_with_clients("dummy-refresh")
+    assert caught.value.status_code == 400
+    assert caught.value.error_code == expected_reason
+    assert "private-upstream-response" not in str(caught.value)
+    assert post_mock.await_count == 1

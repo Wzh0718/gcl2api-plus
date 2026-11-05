@@ -228,7 +228,7 @@ class AntigravityWarmupStore:
                     (filename,),
                 ) as cursor:
                     account = await cursor.fetchone()
-                if not account or account[0] in {"off", "active"}:
+                if not account or account[0] in {"off", "active", "cancelled"}:
                     await db.commit()
                     return {"enabled": False, "acquired": True, "lease_id": None}
                 if not warmup_selectable(account[0]):

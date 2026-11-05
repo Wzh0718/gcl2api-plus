@@ -26,7 +26,10 @@ from src.oauth_clients import get_candidates, list_clients
 class TokenError(Exception):
     """Token相关错误"""
 
-    pass
+    def __init__(self, message, *, status_code=None, error_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 async def refresh_access_token_with_clients(
@@ -60,10 +63,14 @@ async def refresh_access_token_with_clients(
     if response.status_code == 200:
         log.debug(f"Token刷新成功 (client={client.key})")
         return response.json(), client.key
-    error_text = response.text or ""
+    from src.antigravity_400_classifier import classify_antigravity_400
+
+    decision = classify_antigravity_400(response.text or "", source="oauth")
     raise TokenError(
         f"OAuth client 刷新失败 (client={client.key}): "
-        f"HTTP {response.status_code}: {error_text[:200]}"
+        f"HTTP {response.status_code}: {decision.to_json()}",
+        status_code=response.status_code,
+        error_code=decision.reason.lower(),
     )
 
 

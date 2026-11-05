@@ -57,7 +57,7 @@ def test_single_batch_cancel_and_resume_are_idempotent(client):
         json={"filenames": ["a.json", "b.json"], "action": "cancel"},
     )
     assert cancelled.status_code == 200
-    assert cancelled.json()["results"]["a.json"]["state"]["selectable"] is False
+    assert cancelled.json()["results"]["a.json"]["state"]["selectable"] is True
 
     repeated = client.post(
         "/antigravity/warmup/batch",

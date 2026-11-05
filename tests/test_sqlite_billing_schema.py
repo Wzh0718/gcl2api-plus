@@ -343,17 +343,17 @@ async def test_antigravity_burst_uses_short_window_not_lifetime_call_count(
     await manager.close()
 
 
-def test_image_ranking_uses_short_window_routing_count():
+def test_image_ranking_uses_round_robin_position_not_usage():
     from src.credential_manager import rank_antigravity_image_candidates
 
     ranked = rank_antigravity_image_candidates(
         {
-            "busy.json": {"call_count": 1000000, "routing_count": 8},
-            "idle.json": {"call_count": 2000000, "routing_count": 1},
+            "busy.json": {"call_count": 1000000, "routing_count": 8, "routing_turn": 1},
+            "idle.json": {"call_count": 2000000, "routing_count": 1, "routing_turn": 2},
         },
         model_name="gemini-3.1-flash-image",
     )
-    assert ranked == ["idle.json", "busy.json"]
+    assert ranked == ["busy.json", "idle.json"]
 
 
 @pytest.mark.asyncio

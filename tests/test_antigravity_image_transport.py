@@ -337,7 +337,7 @@ async def test_dynamic_image_model_lookup_stops_after_project_403(
     assert "x-goog-user-project" not in call["headers"]
 
 
-def test_image_account_priority_prefers_least_used_before_tier():
+def test_image_account_priority_uses_rotation_before_usage_and_tier():
     from src.credential_manager import rank_antigravity_image_candidates
 
     now = time.time()
@@ -365,10 +365,10 @@ def test_image_account_priority_prefers_least_used_before_tier():
         now=now,
     )
 
-    assert ranked == ["pro.json", "ultra.json"]
+    assert ranked == ["ultra.json", "pro.json"]
 
 
-def test_image_account_priority_uses_tier_only_when_usage_is_equal():
+def test_image_account_priority_uses_rotation_when_usage_is_equal():
     from src.credential_manager import rank_antigravity_image_candidates
 
     ranked = rank_antigravity_image_candidates(
@@ -391,7 +391,7 @@ def test_image_account_priority_uses_tier_only_when_usage_is_equal():
         model_name="gemini-3.1-flash-image",
     )
 
-    assert ranked == ["ultra.json", "pro.json"]
+    assert ranked == ["pro.json", "ultra.json"]
 
 
 def test_recent_image_success_does_not_create_sticky_routing():
@@ -420,7 +420,7 @@ def test_recent_image_success_does_not_create_sticky_routing():
         now=now,
     )
 
-    assert ranked == ["underused.json", "recent.json"]
+    assert ranked == ["recent.json", "underused.json"]
 
 
 def test_recent_ultra_capacity_failure_temporarily_promotes_pro():
@@ -593,7 +593,7 @@ async def test_image_generate_retries_capacity_using_upstream_retry_info(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_image_credential_selection_uses_tier_and_exclusions(monkeypatch):
+async def test_image_credential_selection_uses_rotation_and_exclusions(monkeypatch):
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
@@ -641,12 +641,12 @@ async def test_image_credential_selection_uses_tier_and_exclusions(monkeypatch):
     second = await manager.get_valid_credential(
         mode="antigravity",
         model_name="gemini-3.1-flash-image",
-        exclude_filenames={"ultra.json"},
+        exclude_filenames={"pro.json"},
     )
 
-    assert first[0] == "ultra.json"
-    assert first[1]["tier"] == "ultra"
-    assert second[0] == "pro.json"
+    assert first[0] == "pro.json"
+    assert first[1]["tier"] == "pro"
+    assert second[0] == "ultra.json"
 
 
 @pytest.mark.asyncio
@@ -682,6 +682,9 @@ async def test_image_selection_advances_usage_before_reusing_account(monkeypatch
             if state["call_count"] != expected_call_count:
                 return False
             state["call_count"] += 1
+            state["routing_turn"] = max(
+                item.get("routing_turn", 0) for item in self.states.values()
+            ) + 1
             return True
 
         async def get_credential(self, filename, mode):
@@ -756,10 +759,14 @@ async def test_image_selection_refreshes_after_cross_worker_claim_conflict(
             state = self.states[filename]
             if filename == "contended.json" and state["call_count"] == 0:
                 state["call_count"] = 1
+                state["routing_turn"] = 1
                 return False
             if state["call_count"] != expected_call_count:
                 return False
             state["call_count"] += 1
+            state["routing_turn"] = max(
+                item.get("routing_turn", 0) for item in self.states.values()
+            ) + 1
             return True
 
         async def get_credential(self, filename, mode):
@@ -886,8 +893,7 @@ async def test_image_credential_selection_reserves_distinct_accounts_until_relea
         mode="antigravity", model_name="gemini-3.1-flash-image"
     )
 
-    assert first[0] == "ultra.json"
-    assert second[0] == "pro.json"
+    assert {first[0], second[0]} == {"pro.json", "ultra.json"}
 
     waiting = asyncio.create_task(
         manager.get_valid_credential(
@@ -902,7 +908,7 @@ async def test_image_credential_selection_reserves_distinct_accounts_until_relea
     )
     assert released is True
     third = await asyncio.wait_for(waiting, timeout=1)
-    assert third[0] == "ultra.json"
+    assert third[0] == first[0]
 
     await manager.release_image_credential(
         second[0], second[1]["_image_lease_id"]

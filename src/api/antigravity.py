@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
+from src.antigravity_400_classifier import upstream_error_log_detail
+
 from fastapi import Response
 from config import (
     get_antigravity_api_url,
@@ -1828,7 +1830,9 @@ async def _non_stream_image_request_inner(
                 error_text=error_text,
             )
             cooldown_until = classified_403.cooldown_until
-        retryable = status_code in (403, 404, 429, 500, 503) or status_code in disable_error_codes
+        retryable = status_code != 400 and (
+            status_code in (403, 404, 429, 500, 503) or status_code in disable_error_codes
+        )
         if classified_403 is not None:
             retryable = classified_403.should_retry
         will_retry = retry_enabled and retryable and account_attempt < max_account_attempts - 1
