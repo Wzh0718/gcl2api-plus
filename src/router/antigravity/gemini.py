@@ -169,6 +169,10 @@ async def stream_generate_content(
     # 转换为字典
     normalized_dict = model_to_dict(gemini_request)
 
+    # Block 必须在发送 SSE 响应头前返回 HTTP 403。
+    from src.converter.sensitive_words import filter_request_system_instruction
+    await filter_request_system_instruction(normalized_dict, mode="antigravity", block_only=True)
+
     # 处理模型名称和功能检测
     use_fake_streaming = is_fake_streaming_model(model)
     use_anti_truncation = is_anti_truncation_model(model)

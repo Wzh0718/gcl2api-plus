@@ -5458,6 +5458,9 @@ function populateConfigForm() {
     document.getElementById('antigravity403RecheckEnabled').checked = Boolean(c.antigravity_403_recheck_enabled !== false);
     document.getElementById('sensitiveWordReplaceEnabled').checked = Boolean(c.sensitive_word_replace_enabled);
     setConfigField('sensitiveWordReplaceRules', c.sensitive_word_replace_rules || '');
+    setConfigField('sensitiveWordFilterMode', c.sensitive_word_filter_mode || 'rewrite');
+    const keywordPreset = document.getElementById('sensitiveWordUseDefaultKeywords');
+    if (keywordPreset) keywordPreset.checked = c.sensitive_word_use_default_keywords !== false;
 
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
     setConfigField('antigravity403RecheckInterval', c.antigravity_403_recheck_interval || 3600);
@@ -5542,6 +5545,8 @@ async function saveConfig() {
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
             sensitive_word_replace_enabled: getChecked('sensitiveWordReplaceEnabled'),
             sensitive_word_replace_rules: getValue('sensitiveWordReplaceRules'),
+            sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
+            sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
             keepalive_url: getValue('keepaliveUrl'),
             keepalive_interval: getInt('keepaliveInterval', 60),
             call_records_retention_days: getInt('callRecordsRetentionDays', 30)

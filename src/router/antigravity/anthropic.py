@@ -83,6 +83,8 @@ async def messages(
 
     # 转换为字典
     normalized_dict = model_to_dict(claude_request)
+    from src.converter.sensitive_words import filter_compatibility_system_prompts
+    await filter_compatibility_system_prompts(normalized_dict, mode="antigravity")
 
     # 健康检查
     if is_health_check_request(normalized_dict, format="anthropic"):

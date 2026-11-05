@@ -2141,6 +2141,41 @@
                     <div class="loading" id="configLoading">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <div class="card">
+                            <h4>客户端名称过滤配置</h4>
+
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="sensitiveWordReplaceEnabled" class="config-checkbox" />
+                                    启用客户端名称过滤
+                                </label>
+                                <small class="config-note">对 GeminiCLI 与 Antigravity 的 system prompt 生效，支持热更新。</small>
+                                <div class="config-info">仅处理系统提示，不改用户消息或工具调用。匹配不区分大小写，长词优先；自定义同名规则覆盖内置词库。</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="sensitiveWordFilterMode">命中处理:</label>
+                                <select id="sensitiveWordFilterMode" class="config-input">
+                                    <option value="rewrite">Rewrite：替换后放行（默认）</option>
+                                    <option value="block">Block：拒绝请求，返回 HTTP 403</option>
+                                </select>
+                                <small class="config-note">Block 模式只使用查找词，不使用替换值。</small>
+                            </div>
+                            <div class="form-group">
+                                <label><input type="checkbox" id="sensitiveWordUseDefaultKeywords" class="config-checkbox" /> 启用内置客户端词库</label>
+                                <small class="config-note">包含 Claude Code、Codex、Cursor、Windsurf 等名称，默认替换为 Antigravity。</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sensitiveWordReplaceRules">替换规则（每行一条）:</label>
+                                <textarea id="sensitiveWordReplaceRules" class="config-input" rows="6"
+                                    style="resize: vertical; font-family: monospace;"
+                                    placeholder="Claude Code=>Antigravity&#10;Claude Agent SDK=>&#10;# 以 # 开头为注释行"></textarea>
+                                <small class="config-note">格式：<code>查找词=>替换词</code>；不写 <code>=></code>
+                                    表示删除该词；以 <code>#</code> 开头为注释；留空则仅使用已启用的内置词库</small>
+                            </div>
+                        </div>
+
+
+                        <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">服务器配置</h4>
 
                             <div class="form-group">
@@ -2757,7 +2792,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=px6-api-20261105"></script>
+    <script src="./front/common.js?v=coding-filter-20261105"></script>
 </body>
 
 </html>

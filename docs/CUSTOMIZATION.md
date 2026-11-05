@@ -113,6 +113,15 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 - PX6 可手动导入 **IPv4 Individual（version=4）** 的 `host:port:user:pass`，一账号至少准备一个节点并开启续费；不要选 IPv4 Shared。PX6 个人代理不等于住宅或低风控 IP，系统仍需实测出口和资格。
 - `src/api/antigravity.py:get_effective_proxy_url` 是有效代理入口。账号重试切换会同时切换凭证、Token、Project、Proxy 和请求体；OAuth、项目发现、额度检查和生成请求使用同一账号网络上下文。
 
+### 客户端名称过滤
+
+- 默认启用 Rewrite：仅将 system prompt 中的客户端名称替换为 Antigravity，不修改用户消息和工具调用。
+- 内置 Claude Code、Codex、Cursor、Windsurf 等客户端名称；匹配不区分大小写、长词优先，替换结果不再次参与匹配。
+- 面板支持切换 Block：命中返回本地 HTTP 403，错误码 `blocked_by_antigravity_coding_filter`，不调用上游、不触发账号换号重试。
+- `SENSITIVE_WORD_REPLACE_ENABLED=true`、`SENSITIVE_WORD_FILTER_MODE=rewrite|block`、`SENSITIVE_WORD_USE_DEFAULT_KEYWORDS=true` 控制策略。
+- `SENSITIVE_WORD_REPLACE_RULES` 每行 `查找词=>替换词`，无分隔符表示删除；自定义同名规则覆盖内置规则。Block 忽略替换值，删除规则也会触发拦截。
+- 旧的环境变量或面板显式配置继续优先；已有 `sensitive_word_replace_enabled=false` 的安装需手动开启。
+
 ### Token 计费
 
 - `src/billing.py` 负责用量解析、价格计算、请求去重和 Redis 镜像。

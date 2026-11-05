@@ -59,6 +59,8 @@ ENV_MAPPINGS = {
     "ANTI_TRUNCATION_MAX_ATTEMPTS": "anti_truncation_max_attempts",
     "SENSITIVE_WORD_REPLACE_ENABLED": "sensitive_word_replace_enabled",
     "SENSITIVE_WORD_REPLACE_RULES": "sensitive_word_replace_rules",
+    "SENSITIVE_WORD_FILTER_MODE": "sensitive_word_filter_mode",
+    "SENSITIVE_WORD_USE_DEFAULT_KEYWORDS": "sensitive_word_use_default_keywords",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
     "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
@@ -238,18 +240,33 @@ async def get_sensitive_word_replace_enabled() -> bool:
     """
     Get sensitive word replacement enabled setting.
 
-    启用后，上行请求的 system prompt 会按规则替换敏感词（如客户端指纹字样），
-    避免上游特征匹配触发伪 429。
+    启用后按模式过滤 system prompt 中的客户端名称；默认 rewrite 替换后放行。
 
     Environment variable: SENSITIVE_WORD_REPLACE_ENABLED
     Database config key: sensitive_word_replace_enabled
-    Default: False
+    Default: True
     """
     env_value = os.getenv("SENSITIVE_WORD_REPLACE_ENABLED")
     if env_value:
         return env_value.lower() in ("true", "1", "yes", "on")
 
-    return bool(await get_config_value("sensitive_word_replace_enabled", False))
+    return bool(await get_config_value("sensitive_word_replace_enabled", True))
+
+
+async def get_sensitive_word_filter_mode() -> str:
+    """System prompt filter: rewrite (default) or block."""
+    value = str(await get_config_value(
+        "sensitive_word_filter_mode", "rewrite", "SENSITIVE_WORD_FILTER_MODE"
+    )).strip().lower()
+    return value if value in ("rewrite", "block") else "rewrite"
+
+
+async def get_sensitive_word_use_default_keywords() -> bool:
+    """Enable built-in coding-client names by default."""
+    value = os.getenv("SENSITIVE_WORD_USE_DEFAULT_KEYWORDS")
+    if value:
+        return value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("sensitive_word_use_default_keywords", True))
 
 
 async def get_sensitive_word_replace_rules() -> str:
@@ -257,11 +274,11 @@ async def get_sensitive_word_replace_rules() -> str:
     Get sensitive word replacement rules text.
 
     每行一条规则，格式为 "查找词=>替换词"；无 "=>" 时替换为空（即删除）；
-    以 "#" 开头的行为注释；匹配区分大小写。
+    以 "#" 开头的行为注释；匹配不区分大小写，长词优先。
 
     Environment variable: SENSITIVE_WORD_REPLACE_RULES
     Database config key: sensitive_word_replace_rules
-    Default: "" (空，不替换)
+    Default: "" (无自定义规则；内置词库由独立开关控制)
     """
     env_value = os.getenv("SENSITIVE_WORD_REPLACE_RULES")
     if env_value:

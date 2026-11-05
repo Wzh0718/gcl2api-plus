@@ -55,6 +55,8 @@ async def get_config(token: str = Depends(verify_panel_token)):
         # 敏感词替换配置
         current_config["sensitive_word_replace_enabled"] = await config.get_sensitive_word_replace_enabled()
         current_config["sensitive_word_replace_rules"] = await config.get_sensitive_word_replace_rules()
+        current_config["sensitive_word_filter_mode"] = await config.get_sensitive_word_filter_mode()
+        current_config["sensitive_word_use_default_keywords"] = await config.get_sensitive_word_use_default_keywords()
 
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
@@ -169,6 +171,13 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         if "sensitive_word_replace_enabled" in new_config:
             if not isinstance(new_config["sensitive_word_replace_enabled"], bool):
                 raise HTTPException(status_code=400, detail="敏感词替换开关必须是布尔值")
+
+        if "sensitive_word_filter_mode" in new_config:
+            if new_config["sensitive_word_filter_mode"] not in ("rewrite", "block"):
+                raise HTTPException(status_code=400, detail="过滤模式必须是 rewrite 或 block")
+        if "sensitive_word_use_default_keywords" in new_config:
+            if not isinstance(new_config["sensitive_word_use_default_keywords"], bool):
+                raise HTTPException(status_code=400, detail="内置词库开关必须是布尔值")
 
         if "sensitive_word_replace_rules" in new_config:
             rules_value = new_config["sensitive_word_replace_rules"]

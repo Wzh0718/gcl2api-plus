@@ -1,24 +1,42 @@
-"""
-敏感词替换模块
+"""系统提示中的客户端名称过滤。
 
-在请求进入上游（GeminiCLI / Antigravity）之前，按用户配置的规则替换
-system prompt（systemInstruction）中的敏感词，避免上游对客户端指纹
-（如 "Claude Code" 等字样）做特征匹配触发伪 429。
-
-规则格式（每行一条）：
-    查找词=>替换词      命中后替换为指定内容
-    查找词              无 "=>" 时替换为空（即删除该词）
-    # 注释             以 "#" 开头的行会被忽略
-
-匹配方式为区分大小写的子串替换；仅处理 system prompt，不影响消息正文。
+支持 rewrite / block，不区分大小写、长词优先；仅改系统提示。
+自定义规则格式为 查找词=>替换词，无 => 时删除；# 开头为注释。
 """
 
+import re
 from typing import Any, Dict, List, Tuple
+
+from fastapi import HTTPException
 
 from log import log
 
 RULE_SEPARATOR = "=>"
 MAX_RULE_COUNT = 200
+
+# 客户端名称预设；自定义同名规则（不区分大小写）优先。
+DEFAULT_CLIENT_KEYWORDS = (
+    "Claude Code", "Claude Agent SDK", "OpenAI Codex", "Codex CLI", "Codex",
+    "OpenCode", "GitHub Copilot CLI", "GitHub Copilot", "Copilot CLI",
+    "Gemini Code Assist", "Gemini CLI", "Cursor", "Windsurf", "Codeium",
+    "Cline", "Roo Code", "Kilo Code", "Aider", "Continue.dev",
+    "Amazon Q Developer", "Amazon CodeWhisperer", "CodeWhisperer",
+    "JetBrains AI Assistant", "JetBrains AI", "JetBrains Junie", "Junie",
+    "Kiro", "Qoder CLI", "Qoder", "Qwen Code", "Trae", "Tabnine",
+    "Sourcegraph Cody", "Augment Code", "Replit Agent", "Ghostwriter",
+    "Devin", "OpenHands", "SWE-agent", "Goose", "Zed AI", "Void Editor",
+    "PearAI", "Refact.ai", "Tabby", "GitLab Duo", "Visual Studio IntelliCode",
+    "CodeBuddy", "Blackbox AI", "Pieces for Developers", "Qodo", "CodiumAI",
+    "Rovo Dev CLI", "Factory Droid", "OpenClaw", "Clawdbot", "Moltbot",
+    "Hermes Agent", "Hermes", "WorkBuddy",
+)
+
+
+def effective_rules(custom_rules: List[Tuple[str, str]], use_defaults: bool) -> List[Tuple[str, str]]:
+    rules = [(name, "Antigravity") for name in DEFAULT_CLIENT_KEYWORDS] if use_defaults else []
+    rules.extend(custom_rules)
+    unique = {name.casefold(): (name, replacement) for name, replacement in rules if name}
+    return sorted(unique.values(), key=lambda rule: -len(rule[0]))
 
 
 def parse_sensitive_word_rules(rules_text: Any) -> List[Tuple[str, str]]:
@@ -50,12 +68,17 @@ def parse_sensitive_word_rules(rules_text: Any) -> List[Tuple[str, str]]:
 
 def _replace_text(text: str, rules: List[Tuple[str, str]]) -> Tuple[str, int]:
     """对单段文本应用规则，返回 (新文本, 命中次数)。"""
-    hits = 0
-    for find, replace in rules:
-        if find and find in text:
-            hits += text.count(find)
-            text = text.replace(find, replace)
-    return text, hits
+    rules = effective_rules(rules, False)
+    if not rules:
+        return text, 0
+    # 单次替换：长词先匹配，替换结果不会再次被其他规则修改。
+    patterns = [re.compile(re.escape(name), re.IGNORECASE) for name, _ in rules]
+    pattern = re.compile("|".join(re.escape(name) for name, _ in rules), re.IGNORECASE)
+
+    def replace(match):
+        return next(value for regex, (_, value) in zip(patterns, rules) if regex.fullmatch(match.group()))
+
+    return pattern.subn(replace, text)
 
 
 def _set_instruction(request_data: Dict[str, Any], instruction: Dict[str, Any]) -> None:
@@ -127,30 +150,73 @@ def apply_sensitive_word_rules(
     return total_hits
 
 
+async def filter_compatibility_system_prompts(request_data: Dict[str, Any], *, mode: str) -> None:
+    """兼容模式将系统提示改成 user 前执行过滤，保留真正的用户消息。"""
+    from config import get_compatibility_mode_enabled
+
+    if not await get_compatibility_mode_enabled():
+        return
+
+    async def filtered(content):
+        parts = [{"text": content}] if isinstance(content, str) else content
+        if not isinstance(parts, list):
+            return content
+        wrapped = {"systemInstruction": {"parts": parts}}
+        await filter_request_system_instruction(wrapped, mode=mode)
+        result = wrapped["systemInstruction"]["parts"]
+        return result[0]["text"] if isinstance(content, str) else result
+
+    if "system" in request_data:
+        request_data["system"] = await filtered(request_data["system"])
+    messages = []
+    for message in request_data.get("messages", []):
+        if message.get("role") == "system":
+            message = dict(message, content=await filtered(message.get("content")))
+        messages.append(message)
+    request_data["messages"] = messages
+
+
 async def filter_request_system_instruction(
-    request_data: Dict[str, Any], *, mode: str = ""
+    request_data: Dict[str, Any], *, mode: str = "", block_only: bool = False
 ) -> None:
     """按当前配置对请求的 system prompt 执行敏感词替换（原地更新 request_data）。
 
-    未启用、规则为空或替换失败时均不影响原请求。
+    未启用或有效规则为空时放行；block 命中抛出本地 HTTP 403。
     """
     try:
         from config import (
             get_sensitive_word_replace_enabled,
             get_sensitive_word_replace_rules,
+            get_sensitive_word_filter_mode,
+            get_sensitive_word_use_default_keywords,
         )
 
         if not await get_sensitive_word_replace_enabled():
             return
-        rules = parse_sensitive_word_rules(await get_sensitive_word_replace_rules())
+        filter_mode = await get_sensitive_word_filter_mode()
+        if block_only and filter_mode != "block":
+            return
+        rules = effective_rules(
+            parse_sensitive_word_rules(await get_sensitive_word_replace_rules()),
+            await get_sensitive_word_use_default_keywords(),
+        )
         if not rules:
             return
-        hits = apply_sensitive_word_rules(request_data, rules)
+        target = request_data.copy() if filter_mode == "block" else request_data
+        hits = apply_sensitive_word_rules(target, rules)
+        if hits and filter_mode == "block":
+            raise HTTPException(status_code=403, detail={
+                "code": "blocked_by_antigravity_coding_filter",
+                "type": "invalid_request_error",
+                "message": "System prompt matches a configured coding-client keyword",
+            })
         if hits:
             log.info(
                 f"[SENSITIVE_WORDS] mode={mode or 'unknown'} "
                 f"已在 system prompt 中替换 {hits} 处敏感词"
             )
+    except HTTPException:
+        raise
     except Exception as e:
         # 替换失败不应阻断正常请求
         log.warning(f"[SENSITIVE_WORDS] 敏感词替换失败，已跳过: {e}")
