@@ -5,6 +5,12 @@ import zlib
 import pytest
 
 
+def test_disabled_capture_does_not_expand_empty_details():
+    from src.storage.call_record_content import encode_details
+
+    assert encode_details({}) == "{}"
+
+
 @pytest.mark.asyncio
 async def test_new_details_are_compressed_and_legacy_details_remain_readable(tmp_path, monkeypatch):
     from src.storage.sqlite_manager import SQLiteManager

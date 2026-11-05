@@ -23,7 +23,9 @@ def compress_details(raw: bytes) -> bytes:
     return packed
 
 
-def encode_details(details: dict) -> bytes:
+def encode_details(details: dict) -> bytes | str:
+    if not details:
+        return "{}"
     return compress_details(json.dumps(details, ensure_ascii=False).encode("utf-8"))
 
 
