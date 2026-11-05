@@ -3,6 +3,26 @@ import time
 import pytest
 
 
+async def test_realtime_key_names_use_current_name_and_preserve_records():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.panel.call_monitor import _attach_api_key_names
+
+    getter = AsyncMock(side_effect=lambda key: {
+        "id": key, "name": "工作用密钥", "secret_hash": "must-not-leak",
+    } if key == "key-1" else None)
+    rows = [{"api_key_id": "key-1"}, {"api_key_id": "key-1"},
+            {"api_key_id": "deleted-key"}, {"api_key_id": "env"}]
+
+    await _attach_api_key_names(rows, SimpleNamespace(get_api_key_record=getter))
+
+    assert [row["api_key_name"] for row in rows] == [
+        "工作用密钥", "工作用密钥", "未命名密钥", "环境密钥",
+    ]
+    assert rows[0] == {"api_key_id": "key-1", "api_key_name": "工作用密钥"}
+    assert getter.await_count == 3
+
+
 async def _make_adapter(tmp_path, monkeypatch):
     monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
     from src.storage_adapter import StorageAdapter

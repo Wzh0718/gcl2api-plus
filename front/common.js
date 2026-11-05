@@ -2329,7 +2329,7 @@ async function getAntigravityCredentials() {
             AppState.antigravityAuthInProgress = false;
             showStatus(`✅ Antigravity 认证成功！文件已保存到: ${data.file_path}`, 'success');
         } else {
-            showStatus(`❌ 错误: ${data.error || '获取认证文件失败'}`, 'error');
+            showStatus(`❌ 错误: ${data.error || data.detail || '获取认证文件失败'}`, 'error');
         }
     } catch (error) {
         showStatus(`网络错误: ${error.message}`, 'error');
@@ -3188,7 +3188,7 @@ function _cmRenderRealtime(records) {
             ? `<span class="cm-badge cm-badge-ok">成功</span>`
             : `<span class="cm-badge cm-badge-fail">失败</span>`;
         return `<tr>
-            <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmMask(row.api_key_id)}</td>
+            <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmEscape(row.api_key_name || '未命名密钥')}</td>
             ${_cmModelCell(row)}
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.status_code)}</td>
@@ -3203,7 +3203,7 @@ function _cmRenderRealtime(records) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>API KEY</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥名称</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
         </tr></thead>
         <tbody>${body}</tbody>

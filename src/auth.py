@@ -669,8 +669,7 @@ async def asyncio_complete_auth_flow(
                     if project_id:
                         log.info(f"成功从API获取project_id: {project_id}, tier: {subscription_tier}")
                     else:
-                        project_id = DEFAULT_PROJECT_ID
-                        log.warning(f"无法从API获取project_id，使用默认project_id: {project_id}")
+                        raise ValueError("无法从 Google API 获取真实 project_id，未保存凭证，请检查账号资格和网络后重试")
 
                     # 保存antigravity凭证
                     saved_filename = await save_credentials(credentials, project_id, mode="antigravity", subscription_tier=subscription_tier)
@@ -822,8 +821,7 @@ async def complete_auth_flow_from_callback_url(
                 if project_id:
                     log.info(f"成功从API获取project_id: {project_id}, tier: {subscription_tier}")
                 else:
-                    project_id = DEFAULT_PROJECT_ID
-                    log.warning(f"无法从API获取project_id，使用默认project_id: {project_id}")
+                    raise ValueError("无法从 Google API 获取真实 project_id，未保存凭证，请检查账号资格和网络后重试")
 
                 # 保存antigravity凭证
                 saved_filename = await save_credentials(credentials, project_id, mode="antigravity", subscription_tier=subscription_tier)
@@ -966,8 +964,7 @@ async def add_antigravity_account_by_refresh_token(
             proxy_url=proxy_url,
         )
         if not project_id:
-            project_id = DEFAULT_PROJECT_ID
-            log.warning(f"无法从API获取project_id，使用默认project_id: {project_id}")
+            raise ValueError("无法从 Google API 获取真实 project_id，未保存凭证，请检查账号资格和网络后重试")
 
         # 步骤4：保存凭证
         saved_filename = await save_credentials(

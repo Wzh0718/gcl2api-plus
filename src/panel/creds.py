@@ -24,7 +24,7 @@ from src.models import (
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, get_antigravity_user_agent
 from src.api.antigravity import fetch_quota_info, fetch_paid_tier_info
-from src.google_oauth_api import Credentials, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
+from src.google_oauth_api import Credentials, ProjectEligibilityError, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from src.proxy_groups import proxy_argument_from_network
 from config import get_code_assist_endpoint, get_antigravity_api_url
 from .utils import validate_mode
@@ -602,13 +602,21 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
     if mode == "antigravity":
         api_base_url = await get_antigravity_api_url()
         user_agent = get_antigravity_user_agent()
-        project_id, subscription_tier, credit_amount = await fetch_project_id_and_tier(
-            access_token=credentials.access_token,
-            user_agent=user_agent,
-            api_base_url=api_base_url,
-            include_credits=True,
-            proxy_url=credentials.proxy_url,
-        )
+        try:
+            project_id, subscription_tier, credit_amount = await fetch_project_id_and_tier(
+                access_token=credentials.access_token,
+                user_agent=user_agent,
+                api_base_url=api_base_url,
+                include_credits=True,
+                proxy_url=credentials.proxy_url,
+            )
+        except ProjectEligibilityError as e:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "filename": filename,
+                "message": str(e),
+                "reason_codes": e.reason_codes,
+            })
     else:
         # geminicli 模式：通过项目列表获取 project_id
         credit_amount = None
@@ -632,7 +640,7 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
     if project_id:
         credential_data["project_id"] = project_id
 
-    if project_id or subscription_tier:
+    if project_id:
         await storage_adapter.store_credential(filename, credential_data, mode=mode)
 
         # 检验成功后自动解除禁用状态并清除错误码

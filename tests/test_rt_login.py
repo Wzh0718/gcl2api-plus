@@ -1,6 +1,7 @@
 """RT 登录（refresh_token 直接导入 Antigravity 账号）的测试"""
 
 from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 import pytest
 
@@ -181,3 +182,88 @@ async def test_rt_login_fails_without_email(proxy_urls, monkeypatch):
 
     assert result["success"] is False
     assert "error" in result
+
+
+async def test_rt_login_rejects_missing_project_even_with_tier(proxy_urls, monkeypatch):
+    monkeypatch.setattr("src.auth.refresh_access_token_with_clients", AsyncMock(
+        return_value=({"access_token": "at-test"}, oauth_clients.BUILTIN_CLIENT_KEY)
+    ))
+    monkeypatch.setattr("src.auth.get_user_info", AsyncMock(return_value={"email": "user@example.com"}))
+    monkeypatch.setattr("src.auth.fetch_project_id_and_tier", AsyncMock(return_value=(None, "pro")))
+    save = AsyncMock()
+    monkeypatch.setattr("src.auth.save_credentials", save)
+
+    result = await add_antigravity_account_by_refresh_token("rt-test")
+
+    assert result["success"] is False
+    assert "project_id" in result["error"]
+    save.assert_not_awaited()
+
+
+@pytest.mark.parametrize("entrypoint", ["callback_url", "oauth_callback"])
+@pytest.mark.parametrize("age_restricted", [False, True])
+async def test_oauth_login_rejects_missing_project(proxy_urls, monkeypatch, entrypoint, age_restricted):
+    from src import auth
+    from src.google_oauth_api import ProjectEligibilityError
+
+    flow = SimpleNamespace(
+        redirect_uri="http://localhost/callback",
+        exchange_code=AsyncMock(return_value=SimpleNamespace(access_token="at-test")),
+    )
+    monkeypatch.setattr(auth, "auth_flows", {"state-test": {
+        "flow": flow, "mode": "antigravity", "auto_project_detection": True,
+        "code": "code-test", "project_id": None,
+    }})
+    discovery = AsyncMock(return_value=(None, "pro"))
+    if age_restricted:
+        discovery.side_effect = ProjectEligibilityError(["RESTRICTED_AGE"])
+    monkeypatch.setattr(auth, "fetch_project_id_and_tier", discovery)
+    save = AsyncMock()
+    monkeypatch.setattr(auth, "save_credentials", save)
+
+    if entrypoint == "callback_url":
+        result = await auth.complete_auth_flow_from_callback_url(
+            "http://localhost/callback?state=state-test&code=code-test", mode="antigravity"
+        )
+    else:
+        result = await auth.asyncio_complete_auth_flow(mode="antigravity")
+
+    assert result["success"] is False
+    assert "project_id" in result["error"]
+    if age_restricted:
+        assert "RESTRICTED_AGE" in result["error"]
+        assert "年龄验证" in result["error"]
+    save.assert_not_awaited()
+
+
+@pytest.mark.parametrize("age_restricted", [False, True])
+async def test_project_verification_requires_project_even_with_tier(monkeypatch, age_restricted):
+    import json
+    from src.panel import creds
+    from src.google_oauth_api import ProjectEligibilityError
+
+    storage = SimpleNamespace(
+        get_credential=AsyncMock(return_value={"project_id": "old-project"}),
+        resolve_credential_network=AsyncMock(return_value={"proxy_mode": "direct"}),
+        store_credential=AsyncMock(), update_credential_state=AsyncMock(),
+    )
+    credential = SimpleNamespace(
+        access_token="at-test", refresh_if_needed=AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(creds, "get_storage_adapter", AsyncMock(return_value=storage))
+    monkeypatch.setattr(creds.Credentials, "from_dict", lambda data: credential)
+    monkeypatch.setattr(creds, "get_antigravity_api_url", AsyncMock(return_value="https://example.test"))
+    discovery = AsyncMock(return_value=(None, "pro", None))
+    if age_restricted:
+        discovery.side_effect = ProjectEligibilityError(["RESTRICTED_AGE"])
+    monkeypatch.setattr(creds, "fetch_project_id_and_tier", discovery)
+
+    result = await creds.verify_credential_project_common("ag_test.json", mode="antigravity")
+
+    assert result.status_code == 400
+    assert json.loads(result.body)["success"] is False
+    if age_restricted:
+        assert json.loads(result.body)["reason_codes"] == ["RESTRICTED_AGE"]
+        assert "年龄验证" in json.loads(result.body)["message"]
+    storage.store_credential.assert_not_awaited()
+    storage.update_credential_state.assert_not_awaited()

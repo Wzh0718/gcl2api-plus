@@ -23,6 +23,37 @@ from src.httpx_client import get_async, post_async
 from src.oauth_clients import get_candidates, list_clients
 
 
+class ProjectEligibilityError(ValueError):
+    """Google 未分配项目时返回的账号资格限制。"""
+
+    def __init__(self, reason_codes):
+        self.reason_codes = reason_codes
+        reasons = ", ".join(reason_codes)
+        if "RESTRICTED_AGE" in reason_codes:
+            message = (
+                f"无法获取真实 project_id：Google 返回年龄限制（{reasons}）。"
+                "请检查账号真实生日及年龄验证状态；如已满 18 岁，请完成年龄验证后重新登录："
+                "https://myaccount.google.com/age-verification"
+            )
+        elif "VALIDATION_REQUIRED" in reason_codes:
+            message = f"无法获取真实 project_id：Google 要求验证账号（{reasons}），请在官方 Antigravity 客户端完成验证后重新登录"
+        else:
+            message = f"无法获取真实 project_id：Google 返回账号资格限制（{reasons}），请检查账号是否符合使用要求"
+        super().__init__(message)
+
+
+def _check_project_eligibility(data: Dict[str, Any]) -> None:
+    """只在缺少项目时报告限制，避免将某个不可用档位误判为账号不可用。"""
+    if data.get("cloudaicompanionProject"):
+        return
+    reasons = list(dict.fromkeys(
+        tier["reasonCode"] for tier in (data.get("ineligibleTiers") or [])
+        if isinstance(tier, dict) and isinstance(tier.get("reasonCode"), str) and tier["reasonCode"]
+    ))
+    if reasons:
+        raise ProjectEligibilityError(reasons)
+
+
 class TokenError(Exception):
     """Token相关错误"""
 
@@ -703,6 +734,8 @@ async def fetch_project_id_and_tier(
 
         log.warning("[fetch_project_id_and_tier] loadCodeAssist did not return project_id, falling back to onboardUser")
 
+    except ProjectEligibilityError:
+        raise
     except Exception as e:
         log.warning(f"[fetch_project_id_and_tier] loadCodeAssist failed: {type(e).__name__}: {e}")
         log.warning("[fetch_project_id_and_tier] Falling back to onboardUser")
@@ -721,6 +754,8 @@ async def fetch_project_id_and_tier(
             return None, subscription_tier, credit_amount
         return None, subscription_tier
 
+    except ProjectEligibilityError:
+        raise
     except Exception as e:
         log.error(f"[fetch_project_id_and_tier] onboardUser failed: {type(e).__name__}: {e}")
         import traceback
@@ -871,6 +906,8 @@ async def _try_load_code_assist(
         if ineligible_tiers:
             reasons = [t.get("reasonCode") for t in ineligible_tiers if isinstance(t, dict)]
             log.info(f"[loadCodeAssist] Account has ineligibleTiers: {reasons}")
+
+        _check_project_eligibility(data)
 
         # tier 映射：name 优先（如 "Google AI Ultra"），id 兜底；未知不再谎报为 pro
         subscription_tier = None
@@ -1039,6 +1076,8 @@ async def _get_onboard_tier(
     if response.status_code == 200:
         data = response.json()
         log.debug(f"[_get_onboard_tier] Response data: {data}")
+
+        _check_project_eligibility(data)
 
         # 查找默认的 tier
         allowed_tiers = data.get("allowedTiers", [])

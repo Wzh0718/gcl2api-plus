@@ -160,6 +160,19 @@ def _aggregate_from_buffer(
     return result
 
 
+async def _attach_api_key_names(rows: list[Dict[str, Any]], backend: Any) -> None:
+    getter = getattr(backend, "get_api_key_record", None)
+    names = {}
+    for row in rows:
+        key_id = row.get("api_key_id") or "env"
+        if key_id not in names:
+            record = await getter(key_id) if getter else None
+            names[key_id] = (record or {}).get("name") or (
+                "环境密钥" if key_id == "env" else "未命名密钥"
+            )
+        row["api_key_name"] = names[key_id]
+
+
 async def _attach_account_emails(rows: list[Dict[str, Any]], backend: Any) -> None:
     getter = getattr(backend, "get_all_credential_states", None)
     if getter is None:
@@ -302,6 +315,7 @@ async def call_monitor_realtime(
     else:
         counters = monitor.buffer_counters(since_ts=since_ts)
 
+    await _attach_api_key_names(paged["records"], storage._backend)
     await _attach_account_emails(paged["records"], storage._backend)
     await _attach_warmup_status(paged["records"], storage._backend)
     total = int(paged["total"])
