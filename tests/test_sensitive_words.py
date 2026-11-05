@@ -335,7 +335,6 @@ async def test_block_http_403_before_upstream(monkeypatch, stream, protocol, com
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
     from src.router.antigravity import openai, anthropic, gemini, responses
-    from src.utils import authenticate_antigravity_key
     from src.api_keys import ApiKeyPrincipal
     from src.api import antigravity as upstream
 
@@ -356,7 +355,9 @@ async def test_block_http_403_before_upstream(monkeypatch, stream, protocol, com
         app.include_router(module.router)
     async def principal():
         return ApiKeyPrincipal(api_key_id="test", name="Test", kind="managed", key_prefix="test")
-    app.dependency_overrides[authenticate_antigravity_key] = principal
+    # Other tests reload src.utils; override the function each router captured.
+    for module in (openai, anthropic, gemini, responses):
+        app.dependency_overrides[module.authenticate_antigravity_key] = principal
     if protocol == "openai":
         path = "/v1/chat/completions"
         body = {"model": "gemini-3-pro", "stream": stream, "messages": [
