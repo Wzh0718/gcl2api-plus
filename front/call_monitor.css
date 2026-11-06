@@ -1,0 +1,60 @@
+/* 桌面端和移动端共用的耗时提示，独立于表格滚动容器。 */
+.cm-latency-trigger {
+    display: inline;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px dotted currentColor;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    box-shadow: none;
+    cursor: help;
+}
+
+.cm-latency-trigger:hover,
+.cm-latency-trigger:focus-visible {
+    background: transparent;
+    color: var(--ui-accent, #2764ce);
+    transform: none;
+}
+
+.cm-latency-trigger:focus-visible {
+    outline: 2px solid var(--ui-accent, #2764ce);
+    outline-offset: 3px;
+}
+
+.cm-latency-tooltip {
+    position: fixed;
+    z-index: var(--ui-z-toast, 50);
+    top: 0;
+    left: 0;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(560px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    padding: 8px 12px;
+    border: 1px solid var(--ui-border-strong, #c6d1df);
+    border-radius: 8px;
+    background: var(--ui-surface, #fff);
+    color: var(--ui-ink, #172033);
+    box-shadow: 0 4px 16px rgba(23, 32, 51, 0.16);
+    font-size: 13px;
+    line-height: 1.65;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.cm-latency-tooltip-body {
+    white-space: normal;
+}
+
+.cm-latency-tooltip-body span {
+    display: inline-block;
+    white-space: nowrap;
+}

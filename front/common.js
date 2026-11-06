@@ -2708,16 +2708,102 @@ function _cmLatencyCell(row) {
     const hasUpstream = measured(row.upstream_response_seconds);
     const visible = hasUpstream ? format(row.upstream_response_seconds) : _cmFormatLatency(row.gateway_seconds);
     const tip = [
-        `上游耗时：${format(row.upstream_response_seconds)}（本次上游尝试发起 → 收到最后一段响应数据）`,
-        `下游发送耗时：${format(row.downstream_send_seconds)}（累计写出响应正文的耗时，不含等待上游数据）`,
-        '下游测到应用向网络层写出，不代表客户端实际接收完成，也不包含反向代理缓冲。',
-        `上游首字节等待：${format(row.upstream_first_byte_seconds)}`,
-        `客户端响应等待：${format(row.downstream_first_byte_seconds)}（请求进入服务 → 开始返回正文）`,
-        `请求总耗时：${format(row.response_total_seconds)}（含等待和处理，不等于下游发送耗时）`,
-        '上游按该记录最后一次尝试计；流式收发可重叠，以上时间不能直接相加减。',
+        `上游 ${format(row.upstream_response_seconds)}`,
+        `下游发送 ${format(row.downstream_send_seconds)}`,
+        `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
+        `响应等待 ${format(row.downstream_first_byte_seconds)}`,
+        `总计 ${format(row.response_total_seconds)}`,
     ];
-    if (!hasUpstream) tip.push(`主列暂显示原网关处理耗时：${format(row.gateway_seconds)}；新指标不能由历史记录推算。`);
-    return `<span tabindex="0" style="cursor:help;border-bottom:1px dotted currentColor" title="${_cmEscape(tip.join('\n'))}" aria-label="${_cmEscape(tip.join('；'))}">${visible}</span>`;
+    if (!hasUpstream) tip.push(`历史记录：主列为网关耗时 ${format(row.gateway_seconds)}`);
+    return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
+        onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
+        onclick="showCallMonitorLatency(this)" aria-label="${visible}，查看耗时明细">${visible}</button>`;
+}
+
+let callMonitorLatencyTooltip = null;
+
+function closeCallMonitorLatency() {
+    callMonitorLatencyTooltip?.close();
+}
+
+function showCallMonitorLatency(trigger) {
+    if (callMonitorLatencyTooltip?.trigger === trigger) return;
+    closeCallMonitorLatency();
+    const tooltip = document.createElement('div');
+    tooltip.id = 'cmLatencyTooltip';
+    tooltip.className = 'cm-latency-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    const body = document.createElement('div');
+    body.className = 'cm-latency-tooltip-body';
+    trigger.dataset.latencyTip.split('\n').forEach((text, index) => {
+        if (index) body.append(' · ');
+        const metric = document.createElement('span');
+        metric.textContent = text;
+        body.append(metric);
+    });
+    tooltip.append(body);
+    // 放在 body 下，避免被表格的横向滚动容器裁切。
+    document.body.append(tooltip);
+    trigger.setAttribute('aria-describedby', tooltip.id);
+
+    const position = () => {
+        const rect = trigger.getBoundingClientRect();
+        const gap = 8;
+        const margin = 12;
+        const width = document.documentElement.clientWidth;
+        const height = document.documentElement.clientHeight;
+        if (rect.bottom <= 0 || rect.top >= height || rect.right <= 0 || rect.left >= width) {
+            closeCallMonitorLatency();
+            return;
+        }
+        const box = tooltip.getBoundingClientRect();
+        let left = rect.left;
+        let top = rect.bottom + gap + box.height <= height - margin
+            ? rect.bottom + gap : rect.top - gap - box.height;
+        // 优先放在耗时列旁，避免挡住相邻行的耗时，便于连续查看。
+        if (rect.right + gap + box.width <= width - margin) {
+            left = rect.right + gap;
+            top = rect.top;
+        } else if (rect.left - gap - box.width >= margin) {
+            left = rect.left - gap - box.width;
+            top = rect.top;
+        }
+        tooltip.style.left = `${Math.max(margin, Math.min(left, width - box.width - margin))}px`;
+        tooltip.style.top = `${Math.max(margin, Math.min(top, height - box.height - margin))}px`;
+    };
+
+    const events = new AbortController();
+    const options = { signal: events.signal };
+    let leaveTimer;
+    const close = () => {
+        clearTimeout(leaveTimer);
+        events.abort();
+        trigger.removeAttribute('aria-describedby');
+        tooltip.remove();
+        callMonitorLatencyTooltip = null;
+    };
+    const scheduleClose = () => {
+        clearTimeout(leaveTimer);
+        leaveTimer = setTimeout(() => {
+            if (document.activeElement !== trigger && !trigger.matches(':hover') && !tooltip.matches(':hover')) close();
+        }, 150);
+    };
+    callMonitorLatencyTooltip = { trigger, close };
+    position();
+    trigger.addEventListener('mouseleave', scheduleClose, options);
+    trigger.addEventListener('blur', scheduleClose, options);
+    tooltip.addEventListener('mouseenter', () => clearTimeout(leaveTimer), options);
+    tooltip.addEventListener('mouseleave', scheduleClose, options);
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') close();
+    }, options);
+    document.addEventListener('pointerdown', event => {
+        if (!trigger.contains(event.target) && !tooltip.contains(event.target)) close();
+    }, options);
+    window.addEventListener('resize', close, options);
+    window.addEventListener('scroll', event => {
+        if (!tooltip.contains(event.target)) position();
+    }, { ...options, capture: true });
 }
 
 function _cmFormatTokens(value) {
@@ -2867,6 +2953,7 @@ async function loadCallMonitor(options = {}) {
         renderCallMonitor();
     } catch (error) {
         if (!silent) {
+            closeCallMonitorLatency();
             content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(error.message)}</div>`;
         }
     }
@@ -3265,6 +3352,7 @@ function _cmPaginationBar(total, totalPages, infoText) {
 }
 
 function renderCallMonitor() {
+    closeCallMonitorLatency();
     if (callMonitorState.mask) document.getElementById('cmRequestContentDialog')?.remove();
     const content = document.getElementById('callMonitorContent');
     const data = callMonitorState.lastData;
@@ -3314,6 +3402,7 @@ function renderCallMonitor() {
 }
 
 function stopCallMonitorAutoRefresh() {
+    closeCallMonitorLatency();
     if (AppState.callMonitorRefreshInterval) {
         clearInterval(AppState.callMonitorRefreshInterval);
         AppState.callMonitorRefreshInterval = null;
