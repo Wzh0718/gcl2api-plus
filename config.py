@@ -663,6 +663,24 @@ def get_antigravity_pacing_concurrency_sync() -> int:
     )
 
 
+def get_antigravity_account_concurrency(credential_name: str) -> dict:
+    """Account overrides; absent request limit follows global pacing."""
+    raw = _get_cached_config(f"antigravity_account_concurrency:{credential_name}")
+    raw = raw if isinstance(raw, dict) else {}
+    result = {}
+    for key, default in (
+        ("request_concurrency", get_antigravity_pacing_concurrency_sync()),
+        ("image_task_concurrency", 1),
+    ):
+        value = raw.get(key)
+        try:
+            result[key] = min(max(int(value), 1), 64) if value is not None else default
+        except (TypeError, ValueError):
+            result[key] = default
+    result["request_concurrency_override"] = raw.get("request_concurrency")
+    return result
+
+
 async def get_antigravity_pacing_slot_wait_seconds() -> float:
     """并发占满时等待释放的上限（秒），超时返回 429 背压并告警。默认 30。"""
     value = await _async_panel_first(

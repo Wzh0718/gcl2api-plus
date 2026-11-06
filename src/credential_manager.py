@@ -98,7 +98,7 @@ class CredentialManager:
         self._storage_adapter = None
         self._image_runtime_health: Dict[str, Dict[str, Any]] = {}
         self._image_lease_condition = asyncio.Condition()
-        self._image_account_leases: Dict[str, str] = {}
+        self._image_account_leases: Dict[str, Set[str]] = {}
 
     async def _ensure_initialized(self):
         """确保管理器已初始化（内部使用）"""
@@ -124,13 +124,17 @@ class CredentialManager:
     async def _reserve_available_image_credential(
         self, ranked_filenames: List[str]
     ) -> Optional[Tuple[str, str]]:
-        """Atomically reserve the highest-ranked idle image account."""
+        """Atomically reserve the highest-ranked image account with capacity."""
+        from config import get_antigravity_account_concurrency
+
         async with self._image_lease_condition:
             for filename in ranked_filenames:
-                if filename in self._image_account_leases:
+                limit = get_antigravity_account_concurrency(filename)["image_task_concurrency"]
+                leases = self._image_account_leases.get(filename, set())
+                if len(leases) >= limit:
                     continue
                 lease_id = uuid.uuid4().hex
-                self._image_account_leases[filename] = lease_id
+                self._image_account_leases.setdefault(filename, set()).add(lease_id)
                 return filename, lease_id
 
             # All eligible accounts are busy. Waiting under the condition avoids
@@ -145,11 +149,19 @@ class CredentialManager:
         if not lease_id:
             return False
         async with self._image_lease_condition:
-            if self._image_account_leases.get(credential_name) != lease_id:
+            leases = self._image_account_leases.get(credential_name)
+            if not leases or lease_id not in leases:
                 return False
-            del self._image_account_leases[credential_name]
+            leases.remove(lease_id)
+            if not leases:
+                del self._image_account_leases[credential_name]
             self._image_lease_condition.notify_all()
             return True
+
+    async def notify_image_concurrency_changed(self) -> None:
+        """Wake queued image tasks without discarding active leases."""
+        async with self._image_lease_condition:
+            self._image_lease_condition.notify_all()
 
     async def reset_image_account_leases(self) -> None:
         """Clear process-local leases during graceful shutdown or reinitialize."""
@@ -276,7 +288,7 @@ class CredentialManager:
         model_name: str,
         exclude_filenames: Optional[Set[str]] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Reserve one idle image account, waiting when every candidate is busy."""
+        """Reserve one image task slot, waiting when every candidate is busy."""
         attempted_filenames = set(exclude_filenames or set())
         readiness_failures = 0
 

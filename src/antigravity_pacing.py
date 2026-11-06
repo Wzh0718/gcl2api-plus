@@ -54,10 +54,10 @@ class _Slot:
         self.last_backpressure_log = 0.0
 
 
-def _configured_concurrency() -> int:
-    from config import get_antigravity_pacing_concurrency_sync
+def _configured_concurrency(credential_name: str) -> int:
+    from config import get_antigravity_account_concurrency
 
-    return max(get_antigravity_pacing_concurrency_sync(), 1)
+    return get_antigravity_account_concurrency(credential_name)["request_concurrency"]
 
 
 def _lock_for(credential_name: str) -> asyncio.Lock:
@@ -76,7 +76,7 @@ def _slot_for(credential_name: str) -> _Slot:
     if slot is None:
         if len(_SLOTS) >= _MAX_TRACKED:
             _SLOTS.clear()
-        slot = _Slot(_configured_concurrency())
+        slot = _Slot(_configured_concurrency(credential_name))
         _SLOTS[credential_name] = slot
     return slot
 
@@ -127,7 +127,6 @@ async def acquire_credential_slot(credential_name: str) -> float:
     if not credential_name:
         return 0.0
     from config import (
-        get_antigravity_pacing_concurrency_sync,
         get_antigravity_pacing_enabled_sync,
         get_antigravity_pacing_slot_wait_seconds_sync,
     )
@@ -143,7 +142,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
         if not get_antigravity_pacing_enabled_sync():
             return 0.0
 
-        target = max(get_antigravity_pacing_concurrency_sync(), 1)
+        target = _configured_concurrency(credential_name)
         slot = _slot_for(credential_name)
         # 面板下调立即生效；上调只通过 note_success() 逐步恢复（AIMD）
         if slot.limit > target:
@@ -152,6 +151,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
         started = time.monotonic()
         deadline = started + get_antigravity_pacing_slot_wait_seconds_sync()
         while True:
+            slot.limit = min(slot.limit, _configured_concurrency(credential_name))
             if slot.inflight < slot.limit:
                 slot.inflight += 1
                 break
@@ -185,6 +185,14 @@ async def acquire_credential_slot(credential_name: str) -> float:
     except BaseException:
         await release_dynamic_warmup_slot(credential_name)
         raise
+
+
+def apply_account_concurrency(credential_name: str) -> None:
+    """Apply an explicit panel edit immediately and wake queued requests."""
+    slot = _SLOTS.get(credential_name)
+    if slot is not None:
+        slot.limit = _configured_concurrency(credential_name)
+        slot.wakeup.set()
 
 
 def release_credential_slot(credential_name: str) -> None:
@@ -228,7 +236,7 @@ def note_success(credential_name: str) -> None:
     slot = _SLOTS.get(credential_name)
     if slot is None:
         return
-    target = _configured_concurrency()
+    target = _configured_concurrency(credential_name)
     if slot.limit < target:
         slot.limit += 1
 

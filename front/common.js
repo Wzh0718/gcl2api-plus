@@ -179,6 +179,9 @@ function createCredsManager(type) {
                             preview: item.preview,
                             tier: item.tier || null,
                             enable_credit: !!item.enable_credit,
+                            request_concurrency: item.request_concurrency,
+                            request_concurrency_override: item.request_concurrency_override,
+                            image_task_concurrency: item.image_task_concurrency,
                             proxy_mode: item.proxy_mode || 'inherit',
                             proxy_group_id: item.proxy_group_id || null,
                             bound_proxy_node_id: item.bound_proxy_node_id || null,
@@ -1095,6 +1098,7 @@ function buildCredStatusBadges(credInfo, manager) {
         } else {
             statusBadges += '<span class="status-badge" style="background-color: #616161; color: white;" title="当前已关闭Credit模式">Credit: OFF</span>';
         }
+        statusBadges += `<span class="status-badge proxy-policy-badge" title="配置的并发上限；实际容量仍受请求节奏开关、429 自动收紧和养号限制影响">在飞: ${Number(credInfo.request_concurrency || 15)} · 图片任务: ${Number(credInfo.image_task_concurrency || 1)}</span>`;
         const proxyLabels = { inherit: '全局代理', custom: '专属代理', direct: '直连' };
         const proxyLabel = credInfo.proxy_mode === 'group'
             ? `代理组: ${proxyGroupName(credInfo.proxy_group_id)}`
@@ -1188,6 +1192,7 @@ function createCredCard(credInfo, manager) {
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="toggleAntigravityQuotaDetails('${pathId}')" title="查看该凭证的额度信息">查看额度</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="configureAntigravityNetwork('${filename}')" title="设置全局、直连、专属代理或代理组">网络策略</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}')" title="使用账号绑定代理检测出口 IP 与地区资格">检测出口</button>` : ''}
+        ${managerType === 'antigravity' ? `<button class="cred-btn" data-concurrency-account="${escapeHtml(filename)}">并发设置</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-warmup-account="${escapeHtml(filename)}" title="配置真实业务流量渐进放量">养号</button>` : ''}
         ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="冷却当前节点，重新绑定代理节点并检测">重绑检测</button>` : ''}
         ${managerType === 'antigravity' ? (credInfo.enable_credit
@@ -1250,6 +1255,9 @@ function createCredCard(credInfo, manager) {
             }
         });
     });
+    div.querySelectorAll('[data-concurrency-account]').forEach(button => {
+        button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
+    });
     div.querySelectorAll('[data-warmup-account]').forEach(button => {
         button.addEventListener('click', () => {
             openAntigravityWarmupDialog(button.dataset.warmupAccount);
@@ -1257,6 +1265,58 @@ function createCredCard(credInfo, manager) {
     });
 
     return div;
+}
+
+function openAccountConcurrencyDialog(filename) {
+    const current = AppState.antigravityCreds.data[filename] || {};
+    document.getElementById('accountConcurrencyDialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'accountConcurrencyDialog';
+    dialog.className = 'proxy-policy-dialog';
+    dialog.setAttribute('aria-labelledby', 'accountConcurrencyTitle');
+    dialog.innerHTML = `<form class="proxy-policy-form">
+        <div class="proxy-dialog-head"><h3 id="accountConcurrencyTitle">账号并发设置</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p class="proxy-dialog-copy">${escapeHtml(current.user_email || filename)}</p>
+        <label class="proxy-dialog-field"><span>每账号并发上限（在飞请求）</span><input name="requestConcurrency" type="number" min="1" max="64" step="1" placeholder="留空跟随全局，当前 ${Number(current.request_concurrency || 15)}"></label>
+        <label class="proxy-dialog-field"><span>同时执行的图片任务数</span><input name="imageTaskConcurrency" type="number" min="1" max="64" step="1" required></label>
+        <p class="proxy-dialog-copy">两项均支持 1–64。图片任务包含完整生成过程；每次上游请求还受在飞上限约束。在飞上限在请求节奏控制开启时生效，429 自动收紧及养号限制继续生效。下调不会中断正在执行的任务，后续任务等待空位。</p>
+        <p data-error role="alert" class="proxy-dialog-copy"></p>
+        <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">取消</button><button type="submit">保存并实时生效</button></div>
+    </form>`;
+    const form = dialog.querySelector('form');
+    form.elements.requestConcurrency.value = current.request_concurrency_override ?? '';
+    form.elements.imageTaskConcurrency.value = current.image_task_concurrency ?? 1;
+    dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
+    dialog.addEventListener('close', () => dialog.remove());
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        const save = form.querySelector('[type="submit"]');
+        const errorLabel = dialog.querySelector('[data-error]');
+        save.disabled = true;
+        errorLabel.textContent = '';
+        try {
+            const response = await fetch(`./creds/${encodeURIComponent(filename)}/concurrency?mode=antigravity`, {
+                method: 'PATCH', headers: getAuthHeaders(),
+                body: JSON.stringify({
+                    request_concurrency: form.elements.requestConcurrency.value === '' ? null : Number(form.elements.requestConcurrency.value),
+                    image_task_concurrency: Number(form.elements.imageTaskConcurrency.value)
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '并发设置保存失败，请检查输入');
+            dialog.close();
+            showStatus(data.message, 'success');
+            await AppState.antigravityCreds.refresh();
+        } catch (error) {
+            errorLabel.textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    form.elements.requestConcurrency.focus();
 }
 
 const ANTIGRAVITY_WARMUP_CONFIG_FIELDS = [

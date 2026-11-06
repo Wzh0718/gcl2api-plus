@@ -13,7 +13,7 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from log import log
 from src.credential_manager import credential_manager
@@ -26,7 +26,7 @@ from src.utils import verify_panel_token, GEMINICLI_USER_AGENT, get_antigravity_
 from src.api.antigravity import fetch_quota_info, fetch_paid_tier_info
 from src.google_oauth_api import Credentials, ProjectEligibilityError, fetch_project_id_and_tier, get_user_projects, select_default_project, enable_required_apis
 from src.proxy_groups import proxy_argument_from_network
-from config import get_code_assist_endpoint, get_antigravity_api_url
+from config import get_code_assist_endpoint, get_antigravity_api_url, get_antigravity_account_concurrency
 from .utils import validate_mode
 
 
@@ -307,6 +307,7 @@ async def get_creds_status_common(
         if mode == "geminicli":
             cred_info["preview"] = summary.get("preview", True)
         else:
+            cred_info.update(get_antigravity_account_concurrency(summary["filename"]))
             cred_info["enable_credit"] = summary.get("enable_credit", False)
             cred_info["proxy_mode"] = summary.get("proxy_mode", "inherit")
             cred_info["proxy_group_id"] = summary.get("proxy_group_id")
@@ -926,6 +927,39 @@ async def get_cred_detail(
     except Exception as e:
         log.error(f"获取凭证详情失败 {filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AccountConcurrencyRequest(BaseModel):
+    request_concurrency: Optional[int] = Field(default=None, ge=1, le=64, strict=True)
+    image_task_concurrency: int = Field(ge=1, le=64, strict=True)
+
+
+@router.patch("/{filename}/concurrency")
+async def set_account_concurrency(
+    filename: str,
+    request: AccountConcurrencyRequest,
+    token: str = Depends(verify_panel_token),
+    mode: str = "antigravity",
+):
+    """Persist both account limits through the shared configuration backend."""
+    import config
+    from src.antigravity_pacing import apply_account_concurrency
+
+    if validate_mode(mode) != "antigravity":
+        raise HTTPException(status_code=400, detail="并发设置仅支持 Antigravity 账号")
+    if not filename.endswith(".json") or os.path.basename(filename) != filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    adapter = await get_storage_adapter()
+    if not await adapter.get_credential(filename, mode=mode):
+        raise HTTPException(status_code=404, detail="凭证文件不存在")
+    payload = request.model_dump()
+    key = f"antigravity_account_concurrency:{filename}"
+    if not await adapter.set_config(key, payload):
+        raise HTTPException(status_code=500, detail="并发设置保存失败")
+    await config.reload_config()
+    apply_account_concurrency(filename)
+    await credential_manager.notify_image_concurrency_changed()
+    return {"message": "账号并发设置已保存", **config.get_antigravity_account_concurrency(filename)}
 
 
 @router.post("/action")
