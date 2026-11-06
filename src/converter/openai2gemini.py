@@ -1231,6 +1231,9 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
             - systemInstruction: 系统指令 (如果有)
             - tools, toolConfig (如果有)
     """
+    from src.request_timing import capture_request_parameters
+    capture_request_parameters(openai_request)
+
     # 处理连续的system消息（兼容性模式）
     openai_request = await merge_system_messages(openai_request)
 

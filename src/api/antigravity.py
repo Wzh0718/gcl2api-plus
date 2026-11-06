@@ -975,6 +975,8 @@ async def _stream_request_inner(
     original_model = model_name  # 客户端原始请求模型；降级链切换后用于记录对比
     inner_request = body.get("request", body)
     image_request = is_antigravity_image_request(model_name, inner_request)
+    from src.request_timing import mark_stage
+    mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证
@@ -1616,6 +1618,8 @@ async def _non_stream_image_request_inner(
     final_payload = None
     last_request_id = f"image-{uuid.uuid4()}"
     billing_recorded = False
+    from src.request_timing import mark_stage
+    mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     async def record_billing_once(
@@ -1942,6 +1946,8 @@ async def non_stream_request(
 
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
+    from src.request_timing import mark_stage
+    mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证

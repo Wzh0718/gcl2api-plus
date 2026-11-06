@@ -96,8 +96,9 @@ class CallMonitor:
         """记录一次调用。任何持久化失败都不影响请求主流程。"""
         from src.request_features import build_request_features
 
-        from src.request_timing import request_timing
+        from src.request_timing import request_timing, mark_stage
 
+        mark_stage("monitor_started")
         timing = request_timing.get()
         features, details = build_request_features(upstream_request)
         row: Dict[str, Any] = {
@@ -129,7 +130,8 @@ class CallMonitor:
                        downstream_first_byte_seconds=timing.downstream_first_byte_seconds,
                        response_total_seconds=timing.response_total_seconds,
                        upstream_response_seconds=timing.upstream_response_seconds,
-                       downstream_send_seconds=timing.downstream_send_seconds)
+                       downstream_send_seconds=timing.downstream_send_seconds,
+                       timing_details=timing.details())
         async with self._lock:
             self._buffer.append(row)
         try:
@@ -139,12 +141,14 @@ class CallMonitor:
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
         await self._maybe_cleanup()
+        mark_stage("monitor_finished")
 
     async def finish_timing(self, timing) -> None:
         values = {
             "downstream_first_byte_seconds": timing.downstream_first_byte_seconds,
             "response_total_seconds": timing.response_total_seconds,
             "downstream_send_seconds": timing.downstream_send_seconds,
+            "timing_details": timing.details(),
         }
         # Existing bounded deque only; no per-request lookup cache is retained.
         async with self._lock:

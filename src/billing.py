@@ -508,6 +508,8 @@ class BillingRecorder:
                     upstream_request: Optional[dict] = None) -> bool:
         if not request_id:
             return False
+        from src.request_timing import mark_stage
+        mark_stage("billing_started")
         metrics = usage or calculate_usage_metrics(usage_metadata)
         price = await self._price_for(model)
         costs = calculate_costs(metrics, price)

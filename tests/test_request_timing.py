@@ -74,6 +74,8 @@ async def test_timing_persists_without_content_capture_and_legacy_is_unknown(tmp
         assert rows['new']['upstream_first_byte_seconds'] is not None
         assert rows['new']['upstream_response_seconds'] is not None
         assert rows['new']['downstream_send_seconds'] >= 0
+        assert 'monitor_finished' in rows['new']['timing_details']['stages']
+        assert rows['legacy']['timing_details'] == {}
         assert rows['legacy']['upstream_response_seconds'] is None
         assert rows['legacy']['downstream_send_seconds'] is None
         assert rows['new']['response_total_seconds'] >= rows['new']['downstream_first_byte_seconds']
@@ -266,5 +268,30 @@ async def test_upstream_duration_ends_at_last_data_not_after_downstream_send(mon
             now[0] += 3  # Consumer processing or downstream transmission.
         assert state.upstream_first_byte_seconds == 5
         assert state.upstream_response_seconds == 12
+    finally:
+        request_timing.reset(token)
+
+
+def test_stage_metadata_is_bounded_and_never_contains_content():
+    import json
+    from src.request_timing import RequestTiming, mark_stage, capture_request_parameters
+    state = RequestTiming()
+    token = request_timing.set(state)
+    try:
+        for i in range(10000):
+            mark_stage(f"untrusted-{i}")
+        mark_stage("auth_started")
+        capture_request_parameters({"messages": [{"content": "secret prompt"}],
+                                    "tools": [{"name": "secret tool", "schema": "x" * 10000}],
+                                    "response_format": {"type": "json_schema", "schema": "secret schema"},
+                                    "temperature": 0.5, "max_tokens": 100})
+        details = state.details()
+        encoded = json.dumps(details)
+        assert len(state.stages) == 1
+        assert len(encoded) < 1000
+        assert 'secret' not in encoded
+        assert details['parameters']['tools'] == 1
+        assert details['parameters']['messages'] == 1
+        assert details['parameters']['response_format'] == 'json_schema'
     finally:
         request_timing.reset(token)

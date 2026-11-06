@@ -19,9 +19,43 @@ class RequestTiming:
     upstream_response_seconds: float | None = None
     downstream_send_seconds: float | None = None
     monitor: object = None
+    stages: dict = field(default_factory=dict)
+    parameters: dict = field(default_factory=dict)
+
+    def details(self):
+        return {"stages": dict(self.stages), "parameters": dict(self.parameters)}
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar('request_timing', default=None)
+
+
+_STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api_started",
+                          "first_upstream_send", "last_upstream_send", "last_upstream_data",
+                          "billing_started", "monitor_started", "monitor_finished"})
+
+
+def mark_stage(name, *, replace=False):
+    state = request_timing.get()
+    if state is not None and name in _STAGE_NAMES and (replace or name not in state.stages):
+        state.stages[name] = time.monotonic() - state.started
+
+
+def capture_request_parameters(body):
+    """Fixed metadata only: never retain prompts, tool schemas, URLs or identifiers."""
+    state = request_timing.get()
+    if state is None:
+        return
+    meta = {"stream": bool(body.get("stream")), "messages": len(body.get("messages") or []),
+            "tools": len(body.get("tools") or [])}
+    for name in ("max_tokens", "temperature", "top_p"):
+        value = body.get(name)
+        if isinstance(value, (int, float)):
+            meta[name] = value
+    raw_format = body.get("response_format")
+    fmt = raw_format.get("type") if isinstance(raw_format, dict) else None
+    if isinstance(fmt, str) and fmt in {"json_object", "json_schema", "text"}:
+        meta["response_format"] = fmt
+    state.parameters = meta
 
 
 class _TimedStream(httpx.AsyncByteStream):
@@ -40,6 +74,7 @@ class _TimedStream(httpx.AsyncByteStream):
                     self.state.upstream_first_byte_seconds = elapsed
                 # Last received data, not iterator teardown after downstream sends.
                 self.state.upstream_response_seconds = elapsed
+                self.state.stages["last_upstream_data"] = time.monotonic() - self.state.started
             yield chunk
 
     async def aclose(self):
@@ -56,6 +91,8 @@ def timing_hook(url):
     state = request_timing.get()
     if state is None or not any(part in url for part in (':generateContent', ':streamGenerateContent')):
         return None
+    mark_stage("first_upstream_send")
+    mark_stage("last_upstream_send", replace=True)
     started = time.monotonic()
     state.upstream_first_byte_seconds = None
     state.upstream_response_seconds = None
@@ -87,6 +124,12 @@ class RequestTimingMiddleware:
         state = RequestTiming()
         token = request_timing.set(state)
 
+        async def timed_receive():
+            message = await receive()
+            if message["type"] == "http.request" and not message.get("more_body", False):
+                mark_stage("body_received")
+            return message
+
         async def timed_send(message):
             if (message['type'] == 'http.response.body' and message.get('body')
                     and state.downstream_first_byte_seconds is None):
@@ -104,7 +147,7 @@ class RequestTimingMiddleware:
                 state.response_total_seconds = time.monotonic() - state.started
 
         try:
-            await self.app(scope, receive, timed_send)
+            await self.app(scope, timed_receive, timed_send)
         finally:
             request_timing.reset(token)
             # Await one bounded update inline; never leave a background task per request.

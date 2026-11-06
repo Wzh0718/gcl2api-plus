@@ -687,7 +687,8 @@ class SQLiteManager(AntigravityWarmupStore):
             columns = {row[1] for row in await cursor.fetchall()}
         for name, kind in (("timing_id", "TEXT"), ("upstream_first_byte_seconds", "REAL"),
                            ("downstream_first_byte_seconds", "REAL"), ("response_total_seconds", "REAL"),
-                           ("upstream_response_seconds", "REAL"), ("downstream_send_seconds", "REAL")):
+                           ("upstream_response_seconds", "REAL"), ("downstream_send_seconds", "REAL"),
+                           ("timing_details", "TEXT")):
             if name not in columns:
                 await db.execute(f"ALTER TABLE call_records ADD COLUMN {name} {kind}")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_call_records_timing_id "
@@ -2806,7 +2807,7 @@ class SQLiteManager(AntigravityWarmupStore):
         "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
         "total_tokens", "total_cost", "currency", "request_features",
         "timing_id", "upstream_first_byte_seconds", "downstream_first_byte_seconds", "response_total_seconds",
-        "upstream_response_seconds", "downstream_send_seconds",
+        "upstream_response_seconds", "downstream_send_seconds", "timing_details",
     )
 
     @classmethod
@@ -2814,6 +2815,7 @@ class SQLiteManager(AntigravityWarmupStore):
         item = dict(zip(cls._CALL_RECORD_COLUMNS, row))
         item["success"] = bool(item["success"])
         item["request_features"] = json.loads(item.get("request_features") or "{}")
+        item["timing_details"] = json.loads(item.get("timing_details") or "{}")
         return item
 
     async def insert_call_record(
@@ -2846,6 +2848,7 @@ class SQLiteManager(AntigravityWarmupStore):
         response_total_seconds: Optional[float] = None,
         upstream_response_seconds: Optional[float] = None,
         downstream_send_seconds: Optional[float] = None,
+        timing_details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """写入一条逐请求调用记录（由调用监控模块调用，计费去重后才触发）。"""
         self._ensure_initialized()
@@ -2859,8 +2862,8 @@ class SQLiteManager(AntigravityWarmupStore):
                         input_tokens, output_tokens, cache_tokens, thought_tokens,
                         total_tokens, total_cost, currency, request_features, request_details,
                         timing_id, upstream_first_byte_seconds, downstream_first_byte_seconds, response_total_seconds,
-                        upstream_response_seconds, downstream_send_seconds
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        upstream_response_seconds, downstream_send_seconds, timing_details
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     request_id, float(created_at), api_key_id or "env",
                     os.path.basename(credential_name or ""), channel or "antigravity",
@@ -2872,7 +2875,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     json.dumps(request_features or {}, ensure_ascii=False),
                     packed_details, timing_id, upstream_first_byte_seconds,
                     downstream_first_byte_seconds, response_total_seconds,
-                    upstream_response_seconds, downstream_send_seconds,
+                    upstream_response_seconds, downstream_send_seconds, json.dumps(timing_details or {}),
                 ),
             )
             await db.commit()
@@ -2881,13 +2884,14 @@ class SQLiteManager(AntigravityWarmupStore):
         self, timing_id: str, *, downstream_first_byte_seconds: Optional[float],
         response_total_seconds: Optional[float],
         downstream_send_seconds: Optional[float] = None,
+        timing_details: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._ensure_initialized()
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 "UPDATE call_records SET downstream_first_byte_seconds = ?, "
-                "response_total_seconds = ?, downstream_send_seconds = ? WHERE timing_id = ?",
-                (downstream_first_byte_seconds, response_total_seconds, downstream_send_seconds, timing_id),
+                "response_total_seconds = ?, downstream_send_seconds = ?, timing_details = ? WHERE timing_id = ?",
+                (downstream_first_byte_seconds, response_total_seconds, downstream_send_seconds, json.dumps(timing_details or {}), timing_id),
             )
             await db.commit()
 

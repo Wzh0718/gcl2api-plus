@@ -329,6 +329,8 @@ async def authenticate_antigravity_key(
     key: Optional[str] = Query(None),
 ):
     """Authenticate Antigravity calls with a managed key or the legacy env key."""
+    from src.request_timing import mark_stage
+    mark_stage("auth_started")
     # Some Gemini clients incorrectly append the API key as
     # ``...:generateContent/key=<token>`` instead of using ``?key=<token>``.
     # Compatibility routes expose that value as ``path_key``.
@@ -350,12 +352,15 @@ async def authenticate_antigravity_key(
         from src.api_keys import ApiKeyPrincipal
 
         log.debug(f"Antigravity authentication successful using {auth_method} (environment key)")
+        mark_stage("auth_finished")
         return ApiKeyPrincipal("env", "环境配置密钥", "environment", "env")
     try:
         from src.api_keys import ApiKeyAuthError, ApiKeyService
         from src.storage_adapter import get_storage_adapter
 
-        return await ApiKeyService(await get_storage_adapter()).authenticate(token)
+        principal = await ApiKeyService(await get_storage_adapter()).authenticate(token)
+        mark_stage("auth_finished")
+        return principal
     except ApiKeyAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except HTTPException:
