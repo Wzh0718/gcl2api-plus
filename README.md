@@ -14,6 +14,8 @@
 
 本仓库 [Wzh0718/gcl2api-plus](https://github.com/Wzh0718/gcl2api-plus) 基于上游项目 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) 二次开发，遵循上游原有许可证。
 
+本项目修改部分版权归 © 2026 Wzh0718（wangzehang）所有；保留上游版权声明，完整许可条款见 [LICENSE](LICENSE)。
+
 当前定制版本新增或优化了：
 
 - API Key 签发与管理；
