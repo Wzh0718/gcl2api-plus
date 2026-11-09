@@ -1,6 +1,8 @@
-# GeminiCLI to API
+# gcl2api-plus
 
-**GeminiCLIおよびAntigravityをOpenAI、GEMINI、Claude API互換インターフェースに変換**
+**Antigravity・Vertexへの接続、APIキー管理、使用量の課金集計、複数アカウントの認証情報管理**
+
+AntigravityはOpenAI Chat Completions / Responses、Gemini、Anthropic Messages互換APIを提供します。VertexはOpenAI Chat CompletionsとGemini互換APIを提供します。現在のバージョンではGeminiCLIチャネルは提供していません。
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](../LICENSE)

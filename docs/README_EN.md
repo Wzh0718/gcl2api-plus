@@ -1,6 +1,8 @@
-# GeminiCLI to API
+# gcl2api-plus
 
-**Convert GeminiCLI and Antigravity into OpenAI, GEMINI, and Claude API-compatible interfaces.**
+**Antigravity and Vertex integration with API key management, usage billing, and multi-account credential management.**
+
+Antigravity provides OpenAI Chat Completions / Responses, Gemini, and Anthropic Messages compatible interfaces. Vertex provides OpenAI Chat Completions and Gemini compatible interfaces. The current version no longer provides the GeminiCLI channel.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](../LICENSE)

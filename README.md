@@ -1,6 +1,8 @@
-# GeminiCLI to API
+# gcl2api-plus
 
-**将 GeminiCLI 和 Antigravity 转换为 OpenAI、GEMINI 和 Claude API 兼容接口**
+**提供 Antigravity 与 Vertex 接入、API Key 管理、用量计费和多账号凭证管理**
+
+Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Messages 兼容接口；Vertex 提供 OpenAI Chat Completions 和 Gemini 兼容接口。当前版本不再提供 GeminiCLI 通道。
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](LICENSE)
@@ -122,7 +124,7 @@ ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 
 模型列表保留普通模型，并使用 `流式抗截断/` 展示抗截断选项；旧客户端已保存的 `抗截断/` 模型名仍可使用。基础模型是否可用取决于对应通道的模型列表和账号权限。
 
-抗截断仅对流式请求生效：OpenAI / Anthropic 请求需设置 `stream: true`，Gemini 请求需使用 `:streamGenerateContent`。非流式请求仍接受这两种前缀，会剥离前缀并正常调用基础模型，但不执行抗截断续传。该前缀兼容适用于 GeminiCLI 和 Antigravity 通道。
+抗截断仅对流式请求生效：OpenAI / Anthropic 请求需设置 `stream: true`，Gemini 请求需使用 `:streamGenerateContent`。非流式请求仍接受这两种前缀，会剥离前缀并正常调用基础模型，但不执行抗截断续传。该前缀兼容适用于 Antigravity 通道。
 
 ## 控制面板功能展示
 
