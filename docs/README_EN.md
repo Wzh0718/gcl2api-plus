@@ -16,15 +16,27 @@ Antigravity provides OpenAI Chat Completions / Responses, Gemini, and Anthropic 
 
 This repository, [Wzh0718/gcl2api-plus](https://github.com/Wzh0718/gcl2api-plus), is a customized distribution based on [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) and follows the upstream license.
 
-The customized distribution adds or improves:
+### Current features
 
-- API key issuance and management;
-- Antigravity / RT login and multi-account credential management;
-- Token usage, billing, and statistics modules;
-- Account health checks, 403 rechecks, and quota reconciliation;
-- Proxy groups, OAuth clients, and Redis billing mirrors;
-- Stream guarding, image parameter normalization, and model quota fallback chains;
-- GitHub Actions synchronization and publishing to GitHub Container Registry.
+This repository is maintained independently from upstream. Its main capabilities and custom improvements are:
+
+| Feature | Details |
+| --- | --- |
+| API compatibility | Antigravity supports OpenAI Chat Completions / Responses, Gemini, and Anthropic Messages. Vertex supports OpenAI Chat Completions and Gemini. The GeminiCLI channel is no longer provided. |
+| API key management | Issue, copy, enable, disable, and revoke keys; configure monetary quotas, expiration, and manual or monthly quota resets; inspect usage and remaining balances per key. |
+| Login and credential pool | Antigravity OAuth login, Refresh Token (RT) import, and multi-account management; rotation across available accounts, per-account concurrency controls, and credential switching on errors. |
+| Account checks and recovery | Account health, model quota, and network eligibility checks; periodic rechecks for recoverable 403 errors, manual rechecks only for explicit TOS / account_forbidden errors, and quota reconciliation. |
+| Gradual account ramp-up | Enable per account or in bulk; progressively increase traffic using real requests, with concurrency and pacing limits per account and shared egress IP, plus backoff or suspension on errors. See the [state machine specification](ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md). |
+| Account proxies and egress | Inherited proxies, account-specific proxies, direct connections, and proxy groups; optional exclusive account-to-node binding with egress IP, region eligibility, and proxy health checks. |
+| Token usage and billing | Configurable model token prices, request deduplication, summaries, rankings, and per-key bills; historical bills retain their original prices. SQLite stores the records; optional Redis mirrors and dashboards fall back to SQLite on failure. |
+| Call monitoring and logs | Inspect live calls, usage, and logs; compare requested models with the upstream execution model returned in `modelVersion`, and persist execution model records. |
+| Streaming and continuation | Stream idle timeout protection and the `假流式/`, `流式抗截断/`, and `抗截断/` model prefixes; automatic continuation applies only to streaming requests, with the legacy prefix retained. |
+| Quota fallback | Optional model fallback chains, disabled by default; triggered only by explicit quota-exhaustion 429 errors. Image requests do not use this fallback chain. |
+| Image parameters and transport | Gemini image parameters, OpenAI Chat Completions top-level `size`, and legacy size suffixes; dedicated image transport, capacity error handling, and bounded retries. See the [image API guide](ANTIGRAVITY_IMAGE_API.md). |
+| Client name filtering | Rewrite client names in system prompts or block matching requests locally, using built-in or custom rules; user messages and tool calls remain unchanged. |
+| Deployment and releases | Desktop and mobile control panels, Docker / Compose deployment, and multi-architecture GHCR images; releases use a local script or manually triggered GitHub Actions, with no automatic upstream synchronization. |
+
+See the [development and release guide](CUSTOMIZATION.md) for configuration, defaults, and activation requirements.
 
 ### Official image
 

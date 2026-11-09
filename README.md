@@ -18,15 +18,27 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 
 本项目修改部分版权归 © 2026 Wzh0718（wangzehang）所有；保留上游版权声明，完整许可条款见 [LICENSE](LICENSE)。
 
-当前定制版本新增或优化了：
+### 当前版本功能
 
-- API Key 签发与管理；
-- Antigravity / RT 登录和多账号凭证管理；
-- Token 用量、费用和统计模块；
-- 账号健康检查、403 复核和额度对账；
-- 代理分组、OAuth 客户端和 Redis 计费镜像；
-- 流式响应守护、模型参数规范化和模型配额降级链；
-- 多架构镜像发布到 GitHub Container Registry（手动触发）。
+本仓库在上游基础上持续独立维护，主要能力与定制改进如下：
+
+| 功能 | 具体说明 |
+| --- | --- |
+| API 协议接入 | Antigravity 支持 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Messages；Vertex 支持 OpenAI Chat Completions 和 Gemini。当前不提供 GeminiCLI 通道。 |
+| API Key 管理 | 签发、复制、启停和吊销独立密钥；配置金额额度、到期时间，以及手动或每月额度重置；查看各密钥用量和剩余额度。 |
+| 登录与凭证池 | 支持 Antigravity OAuth 登录、Refresh Token（RT）导入和多账号凭证管理；按可用账号轮转，控制每账号并发并在异常时切换凭证。 |
+| 账号检查与恢复 | 检查账号健康、模型额度与网络资格；对可恢复的 403 定期复检，明确的 TOS / account_forbidden 账号仅人工复检；提供额度对账。 |
+| 动态养号与渐进放量 | 可按账号或批量开启，使用真实业务请求逐档放量；限制账号及同出口 IP 组的并发和请求间隔，异常时退避或暂停。详见[状态机说明](docs/ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md)。 |
+| 账号代理与出口管理 | 支持继承全局代理、独立代理、直连及代理组；可启用一账号一节点的独占绑定，并检查出口 IP、地区资格和代理健康。 |
+| Token 用量与费用统计 | 配置模型 Token 单价，按请求去重入账，查看汇总、排行和密钥账单；历史账单保留当时价格。SQLite 持久化，Redis 可选作计费镜像和看板数据源，故障时回退 SQLite。 |
+| 调用监控与日志 | 查看实时调用、用量和日志；对照请求模型与上游返回的实际执行模型 `modelVersion`，并持久化实际模型记录。 |
+| 流式响应与抗截断 | 支持流式空闲超时守护，以及 `假流式/`、`流式抗截断/`、`抗截断/` 三种模型前缀；抗截断仅对流式请求执行续传，旧前缀继续兼容。 |
+| 配额耗尽降级 | 可配置模型降级链，默认关闭；仅在明确的配额耗尽型 429 时触发，图片请求不使用该降级链。 |
+| 图片参数与传输 | 兼容 Gemini 图片参数及 OpenAI Chat Completions 顶层 `size`，保留历史尺寸后缀；图片请求使用独立的传输、容量错误处理和有限重试策略。详见[图片 API 说明](docs/ANTIGRAVITY_IMAGE_API.md)。 |
+| 客户端名称过滤 | 支持对 system prompt 中的客户端名称执行替换或本地拦截，可配置内置词与自定义规则；不修改用户消息和工具调用。 |
+| 部署与发布 | 提供桌面及移动控制面板、Docker / Compose 部署，以及 GHCR 多架构镜像；通过本地脚本或手动触发 GitHub Actions 发布，无自动上游同步。 |
+
+详细配置、默认值和启用条件见[开发与发布指南](docs/CUSTOMIZATION.md)。
 
 ### 官方镜像
 
