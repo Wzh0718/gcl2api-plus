@@ -2765,19 +2765,19 @@ function _cmLatencyCell(row) {
         && Number.isFinite(Number(value)) && Number(value) >= 0;
     const format = value => measured(value)
         ? (Number(value) < 1 ? `${(Number(value) * 1000).toFixed(2)}ms` : _cmFormatLatency(Number(value))) : '未采集';
-    const hasUpstream = measured(row.upstream_response_seconds);
-    const visible = hasUpstream ? format(row.upstream_response_seconds) : _cmFormatLatency(row.gateway_seconds);
+    const hasTotal = measured(row.response_total_seconds);
+    const visible = format(row.response_total_seconds);
     const tip = [
+        `总耗时 ${visible}`,
         `上游 ${format(row.upstream_response_seconds)}`,
         `下游发送 ${format(row.downstream_send_seconds)}`,
         `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
         `响应等待 ${format(row.downstream_first_byte_seconds)}`,
-        `总计 ${format(row.response_total_seconds)}`,
     ];
-    if (!hasUpstream) tip.push(`历史记录：主列为网关耗时 ${format(row.gateway_seconds)}`);
+    if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
     return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
-        onclick="showCallMonitorLatency(this)" aria-label="${visible}，查看耗时明细">${visible}</button>`;
+        onclick="showCallMonitorLatency(this)" aria-label="总耗时 ${visible}，查看耗时明细">${visible}</button>`;
 }
 
 let callMonitorLatencyTooltip = null;
@@ -3372,7 +3372,7 @@ function _cmRenderRealtime(records) {
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>密钥名称</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
