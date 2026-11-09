@@ -3355,9 +3355,9 @@
                                 <div class="config-info">
                                     <strong>注意：</strong>抗截断功能现在通过模型名控制：
                                     <ul style="margin: 5px 0; padding-left: 20px;">
-                                        <li>选择带有 "抗截断/" 前缀的模型即可启用</li>
-                                        <li>流式和非流式请求均有效</li>
-                                        <li>例如: "抗截断/gemini-2.5-pro"</li>
+                                        <li>选择带有 "流式抗截断/" 前缀的模型，兼容旧前缀 "抗截断/"</li>
+                                        <li>仅流式请求启用；非流式请求正常调用基础模型，不执行抗截断续传</li>
+                                        <li>例如: "流式抗截断/gemini-2.5-pro"；不带前缀时正常调用</li>
                                     </ul>
                                 </div>
                             </div>

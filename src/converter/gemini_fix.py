@@ -747,7 +747,7 @@ _FAMILY_TIER_TABLE = {
 # 上游 exact ID 的档位后缀（长后缀在前，避免 -low 吃掉 -extra-low）
 _UPSTREAM_TIER_SUFFIXES = ("-extra-low", "-tiered", "-medium", "-high", "-low")
 
-_FEATURE_MODEL_PREFIXES = ("假流式/", "流式抗截断/")
+_FEATURE_MODEL_PREFIXES = ("假流式/", "流式抗截断/", "抗截断/")
 
 
 def map_antigravity_gemini_model(model_name: str, thinking_level: Optional[str], thinking_budget: Optional[int]) -> str:

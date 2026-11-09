@@ -108,6 +108,20 @@ ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 
 只有明确的配额耗尽型 429 才会触发降级；图片请求不会自动切换模型。具体配置映射见 [`config.py`](config.py) 和控制面板设置页。
 
+### 普通模型与流式抗截断
+
+普通模型和流式抗截断模型可按需选择，例如：
+
+| 请求模型名 | 行为 |
+| --- | --- |
+| `gemini-2.5-flash` | 正常调用，不启用抗截断 |
+| `流式抗截断/gemini-2.5-flash` | 调用同一基础模型，流式请求启用抗截断续传 |
+| `抗截断/gemini-2.5-flash` | 兼容旧前缀，行为与 `流式抗截断/` 相同 |
+
+模型列表保留普通模型，并使用 `流式抗截断/` 展示抗截断选项；旧客户端已保存的 `抗截断/` 模型名仍可使用。基础模型是否可用取决于对应通道的模型列表和账号权限。
+
+抗截断仅对流式请求生效：OpenAI / Anthropic 请求需设置 `stream: true`，Gemini 请求需使用 `:streamGenerateContent`。非流式请求仍接受这两种前缀，会剥离前缀并正常调用基础模型，但不执行抗截断续传。该前缀兼容适用于 GeminiCLI 和 Antigravity 通道。
+
 ## 控制面板功能展示
 
 ### API Key 管理
