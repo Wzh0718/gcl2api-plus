@@ -93,14 +93,20 @@ def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
         tools.append({"functionDeclarations": [SYNTHETIC_TOOL_DECLARATION]})
         request_data["tools"] = tools
 
-    # 2. 强制选择合成工具。
-    # AUTO 依赖模型遵守 systemInstruction；模型行为变化后可能退回普通文本，
-    # 既绕过 emit_answer，也失去抗截断语义。ANY + allowedFunctionNames
-    # 保证每次抗截断请求都进入可续传的合成工具链。
+    # 2. 确保 toolConfig.functionCallingConfig.mode 允许工具调用
     tool_config = request_data.get("toolConfig") or {}
     func_config = tool_config.get("functionCallingConfig") or {}
-    func_config["mode"] = "ANY"
-    func_config["allowedFunctionNames"] = [SYNTHETIC_TOOL_NAME]
+    current_mode = func_config.get("mode", "")
+    # 如果当前模式是 NONE（禁止工具调用），需要改为 AUTO
+    if current_mode == "NONE":
+        func_config["mode"] = "AUTO"
+        tool_config["functionCallingConfig"] = func_config
+        request_data["toolConfig"] = tool_config
+    elif not current_mode:
+        # 未设置时默认 AUTO
+        func_config["mode"] = "AUTO"
+        tool_config["functionCallingConfig"] = func_config
+        request_data["toolConfig"] = tool_config
 
     # Vertex/Antigravity can stream function-call arguments as partialArgs.
     # Without this flag emit_answer is buffered until its complete JSON args
