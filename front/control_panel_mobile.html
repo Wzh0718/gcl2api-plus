@@ -2104,6 +2104,7 @@
                                 id="cmCountRealtime">0</span></button>
                     </div>
                     <div class="cm-side">
+                        <span class="cm-counter" title="当前服务进程已接收、尚未结束的模型 API 请求，含流式响应；不受时间范围和失败筛选影响，每 10 秒刷新，多 worker 时仅代表当前进程。">在途请求: <b id="cmInflightCount" role="status" aria-live="polite">—</b></span>
                         <span class="cm-counter">日志: <b id="cmLogsCount">0</b></span>
                         <span class="cm-counter">失败: <b id="cmFailedCount">0</b></span>
                         <select id="cmRange" class="cm-select" onchange="onCallMonitorRangeChange(this)"

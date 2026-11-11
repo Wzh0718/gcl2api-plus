@@ -186,6 +186,7 @@ function createCredsManager(type) {
                             proxy_group_id: item.proxy_group_id || null,
                             bound_proxy_node_id: item.bound_proxy_node_id || null,
                             bound_proxy_node_name: item.bound_proxy_node_name || null,
+                            proxy_502_warning: item.proxy_502_warning || null,
                             egress_ip: item.egress_ip || null,
                             egress_country: item.egress_country || null,
                             binding_status: item.binding_status || 'unchecked',
@@ -917,6 +918,7 @@ function _formatCheckStage(label, stage) {
 
 async function checkAntigravityNetworkHealth(filename, rebind = false) {
     const action = rebind ? 'rebind' : 'check';
+    if (rebind && !confirm('更换此账号绑定的代理节点？将从同组选择其他可用节点，独占组不会占用其他账号的节点。')) return;
     try {
         showStatus(rebind ? '正在重绑并检测出口…' : '正在全链路检测（代理 → 出口资格 → 消息）…', 'info');
         const response = await fetch(
@@ -940,6 +942,8 @@ async function checkAntigravityNetworkHealth(filename, rebind = false) {
             health.eligibility_status === 'eligible' ? 'success' : 'error'
         );
     } catch (error) {
+        // A new binding may already be saved even if its health check failed.
+        if (rebind) await AppState.antigravityCreds.refresh();
         showStatus(`${rebind ? '重绑检测' : '出口检测'}失败: ${error.message}`, 'error');
     }
 }
@@ -1107,6 +1111,10 @@ function buildCredStatusBadges(credInfo, manager) {
         if (credInfo.bound_proxy_node_name) {
             statusBadges += `<span class="status-badge proxy-policy-badge" title="账号当前固定绑定的代理节点">节点: ${escapeHtml(credInfo.bound_proxy_node_name)}</span>`;
         }
+        const proxyWarning = credInfo.proxy_502_warning;
+        if (proxyWarning?.flagged) {
+            statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="近 ${Number(proxyWarning.window_minutes)} 分钟该账号出现 ${Number(proxyWarning.count)} 次 502（阈值 ${Number(proxyWarning.threshold)}）；建议检测出口或更换节点，502 不一定由代理 IP 引起。">502 频繁 · ${Number(proxyWarning.count)} 次</span>`;
+        }
         if (credInfo.egress_ip) {
             const country = credInfo.egress_country ? ` · ${escapeHtml(credInfo.egress_country)}` : '';
             statusBadges += `<span class="status-badge proxy-policy-badge" title="该账号最近检测到的固定出口 IP">IP: ${escapeHtml(credInfo.egress_ip)}${country}</span>`;
@@ -1194,7 +1202,7 @@ function createCredCard(credInfo, manager) {
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}')" title="使用账号绑定代理检测出口 IP 与地区资格">检测出口</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-concurrency-account="${escapeHtml(filename)}">并发设置</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-warmup-account="${escapeHtml(filename)}" title="配置真实业务流量渐进放量">养号</button>` : ''}
-        ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="冷却当前节点，重新绑定代理节点并检测">重绑检测</button>` : ''}
+        ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="从同组选择其他可用节点并检测出口；独占组保持一账号一节点，无备用节点时保留原绑定">更换节点</button>` : ''}
         ${managerType === 'antigravity' ? (credInfo.enable_credit
             ? `<button class="cred-btn" data-filename="${filename}" data-action="disable_credit" title="关闭该凭证的Credit模式">关闭 Credit</button>`
             : `<button class="cred-btn" data-filename="${filename}" data-action="enable_credit" title="开启该凭证的Credit模式">开启 Credit</button>`
@@ -3088,6 +3096,7 @@ function _cmUpdateChrome(counters) {
     set('cmCountRealtime', counters.realtime ?? 0);
     set('cmLogsCount', counters.logs ?? 0);
     set('cmFailedCount', counters.failed ?? 0);
+    set('cmInflightCount', counters.inflight ?? '—');
 
     document.querySelectorAll('.cm-chip').forEach(chip => {
         chip.classList.toggle('active', chip.dataset.view === callMonitorState.view);

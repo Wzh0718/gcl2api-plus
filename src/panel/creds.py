@@ -313,6 +313,7 @@ async def get_creds_status_common(
             cred_info["proxy_group_id"] = summary.get("proxy_group_id")
             cred_info["bound_proxy_node_id"] = summary.get("bound_proxy_node_id")
             cred_info["bound_proxy_node_name"] = summary.get("bound_proxy_node_name")
+            cred_info["proxy_502_warning"] = summary.get("proxy_502_warning")
             cred_info["egress_ip"] = summary.get("egress_ip")
             cred_info["egress_country"] = summary.get("egress_country")
             cred_info["binding_status"] = summary.get("binding_status", "unchecked")

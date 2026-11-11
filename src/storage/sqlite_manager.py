@@ -90,6 +90,7 @@ class SQLiteManager(AntigravityWarmupStore):
             ("proxy_url", "TEXT"),
             ("proxy_group_id", "INTEGER"),
             ("bound_proxy_node_id", "INTEGER"),
+            ("proxy_bound_at", "REAL"),
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
             ("routing_window_started_at", "REAL"),
@@ -299,6 +300,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 proxy_url TEXT,
                 proxy_group_id INTEGER,
                 bound_proxy_node_id INTEGER,
+                proxy_bound_at REAL,
 
                 -- 轮换相关
                 rotation_order INTEGER DEFAULT 0,
@@ -1410,9 +1412,9 @@ class SQLiteManager(AntigravityWarmupStore):
                     )
                     await db.execute(
                         """UPDATE antigravity_credentials
-                           SET bound_proxy_node_id = ?, updated_at = unixepoch()
+                           SET bound_proxy_node_id = ?, proxy_bound_at = ?, updated_at = unixepoch()
                            WHERE filename = ?""",
-                        (selected_node["id"] if selected_node else None, filename),
+                        (selected_node["id"] if selected_node else None, time.time(), filename),
                     )
                 await db.commit()
             if selected_node:
@@ -1536,7 +1538,7 @@ class SQLiteManager(AntigravityWarmupStore):
         return await self.get_antigravity_account_health(filename)
 
     async def invalidate_antigravity_proxy_binding(
-        self, filename: str, cooldown_seconds: int = 300
+        self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False
     ) -> bool:
         """Release one group binding and briefly cool its failed node."""
         self._ensure_initialized()
@@ -1546,7 +1548,7 @@ class SQLiteManager(AntigravityWarmupStore):
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                """SELECT proxy_mode, bound_proxy_node_id
+                """SELECT proxy_mode, bound_proxy_node_id, proxy_group_id
                    FROM antigravity_credentials WHERE filename = ?""",
                 (filename,),
             ) as cursor:
@@ -1562,11 +1564,20 @@ class SQLiteManager(AntigravityWarmupStore):
                    WHERE id = ?""",
                 (cooldown_until, now, node_id),
             )
+            replacement = None
+            if require_replacement:
+                replacement = await self._select_proxy_group_node(
+                    db, int(row[2]), commit=False, credential_name=filename
+                )
+                if not replacement or replacement["id"] == node_id:
+                    # Includes the old node cooldown and group cursor: leave all intact.
+                    await db.rollback()
+                    return False
             await db.execute(
                 """UPDATE antigravity_credentials
-                   SET bound_proxy_node_id = NULL, updated_at = ?
+                   SET bound_proxy_node_id = ?, proxy_bound_at = ?, updated_at = ?
                    WHERE filename = ?""",
-                (now, filename),
+                (replacement["id"] if replacement else None, now, now, filename),
             )
             await db.execute(
                 """UPDATE antigravity_account_health
@@ -3751,6 +3762,32 @@ class SQLiteManager(AntigravityWarmupStore):
                         summaries = all_summaries[offset:offset + limit]
                     else:
                         summaries = all_summaries[offset:]
+
+                    if mode == "antigravity" and summaries:
+                        from config import get_dingtalk_alert_threshold, get_dingtalk_alert_window_minutes
+
+                        window = await get_dingtalk_alert_window_minutes()
+                        threshold = await get_dingtalk_alert_threshold()
+                        # One indexed window scan; successful calls do not erase recent failures.
+                        async with db.execute(
+                            """SELECT r.credential_name, COUNT(*), MAX(r.created_at)
+                               FROM call_records r
+                               JOIN antigravity_credentials a ON a.filename = r.credential_name
+                               WHERE r.created_at >= ? AND r.channel = 'antigravity'
+                                 AND r.status_code = 502 AND r.success = 0
+                                 AND r.created_at - COALESCE(r.gateway_seconds, 0)
+                                     >= COALESCE(a.proxy_bound_at, 0)
+                               GROUP BY r.credential_name""",
+                            (time.time() - window * 60,),
+                        ) as error_cursor:
+                            recent = {row[0]: (row[1], row[2]) for row in await error_cursor.fetchall()}
+                        for summary in summaries:
+                            count, last_at = recent.get(summary["filename"], (0, None))
+                            summary["proxy_502_warning"] = {
+                                "count": count, "last_at": last_at,
+                                "window_minutes": window, "threshold": threshold,
+                                "flagged": count >= threshold,
+                            }
 
                     return {
                         "items": summaries,

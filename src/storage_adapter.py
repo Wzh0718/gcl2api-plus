@@ -87,7 +87,7 @@ class StorageBackend(Protocol):
     async def batch_update_credential_network(self, filenames: List[str], **kwargs) -> Dict[str, Any]: ...
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
     async def update_antigravity_account_health(self, filename: str, **updates) -> Dict[str, Any]: ...
-    async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300) -> bool: ...
+    async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False) -> bool: ...
 
 
 class StorageAdapter:
@@ -218,11 +218,11 @@ class StorageAdapter:
         return await self._backend.update_antigravity_account_health(filename, **updates)
 
     async def invalidate_antigravity_proxy_binding(
-        self, filename: str, cooldown_seconds: int = 300
+        self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False
     ) -> bool:
         self._ensure_initialized()
         return await self._backend.invalidate_antigravity_proxy_binding(
-            filename, cooldown_seconds
+            filename, cooldown_seconds, require_replacement=require_replacement
         )
 
     async def create_proxy_group(self, **kwargs) -> Dict[str, Any]:

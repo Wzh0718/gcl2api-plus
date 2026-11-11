@@ -154,7 +154,7 @@ async def rebind_account_network(
     if not rebound:
         raise HTTPException(
             status_code=409,
-            detail="无法重绑：请确认账号使用代理组、组内存在其他可用节点，并已配置 IP 检测地址",
+            detail="未完成重绑检测：需要代理组内有其他可用节点并配置 IP 检测地址；无备用节点时保留原绑定。若已换绑但检测未通过，请查看账号最新出口状态。",
         )
     return await _account_network_health_payload(safe_name)
 

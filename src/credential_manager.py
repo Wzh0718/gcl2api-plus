@@ -599,7 +599,7 @@ class CredentialManager:
         if not await get_antigravity_egress_ip_check_url():
             return False
         invalidated = await self._storage_adapter.invalidate_antigravity_proxy_binding(
-            credential_name
+            credential_name, require_replacement=True
         )
         if not invalidated:
             return False

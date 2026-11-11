@@ -468,6 +468,7 @@ async def test_realtime_endpoint_pagination_shape(tmp_path, monkeypatch):
     assert len(resp["records"]) == 20
     assert resp["records"][0]["request_id"] == "ep24"
     assert resp["counters"]["realtime"] == 45
+    assert resp["counters"]["inflight"] == 0
     assert resp["degraded"] is False
 
     last = await call_monitor_realtime(

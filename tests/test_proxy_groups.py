@@ -655,6 +655,111 @@ class ProxyGroupStorageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await cursor.fetchone())[0], 0)
 
 
+    async def _make_exclusive_bindings(self, node_count=3):
+        group = await self.manager.create_proxy_group(
+            name="PX6 replacement", strategy="random", exclusive_assignment=True
+        )
+        await self.manager.import_proxy_group_nodes(group["id"], [
+            {"name": f"node-{i}", "proxy_url": f"http://node-{i}.example:8080"}
+            for i in range(node_count)
+        ])
+        bindings = {}
+        for name in ("a.json", "b.json"):
+            await self.manager.store_credential(name, {"access_token": "token"}, mode="antigravity")
+            await self.manager.update_credential_network(
+                name, proxy_mode="group", proxy_group_id=group["id"], mode="antigravity"
+            )
+            bindings[name] = await self.manager.resolve_credential_network(name)
+        return group, bindings
+
+    async def test_manual_rebind_preserves_binding_and_health_without_spare(self):
+        group, bindings = await self._make_exclusive_bindings(node_count=2)
+        await self.manager.update_antigravity_account_health(
+            "a.json", egress_ip="192.0.2.1", binding_status="healthy"
+        )
+        before = await self.manager.get_proxy_group(group["id"])
+        self.assertFalse(await self.manager.invalidate_antigravity_proxy_binding(
+            "a.json", require_replacement=True
+        ))
+        after = await self.manager.get_proxy_group(group["id"])
+        self.assertEqual(before, after)
+        network = await self.manager.get_credential_network("a.json")
+        self.assertEqual(network["bound_proxy_node_id"], bindings["a.json"]["proxy_node_id"])
+        health = await self.manager.get_antigravity_account_health("a.json")
+        self.assertEqual(health["egress_ip"], "192.0.2.1")
+
+    async def test_manual_rebind_uses_free_node_and_clears_old_502_warning(self):
+        import time
+        _, bindings = await self._make_exclusive_bindings()
+        for index in range(3):
+            await self.manager.insert_call_record(
+                request_id=f"bad-{index}", created_at=time.time(),
+                credential_name="a.json", success=False, status_code=502
+            )
+        with patch("config.get_dingtalk_alert_window_minutes", AsyncMock(return_value=10)), \
+             patch("config.get_dingtalk_alert_threshold", AsyncMock(return_value=3)):
+            before = await self.manager.get_credentials_summary(mode="antigravity")
+            items = {item["filename"]: item for item in before["items"]}
+            self.assertTrue(items["a.json"]["proxy_502_warning"]["flagged"])
+            self.assertFalse(items["b.json"]["proxy_502_warning"]["flagged"])
+            self.assertTrue(await self.manager.invalidate_antigravity_proxy_binding(
+                "a.json", require_replacement=True
+            ))
+            network = await self.manager.resolve_credential_network("a.json")
+            self.assertNotIn(network["proxy_node_id"], {
+                bindings["a.json"]["proxy_node_id"], bindings["b.json"]["proxy_node_id"]
+            })
+            after = await self.manager.get_credentials_summary(mode="antigravity")
+            item = next(item for item in after["items"] if item["filename"] == "a.json")
+            self.assertEqual(item["proxy_502_warning"]["count"], 0)
+            # An old in-flight request finishing after the switch is not a new-node failure.
+            await self.manager.insert_call_record(
+                request_id="old-inflight", created_at=time.time(), gateway_seconds=60,
+                credential_name="a.json", success=False, status_code=502
+            )
+            after = await self.manager.get_credentials_summary(mode="antigravity")
+            item = next(item for item in after["items"] if item["filename"] == "a.json")
+            self.assertEqual(item["proxy_502_warning"]["count"], 0)
+
+    async def test_502_warning_window_channel_and_threshold(self):
+        import time
+        await self.manager.store_credential("a.json", {"access_token": "token"}, mode="antigravity")
+        now = time.time()
+        for index, (age, channel, code, success) in enumerate([
+            (20, "antigravity", 502, False), (10, "antigravity", 502, False),
+            (601, "antigravity", 502, False), (10, "vertex", 502, False),
+            (10, "antigravity", 503, False), (5, "antigravity", 200, True),
+        ]):
+            await self.manager.insert_call_record(
+                request_id=f"mixed-{index}", created_at=now-age,
+                credential_name="a.json", channel=channel, success=success, status_code=code
+            )
+        with patch("config.get_dingtalk_alert_window_minutes", AsyncMock(return_value=10)), \
+             patch("config.get_dingtalk_alert_threshold", AsyncMock(return_value=3)):
+            result = await self.manager.get_credentials_summary(mode="antigravity")
+            warning = result["items"][0]["proxy_502_warning"]
+            self.assertEqual(warning["count"], 2)
+            self.assertFalse(warning["flagged"])
+            await self.manager.insert_call_record(
+                request_id="third", created_at=now, credential_name="a.json",
+                success=False, status_code=502
+            )
+            result = await self.manager.get_credentials_summary(mode="antigravity")
+            self.assertTrue(result["items"][0]["proxy_502_warning"]["flagged"])
+            import json
+            from types import SimpleNamespace
+            from src.panel.creds import get_creds_status_common
+            adapter = SimpleNamespace(
+                _backend=self.manager,
+                get_backend_info=AsyncMock(return_value={"backend_type": "sqlite"}),
+            )
+            with patch("src.panel.creds.get_storage_adapter", AsyncMock(return_value=adapter)):
+                response = await get_creds_status_common(0, 20, "all", mode="antigravity")
+            payload = json.loads(response.body)
+            self.assertTrue(payload["items"][0]["proxy_502_warning"]["flagged"])
+            self.assertNotIn("access_token", str(payload))
+
+
 class AccountNetworkHealthCheckTests(unittest.IsolatedAsyncioTestCase):
     async def test_skip_proxy_still_checks_health_and_message(self):
         from src.antigravity_full_check import run_account_full_check

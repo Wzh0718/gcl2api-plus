@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import config
 from log import log
 from src.call_monitor import get_call_monitor
+from src.request_timing import get_inflight_requests
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
 
@@ -282,6 +283,7 @@ async def call_monitor_overview(
             "accounts": counters.get("accounts", 0),
             "keys": counters.get("keys", 0),
             "realtime": counters.get("logs", 0),
+            "inflight": get_inflight_requests(),
         },
         "rows": _enrich_rows(rows, range_secs),
     }
@@ -338,6 +340,7 @@ async def call_monitor_realtime(
             "accounts": counters.get("accounts", 0),
             "keys": counters.get("keys", 0),
             "realtime": counters.get("logs", 0),
+            "inflight": get_inflight_requests(),
         },
         "records": paged["records"],
     }

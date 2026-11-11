@@ -30,6 +30,14 @@ class RequestTiming:
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar('request_timing', default=None)
 
+# One scalar per worker; no request objects or bodies are retained.
+_inflight_requests = 0
+
+
+def get_inflight_requests() -> int:
+    """Current worker's active model API requests, including streaming responses."""
+    return _inflight_requests
+
 
 _STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api_started",
                           "first_upstream_send", "last_upstream_send", "last_upstream_data",
@@ -133,6 +141,7 @@ class RequestTimingMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        global _inflight_requests
         path = scope.get('path', '')
         if (scope['type'] != 'http' or scope.get('method') != 'POST'
                 or not path.startswith(('/v1/', '/v1beta/', '/antigravity/v1/',
@@ -173,9 +182,11 @@ class RequestTimingMiddleware:
             if message['type'] == 'http.response.body' and not message.get('more_body', False):
                 state.response_total_seconds = time.monotonic() - state.started
 
+        _inflight_requests += 1
         try:
             await self.app(scope, timed_receive, timed_send)
         finally:
+            _inflight_requests -= 1
             request_timing.reset(token)
             # Await one bounded update inline; never leave a background task per request.
             if state.monitor is not None:

@@ -7,6 +7,70 @@ from src.request_timing import RequestTimingMiddleware, request_timing, timing_h
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('ending', ['success', 'error', 'cancel'])
+async def test_inflight_counts_concurrent_requests_and_releases_on_all_exits(ending):
+    from src.request_timing import get_inflight_requests
+
+    entered = asyncio.Queue()
+    release = asyncio.Event()
+    baseline = get_inflight_requests()
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.body', 'body': b'chunk', 'more_body': True})
+        entered.put_nowait(True)
+        await release.wait()
+        if ending == 'error':
+            raise RuntimeError('upstream failed')
+        await send({'type': 'http.response.body', 'body': b''})
+
+    async def send(message):
+        pass
+
+    middleware = RequestTimingMiddleware(app)
+    tasks = [asyncio.create_task(middleware(
+        {'type': 'http', 'method': 'POST', 'path': path}, None, send
+    )) for path in ('/v1/chat/completions', '/antigravity/v1/messages')]
+    try:
+        for _ in tasks:
+            await asyncio.wait_for(entered.get(), 2)
+        # Receiving a streaming chunk must not mark the request as finished.
+        assert get_inflight_requests() == baseline + 2
+        if ending == 'cancel':
+            for task in tasks:
+                task.cancel()
+        else:
+            release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if ending == 'error':
+            assert all(isinstance(result, RuntimeError) for result in results)
+        elif ending == 'cancel':
+            assert all(isinstance(result, asyncio.CancelledError) for result in results)
+        else:
+            assert results == [None, None]
+        assert get_inflight_requests() == baseline
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method,path', [('GET', '/v1/models'), ('POST', '/auth/login'),
+                                          ('GET', '/call-monitor/realtime')])
+async def test_inflight_excludes_panel_and_model_list(method, path):
+    from src.request_timing import get_inflight_requests
+    baseline = get_inflight_requests()
+
+    async def app(scope, receive, send):
+        assert get_inflight_requests() == baseline
+
+    await RequestTimingMiddleware(app)(
+        {'type': 'http', 'method': method, 'path': path}, None, None
+    )
+    assert get_inflight_requests() == baseline
+
+
+@pytest.mark.asyncio
 async def test_stream_is_forwarded_without_buffering_and_context_is_released():
     forwarded = asyncio.Event()
     seen = []
