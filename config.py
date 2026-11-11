@@ -1021,6 +1021,108 @@ async def get_keepalive_interval() -> int:
     return int(await get_config_value("keepalive_interval", 60))
 
 
+# DingTalk webhook 告警：SQLite 配置优先，未写入 SQLite 时回退 .env。
+_DINGTALK_ALERT_CODES_DEFAULT = [429, 500, 502, 503]
+_DINGTALK_ALERT_WINDOW_DEFAULT = 5
+_DINGTALK_ALERT_THRESHOLD_DEFAULT = 3
+_DINGTALK_ALERT_COOLDOWN_DEFAULT = 30
+_DINGTALK_ALERT_TEMPLATE_DEFAULT = (
+    "{keyword}告警\n状态码：{status_code}\n"
+    "最近 {window_minutes} 分钟至少出现 {count} 次（阈值 {threshold} 次）\n"
+    "配置返回码：{status_codes}\n通道：{channel}\n模型：{model}\n时间：{timestamp}"
+)
+
+
+async def get_dingtalk_webhook_url() -> str:
+    value = await get_config_value("dingtalk_webhook_url", None)
+    if value is not None:
+        return str(value).strip()
+    return os.getenv("DINGTALK_WEBHOOK_URL", "").strip()
+
+
+async def get_dingtalk_alert_status_codes() -> list[int]:
+    value = await get_config_value("dingtalk_alert_status_codes", None)
+    if value is None:
+        value = os.getenv("DINGTALK_ALERT_STATUS_CODES", ",".join(map(str, _DINGTALK_ALERT_CODES_DEFAULT)))
+    if isinstance(value, list):
+        raw = value
+    else:
+        raw = str(value).split(",")
+    result = []
+    for item in raw:
+        try:
+            code = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 100 <= code <= 599 and code not in result:
+            result.append(code)
+    return result
+
+
+async def _get_dingtalk_alert_int(key: str, env: str, default: int, minimum: int, maximum: int) -> int:
+    value = await get_config_value(key, None)
+    if value is None:
+        value = os.getenv(env, str(default))
+    try:
+        return min(max(int(value), minimum), maximum)
+    except (TypeError, ValueError):
+        return default
+
+
+async def get_dingtalk_alert_window_minutes() -> int:
+    return await _get_dingtalk_alert_int("dingtalk_alert_window_minutes", "DINGTALK_ALERT_WINDOW_MINUTES", _DINGTALK_ALERT_WINDOW_DEFAULT, 1, 1440)
+
+
+async def get_dingtalk_alert_threshold() -> int:
+    return await _get_dingtalk_alert_int("dingtalk_alert_threshold", "DINGTALK_ALERT_THRESHOLD", _DINGTALK_ALERT_THRESHOLD_DEFAULT, 1, 1000)
+
+
+async def get_dingtalk_alert_cooldown_minutes() -> int:
+    return await _get_dingtalk_alert_int("dingtalk_alert_cooldown_minutes", "DINGTALK_ALERT_COOLDOWN_MINUTES", _DINGTALK_ALERT_COOLDOWN_DEFAULT, 0, 1440)
+
+
+async def get_dingtalk_alert_template() -> str:
+    value = await get_config_value("dingtalk_alert_template", None)
+    if value is None:
+        value = os.getenv("DINGTALK_ALERT_TEMPLATE", _DINGTALK_ALERT_TEMPLATE_DEFAULT)
+    return str(value)
+
+
+async def get_dingtalk_all_accounts_alert_enabled() -> bool:
+    value = await get_config_value("dingtalk_all_accounts_alert_enabled", None)
+    if value is None:
+        value = os.getenv("DINGTALK_ALL_ACCOUNTS_ALERT_ENABLED", "true")
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+async def get_dingtalk_alert_enabled() -> bool:
+    value = await get_config_value("dingtalk_alert_enabled", None)
+    if value is None:
+        value = os.getenv("DINGTALK_ALERT_ENABLED", "false")
+    return value if isinstance(value, bool) else str(value).lower() in ("true", "1", "yes", "on")
+
+
+async def get_dingtalk_all_accounts_alert_cooldown_minutes() -> int:
+    return await _get_dingtalk_alert_int("dingtalk_all_accounts_alert_cooldown_minutes", "DINGTALK_ALL_ACCOUNTS_ALERT_COOLDOWN_MINUTES", 60, 0, 1440)
+
+
+async def get_dingtalk_all_accounts_alert_template() -> str:
+    value = await get_config_value("dingtalk_all_accounts_alert_template", None)
+    if value is None:
+        value = os.getenv("DINGTALK_ALL_ACCOUNTS_ALERT_TEMPLATE", "")
+    return str(value)
+
+
+async def get_system_prompt_append() -> str:
+    """Custom system text; SQLite (including empty string) overrides .env."""
+    value = await get_config_value("system_prompt_append", None)
+    if value is None:
+        value = os.getenv("SYSTEM_PROMPT_APPEND", "")
+    return value if isinstance(value, str) else ""
+
+
 def get_call_content_capture_enabled_sync() -> bool:
     """Capture full client/upstream snapshots; disable to keep only usage metadata."""
     return _sync_bool("call_content_capture_enabled", "CALL_CONTENT_CAPTURE_ENABLED", True)

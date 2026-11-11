@@ -5703,6 +5703,7 @@ function populateConfigForm() {
     document.getElementById('sensitiveWordReplaceEnabled').checked = Boolean(c.sensitive_word_replace_enabled);
     setConfigField('sensitiveWordReplaceRules', c.sensitive_word_replace_rules || '');
     setConfigField('sensitiveWordFilterMode', c.sensitive_word_filter_mode || 'rewrite');
+    setConfigField('systemPromptAppend', c.system_prompt_append || '');
     const keywordPreset = document.getElementById('sensitiveWordUseDefaultKeywords');
     if (keywordPreset) keywordPreset.checked = c.sensitive_word_use_default_keywords !== false;
 
@@ -5721,6 +5722,18 @@ function populateConfigForm() {
 
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
+    setConfigField('dingtalkWebhookUrl', c.dingtalk_webhook_url || '');
+    setConfigField('dingtalkAlertStatusCodes', (c.dingtalk_alert_status_codes || []).join(','));
+    setConfigField('dingtalkAlertWindowMinutes', c.dingtalk_alert_window_minutes ?? 5);
+    setConfigField('dingtalkAlertThreshold', c.dingtalk_alert_threshold ?? 3);
+    setConfigField('dingtalkAlertCooldownMinutes', c.dingtalk_alert_cooldown_minutes ?? 30);
+    setConfigField('dingtalkAlertTemplate', c.dingtalk_alert_template || '');
+    setConfigField('dingtalkAllAccountsAlertCooldownMinutes', c.dingtalk_all_accounts_alert_cooldown_minutes ?? 60);
+    setConfigField('dingtalkAllAccountsAlertTemplate', c.dingtalk_all_accounts_alert_template || '');
+    const frequencyAlert = document.getElementById('dingtalkAlertEnabled');
+    if (frequencyAlert) frequencyAlert.checked = Boolean(c.dingtalk_alert_enabled);
+    const allAccountsAlert = document.getElementById('dingtalkAllAccountsAlertEnabled');
+    if (allAccountsAlert) allAccountsAlert.checked = c.dingtalk_all_accounts_alert_enabled !== false;
     setConfigField('callRecordsRetentionDays', c.call_records_retention_days || 30);
 
     // 配置加载/保存后，同步 Refresh Token 导入面板的代理地址
@@ -5789,10 +5802,21 @@ async function saveConfig() {
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),
             sensitive_word_replace_enabled: getChecked('sensitiveWordReplaceEnabled'),
             sensitive_word_replace_rules: getValue('sensitiveWordReplaceRules'),
+            system_prompt_append: document.getElementById('systemPromptAppend')?.value ?? '',
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
             sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
             keepalive_url: getValue('keepaliveUrl'),
             keepalive_interval: getInt('keepaliveInterval', 60),
+            dingtalk_webhook_url: getValue('dingtalkWebhookUrl'),
+            dingtalk_alert_status_codes: getValue('dingtalkAlertStatusCodes'),
+            dingtalk_alert_window_minutes: getValue('dingtalkAlertWindowMinutes', '5'),
+            dingtalk_alert_threshold: getValue('dingtalkAlertThreshold', '3'),
+            dingtalk_alert_cooldown_minutes: getValue('dingtalkAlertCooldownMinutes', '30'),
+            dingtalk_alert_template: getValue('dingtalkAlertTemplate'),
+            dingtalk_all_accounts_alert_enabled: document.getElementById('dingtalkAllAccountsAlertEnabled')?.checked ?? true,
+            dingtalk_alert_enabled: getChecked('dingtalkAlertEnabled'),
+            dingtalk_all_accounts_alert_cooldown_minutes: getValue('dingtalkAllAccountsAlertCooldownMinutes', '60'),
+            dingtalk_all_accounts_alert_template: getValue('dingtalkAllAccountsAlertTemplate'),
             call_records_retention_days: getInt('callRecordsRetentionDays', 30)
         };
 

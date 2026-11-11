@@ -822,6 +822,8 @@ async def normalize_gemini_request(
     if mode in ("geminicli", "antigravity"):
         from src.converter.sensitive_words import filter_request_system_instruction
         await filter_request_system_instruction(result, mode=mode)
+    from src.converter.system_prompt import append_configured_system_prompt
+    await append_configured_system_prompt(result)
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象
     tools = result.get("tools")
     system_instruction = result.get("systemInstruction") or result.get("system_instructions")

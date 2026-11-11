@@ -2924,7 +2924,7 @@
             <!-- 配置管理标签页 -->
             <div id="configTab" class="tab-content">
                 <div class="config-hero">
-                    <div><span class="proxy-kicker">运行配置</span><h3>配置管理</h3><p>集中管理运行时网络、端点和策略。环境变量覆盖的字段会自动锁定。</p></div>
+                    <div><span class="proxy-kicker">运行配置</span><h3>配置管理</h3><p>集中管理运行时网络、端点和策略。环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p></div>
                     <div class="config-hero-actions"><button class="refresh-btn" onclick="loadConfig()">刷新</button><button class="btn" onclick="saveConfig()">保存更改</button></div>
                 </div>
 
@@ -3363,6 +3363,15 @@
                         </div>
 
                         <div class="config-group">
+                            <h4>自定义系统提示</h4>
+                            <div class="form-group">
+                                <label for="systemPromptAppend">追加文本:</label>
+                                <textarea id="systemPromptAppend" class="config-input" rows="6" maxlength="20000" placeholder="留空不追加，支持多行文本"></textarea>
+                                <small class="config-note">在已有系统提示后追加，适用于 GeminiCLI、Antigravity、Vertex 通道。保存后立即生效；SQLite 保存值优先于 .env，清空保存即可关闭。最多 20000 字符。</small>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
                             <h4>保活配置</h4>
 
                             <div class="form-group">
@@ -3380,6 +3389,42 @@
                                 <input type="number" id="keepaliveInterval" class="config-input" min="5" max="86400" />
                                 <small class="config-note">两次保活请求之间的等待时间，范围 5 - 86400 秒，默认 60 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+                        </div>
+
+                        <div class="config-group">
+                            <h4>钉钉告警</h4>
+                            <div class="form-group">
+                                <label for="dingtalkWebhookUrl">Webhook URL:</label>
+                                <input type="url" id="dingtalkWebhookUrl" class="config-input" placeholder="留空则禁用，例如 https://oapi.dingtalk.com/robot/send?..." />
+                                <small class="config-note">SQLite 中保存的值优先于 .env；清空后保存即可覆盖为禁用。</small>
+                            </div>
+                            <div class="form-group">
+                                <label><input type="checkbox" id="dingtalkAllAccountsAlertEnabled" class="config-checkbox" /> 所有账号不可用时告警</label>
+                            </div>
+                            <div class="form-group">
+                                <label for="dingtalkAllAccountsAlertCooldownMinutes">账号不可用告警冷却（分钟）:</label>
+                                <input type="number" id="dingtalkAllAccountsAlertCooldownMinutes" class="config-input" min="0" max="1440" />
+                            </div>
+                            <div class="form-group">
+                                <label for="dingtalkAllAccountsAlertTemplate">账号不可用告警模板:</label>
+                                <textarea id="dingtalkAllAccountsAlertTemplate" class="config-input" rows="4" maxlength="5000" placeholder="留空使用默认模板，包含模型、账号数量和最快恢复时间"></textarea>
+                                <small class="config-note">变量：{keyword}、{model}、{account_count}、{timestamp}、{recovery_time}。</small>
+                            </div>
+                            <div class="form-group"><label><input type="checkbox" id="dingtalkAlertEnabled" class="config-checkbox" /> 启用返回码频率告警</label></div>
+                            <div class="form-group">
+                                <label for="dingtalkAlertStatusCodes">频率告警返回码:</label>
+                                <input type="text" id="dingtalkAlertStatusCodes" class="config-input" placeholder="429,500,502,503" />
+                            </div>
+                            <div class="form-group" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+                                <label>时间窗口(分钟)<input type="number" id="dingtalkAlertWindowMinutes" class="config-input" min="1" max="1440" /></label>
+                                <label>触发次数<input type="number" id="dingtalkAlertThreshold" class="config-input" min="1" max="1000" /></label>
+                                <label>冷却(分钟)<input type="number" id="dingtalkAlertCooldownMinutes" class="config-input" min="0" max="1440" /></label>
+                            </div>
+                            <div class="form-group">
+                                <label for="dingtalkAlertTemplate">告警模板:</label>
+                                <textarea id="dingtalkAlertTemplate" class="config-input" rows="5" maxlength="5000" placeholder="支持 {status_code} {status_codes} {count} {window_minutes} {threshold} {channel} {model} {timestamp} {keyword}"></textarea>
+                                <small class="config-note">所选返回码在全部通道合计计数；例如 5 分钟内命中 3 次即告警。变量：{status_code}、{status_codes}、{count}、{window_minutes}、{threshold}、{channel}、{model}、{timestamp}、{keyword}。</small>
                             </div>
                         </div>
 

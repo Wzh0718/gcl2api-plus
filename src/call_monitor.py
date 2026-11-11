@@ -140,6 +140,17 @@ class CallMonitor:
                 await insert(**row, request_details=details)
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
+        if status_code is not None:
+            try:
+                from src.dingtalk_alert import send_status_frequency_alert
+
+                await send_status_frequency_alert(
+                    status_code=status_code,
+                    channel=channel,
+                    model=model_name or request_model,
+                )
+            except Exception as exc:
+                log.warning(f"[DINGTALK] status alert evaluation failed: {type(exc).__name__}")
         await self._maybe_cleanup()
         mark_stage("monitor_finished")
 

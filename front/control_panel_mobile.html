@@ -2128,7 +2128,7 @@
                 <div class="config-hero">
                     <span class="proxy-kicker">CONTROL PLANE</span>
                     <h3>配置管理</h3>
-                    <p>运行时网络、端点和代理策略集中管理；环境变量覆盖的字段会自动锁定。</p>
+                    <p>运行时网络、端点和代理策略集中管理；环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p>
                 </div>
 
                 <div style="display: flex; gap: 8px; margin: 15px 0; flex-wrap: wrap;">
@@ -2600,6 +2600,15 @@
                         </div>
 
                         <div class="card">
+                            <h4>自定义系统提示</h4>
+                            <div class="form-group">
+                                <label for="systemPromptAppend">追加文本:</label>
+                                <textarea id="systemPromptAppend" class="config-input" rows="6" maxlength="20000" placeholder="留空不追加，支持多行文本"></textarea>
+                                <small class="config-note">在已有系统提示后追加，适用于 GeminiCLI、Antigravity、Vertex 通道。保存后立即生效；SQLite 保存值优先于 .env，清空保存即可关闭。最多 20000 字符。</small>
+                            </div>
+                        </div>
+
+                        <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">保活配置</h4>
 
                             <div class="form-group">
@@ -2619,6 +2628,27 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">两次保活请求之间的等待时间，范围
                                     5 - 86400 秒，默认 60 ✓ 支持热更新</small>
                             </div>
+                        </div>
+
+                        <div class="card">
+                            <h4 style="margin-top:0;margin-bottom:15px;">钉钉告警</h4>
+                            <div class="form-group"><label for="dingtalkWebhookUrl">Webhook URL:</label><input type="url" id="dingtalkWebhookUrl" placeholder="留空则禁用" /><small style="display:block;color:#666;font-size:12px;margin-top:5px;">SQLite 保存值优先于 .env；清空保存可禁用。</small></div>
+                            <div class="form-group"><label><input type="checkbox" id="dingtalkAllAccountsAlertEnabled" /> 所有账号不可用时告警</label></div>
+                            <div class="form-group">
+                                <label for="dingtalkAllAccountsAlertCooldownMinutes">账号不可用告警冷却（分钟）:</label>
+                                <input type="number" id="dingtalkAllAccountsAlertCooldownMinutes" class="config-input" min="0" max="1440" />
+                            </div>
+                            <div class="form-group">
+                                <label for="dingtalkAllAccountsAlertTemplate">账号不可用告警模板:</label>
+                                <textarea id="dingtalkAllAccountsAlertTemplate" class="config-input" rows="4" maxlength="5000" placeholder="留空使用默认模板，包含模型、账号数量和最快恢复时间"></textarea>
+                                <small class="config-note">变量：{keyword}、{model}、{account_count}、{timestamp}、{recovery_time}。</small>
+                            </div>
+                            <div class="form-group"><label><input type="checkbox" id="dingtalkAlertEnabled" class="config-checkbox" /> 启用返回码频率告警</label></div>
+                            <div class="form-group"><label for="dingtalkAlertStatusCodes">频率告警返回码:</label><input type="text" id="dingtalkAlertStatusCodes" placeholder="429,500,502,503" /></div>
+                            <div class="form-group"><label>时间窗口(分钟):</label><input type="number" id="dingtalkAlertWindowMinutes" min="1" max="1440" /></div>
+                            <div class="form-group"><label>触发次数:</label><input type="number" id="dingtalkAlertThreshold" min="1" max="1000" /></div>
+                            <div class="form-group"><label>冷却(分钟):</label><input type="number" id="dingtalkAlertCooldownMinutes" min="0" max="1440" /></div>
+                            <div class="form-group"><label for="dingtalkAlertTemplate">告警模板:</label><textarea id="dingtalkAlertTemplate" class="config-input" rows="6" maxlength="5000" placeholder="支持 {status_code} {status_codes} {count} {window_minutes} {threshold} {channel} {model} {timestamp} {keyword}"></textarea><small class="config-note">所选返回码在全部通道合计计数；变量：{status_code}、{status_codes}、{count}、{window_minutes}、{threshold}、{channel}、{model}、{timestamp}、{keyword}。</small></div>
                         </div>
 
                         <div class="card">

@@ -57,6 +57,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["sensitive_word_replace_rules"] = await config.get_sensitive_word_replace_rules()
         current_config["sensitive_word_filter_mode"] = await config.get_sensitive_word_filter_mode()
         current_config["sensitive_word_use_default_keywords"] = await config.get_sensitive_word_use_default_keywords()
+        current_config["system_prompt_append"] = await config.get_system_prompt_append()
 
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
@@ -93,6 +94,18 @@ async def get_config(token: str = Depends(verify_panel_token)):
         # 保活配置
         current_config["keepalive_url"] = await config.get_keepalive_url()
         current_config["keepalive_interval"] = await config.get_keepalive_interval()
+
+        # 钉钉 Webhook 频率告警配置（SQLite 优先于 .env）
+        current_config["dingtalk_webhook_url"] = await config.get_dingtalk_webhook_url()
+        current_config["dingtalk_alert_status_codes"] = await config.get_dingtalk_alert_status_codes()
+        current_config["dingtalk_alert_window_minutes"] = await config.get_dingtalk_alert_window_minutes()
+        current_config["dingtalk_alert_threshold"] = await config.get_dingtalk_alert_threshold()
+        current_config["dingtalk_alert_cooldown_minutes"] = await config.get_dingtalk_alert_cooldown_minutes()
+        current_config["dingtalk_alert_template"] = await config.get_dingtalk_alert_template()
+        current_config["dingtalk_all_accounts_alert_enabled"] = await config.get_dingtalk_all_accounts_alert_enabled()
+        current_config["dingtalk_alert_enabled"] = await config.get_dingtalk_alert_enabled()
+        current_config["dingtalk_all_accounts_alert_cooldown_minutes"] = await config.get_dingtalk_all_accounts_alert_cooldown_minutes()
+        current_config["dingtalk_all_accounts_alert_template"] = await config.get_dingtalk_all_accounts_alert_template()
 
         # 调用监控配置
         current_config["call_records_retention_days"] = await config.get_call_records_retention_days()
@@ -185,6 +198,11 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(status_code=400, detail="敏感词替换规则必须是字符串")
             if len(rules_value) > 20000:
                 raise HTTPException(status_code=400, detail="敏感词替换规则过长（最多 20000 字符）")
+
+        if "system_prompt_append" in new_config:
+            value = new_config["system_prompt_append"]
+            if not isinstance(value, str) or len(value) > 20000:
+                raise HTTPException(status_code=400, detail="自定义系统提示必须是字符串，最多 20000 字符")
 
         if "return_thoughts_to_frontend" in new_config:
             if not isinstance(new_config["return_thoughts_to_frontend"], bool):
@@ -311,6 +329,60 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config["keepalive_interval"] = interval
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="保活间隔必须是有效整数")
+
+        if "dingtalk_webhook_url" in new_config and not isinstance(new_config["dingtalk_webhook_url"], str):
+            raise HTTPException(status_code=400, detail="钉钉 Webhook 必须是字符串")
+        if "dingtalk_webhook_url" in new_config:
+            from src.dingtalk_alert import valid_dingtalk_webhook
+            webhook = new_config["dingtalk_webhook_url"].strip()
+            if webhook and not valid_dingtalk_webhook(webhook):
+                raise HTTPException(status_code=400, detail="Webhook 必须是 HTTPS 钉钉机器人地址")
+            new_config["dingtalk_webhook_url"] = webhook
+        if "dingtalk_alert_status_codes" in new_config:
+            codes = new_config["dingtalk_alert_status_codes"]
+            if isinstance(codes, str):
+                codes = [x.strip() for x in codes.split(",") if x.strip()]
+            if not isinstance(codes, list):
+                raise HTTPException(status_code=400, detail="告警返回码必须是逗号分隔的数字")
+            try:
+                if any(isinstance(x, bool) or not str(x).isdigit() for x in codes):
+                    raise ValueError
+                codes = sorted({int(x) for x in codes})
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="告警返回码必须是数字")
+            if any(code < 100 or code > 599 for code in codes):
+                raise HTTPException(status_code=400, detail="告警返回码必须在 100-599 之间")
+            new_config["dingtalk_alert_status_codes"] = codes
+        for key, label, minimum, maximum in (
+            ("dingtalk_alert_window_minutes", "告警时间窗口", 1, 1440),
+            ("dingtalk_alert_threshold", "告警次数阈值", 1, 1000),
+            ("dingtalk_alert_cooldown_minutes", "告警冷却时间", 0, 1440),
+            ("dingtalk_all_accounts_alert_cooldown_minutes", "账号不可用告警冷却时间", 0, 1440),
+        ):
+            if key in new_config:
+                try:
+                    if isinstance(new_config[key], bool) or not str(new_config[key]).isdigit():
+                        raise ValueError
+                    value = int(new_config[key])
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"{label}必须是整数")
+                if value < minimum or value > maximum:
+                    raise HTTPException(status_code=400, detail=f"{label}必须在 {minimum}-{maximum} 之间")
+                new_config[key] = value
+        from src.dingtalk_alert import validate_alert_template, STATUS_TEMPLATE_FIELDS, ACCOUNT_TEMPLATE_FIELDS
+        for key, fields in (("dingtalk_alert_template", STATUS_TEMPLATE_FIELDS),
+                            ("dingtalk_all_accounts_alert_template", ACCOUNT_TEMPLATE_FIELDS)):
+            if key in new_config:
+                template = new_config[key]
+                if not isinstance(template, str) or len(template) > 5000:
+                    raise HTTPException(status_code=400, detail="告警模板必须是 5000 字符以内的字符串")
+                try:
+                    validate_alert_template(template, fields)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="告警模板包含未知变量或无效大括号，请使用页面列出的变量")
+        for key in ("dingtalk_all_accounts_alert_enabled", "dingtalk_alert_enabled"):
+            if key in new_config and not isinstance(new_config[key], bool):
+                raise HTTPException(status_code=400, detail="告警开关必须是布尔值")
         # 验证服务器配置
         if "host" in new_config:
             if not isinstance(new_config["host"], str) or not new_config["host"].strip():
@@ -343,7 +415,8 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         storage_adapter = await get_storage_adapter()
         for key, value in new_config.items():
             if key not in env_locked_keys:
-                await storage_adapter.set_config(key, value)
+                if not await storage_adapter.set_config(key, value):
+                    raise HTTPException(status_code=500, detail="配置写入 SQLite 失败，请重试")
                 if key in ("password", "api_password", "panel_password"):
                     log.debug(f"设置{key}字段为: {value}")
 

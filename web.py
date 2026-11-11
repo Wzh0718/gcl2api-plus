@@ -188,6 +188,9 @@ async def lifespan(app: FastAPI):
     log.info("开始关闭 GCLI2API 主服务")
 
     # 停止保活服务
+    from src.dingtalk_alert import flush_status_alerts
+    await flush_status_alerts()
+
     try:
         await keepalive_service.stop()
     except Exception as e:
