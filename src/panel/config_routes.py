@@ -3,6 +3,7 @@
 """
 
 import math
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -129,7 +130,12 @@ async def get_config(token: str = Depends(verify_panel_token)):
             if key not in env_locked_keys:
                 current_config[key] = value
 
-        return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys)})
+        webhook_source = (
+            "sqlite" if storage_config.get("dingtalk_webhook_url") is not None else
+            "environment" if os.getenv("DINGTALK_WEBHOOK_URL", "").strip() else "unset"
+        )
+        return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys),
+                                     "webhook_source": webhook_source})
 
     except Exception as e:
         log.error(f"获取配置失败: {e}")
@@ -330,9 +336,9 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="保活间隔必须是有效整数")
 
-        if "dingtalk_webhook_url" in new_config and not isinstance(new_config["dingtalk_webhook_url"], str):
+        if "dingtalk_webhook_url" in new_config and new_config["dingtalk_webhook_url"] is not None and not isinstance(new_config["dingtalk_webhook_url"], str):
             raise HTTPException(status_code=400, detail="钉钉 Webhook 必须是字符串")
-        if "dingtalk_webhook_url" in new_config:
+        if "dingtalk_webhook_url" in new_config and new_config["dingtalk_webhook_url"] is not None:
             from src.dingtalk_alert import valid_dingtalk_webhook
             webhook = new_config["dingtalk_webhook_url"].strip()
             if webhook and not valid_dingtalk_webhook(webhook):
@@ -415,7 +421,11 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         storage_adapter = await get_storage_adapter()
         for key, value in new_config.items():
             if key not in env_locked_keys:
-                if not await storage_adapter.set_config(key, value):
+                if key == "dingtalk_webhook_url" and value is None:
+                    saved = await storage_adapter.delete_config(key)
+                else:
+                    saved = await storage_adapter.set_config(key, value)
+                if not saved:
                     raise HTTPException(status_code=500, detail="配置写入 SQLite 失败，请重试")
                 if key in ("password", "api_password", "panel_password"):
                     log.debug(f"设置{key}字段为: {value}")

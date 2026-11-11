@@ -3397,7 +3397,9 @@
                             <div class="form-group">
                                 <label for="dingtalkWebhookUrl">Webhook URL:</label>
                                 <input type="url" id="dingtalkWebhookUrl" class="config-input" placeholder="留空则禁用，例如 https://oapi.dingtalk.com/robot/send?..." />
-                                <small class="config-note">SQLite 中保存的值优先于 .env；清空后保存即可覆盖为禁用。</small>
+                                <small class="config-note">SQLite 优先于 Compose / .env 环境变量；清空已填写的地址并保存可禁用。</small>
+                                <small id="dingtalkWebhookSource" class="config-note" aria-live="polite"></small>
+                                <button type="button" class="btn btn-small" onclick="resetWebhookToEnvironment()">使用 Compose / 环境变量</button>
                             </div>
                             <div class="form-group">
                                 <label><input type="checkbox" id="dingtalkAllAccountsAlertEnabled" class="config-checkbox" /> 所有账号不可用时告警</label>

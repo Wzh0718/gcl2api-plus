@@ -5655,6 +5655,7 @@ async function loadConfig() {
 
         if (response.ok) {
             AppState.currentConfig = data.config;
+            AppState.webhookSource = data.webhook_source;
             AppState.envLockedFields = new Set(data.env_locked || []);
 
             populateConfigForm();
@@ -5723,6 +5724,12 @@ function populateConfigForm() {
     setConfigField('keepaliveUrl', c.keepalive_url || '');
     setConfigField('keepaliveInterval', c.keepalive_interval || 60);
     setConfigField('dingtalkWebhookUrl', c.dingtalk_webhook_url || '');
+    const webhookSource = document.getElementById('dingtalkWebhookSource');
+    if (webhookSource) {
+        const source = AppState.webhookSource === 'sqlite' ? 'SQLite 保存值' :
+            AppState.webhookSource === 'environment' ? 'Compose / 环境变量' : '未配置';
+        webhookSource.textContent = `当前来源：${source}${!c.dingtalk_webhook_url ? '（空）' : ''}`;
+    }
     setConfigField('dingtalkAlertStatusCodes', (c.dingtalk_alert_status_codes || []).join(','));
     setConfigField('dingtalkAlertWindowMinutes', c.dingtalk_alert_window_minutes ?? 5);
     setConfigField('dingtalkAlertThreshold', c.dingtalk_alert_threshold ?? 3);
@@ -5820,6 +5827,11 @@ async function saveConfig() {
             call_records_retention_days: getInt('callRecordsRetentionDays', 30)
         };
 
+        // 未填写的默认空值不能在保存其它配置时意外遮蔽日后的 Compose 环境变量。
+        if (!config.dingtalk_webhook_url && !AppState.currentConfig.dingtalk_webhook_url) {
+            delete config.dingtalk_webhook_url;
+        }
+
         const response = await fetch('./config/save', {
             method: 'POST',
             headers: getAuthHeaders(),
@@ -5852,6 +5864,19 @@ async function saveConfig() {
 }
 
 // 镜像网址配置
+async function resetWebhookToEnvironment() {
+    try {
+        const response = await fetch('./config/save', {
+            method: 'POST', headers: getAuthHeaders(),
+            body: JSON.stringify({ config: { dingtalk_webhook_url: null } })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || '恢复环境配置失败');
+        await loadConfig();
+        showStatus('已取消 SQLite Webhook 覆盖，使用 Compose / 环境变量', 'success');
+    } catch (error) { showStatus(error.message, 'error'); }
+}
+
 const mirrorUrls = {
     codeAssistEndpoint: 'https://gcli-api.sukaka.top/cloudcode-pa',
     oauthProxyUrl: 'https://gcli-api.sukaka.top/oauth2',
