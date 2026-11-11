@@ -1,0 +1,88 @@
+{
+  "source": "official language_server 2.31.0, REA controlled process + isolated mitm capture",
+  "binary_sha256": "e49711c4f7b2fa0e62c0e130c9566579423094b63647bdce82f4ddd81eeb983f",
+  "hub_stamp": {
+    "version": "2.31.0",
+    "cl": "1017595969",
+    "built_on": "2026-11-10"
+  },
+  "oauth": {
+    "sni": "oauth2.googleapis.com",
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ],
+    "ja3_md5": "03117a8ed39ef02427ebbc39f121275c",
+    "cipher_suites": [
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49161,
+      49171,
+      49162,
+      49172,
+      4865,
+      4866,
+      4867
+    ],
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      50,
+      16,
+      43,
+      51
+    ],
+    "http_version": "HTTP/2.0",
+    "user_agent": "Go-http-client/2.0"
+  },
+  "cloudcode": {
+    "sni": "daily-cloudcode-pa.googleapis.com",
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ],
+    "ja3_md5": "03117a8ed39ef02427ebbc39f121275c",
+    "cipher_suites": [
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49161,
+      49171,
+      49162,
+      49172,
+      4865,
+      4866,
+      4867
+    ],
+    "extensions": [
+      0,
+      11,
+      65281,
+      23,
+      18,
+      5,
+      10,
+      13,
+      50,
+      16,
+      43,
+      51
+    ],
+    "http_version": "HTTP/2.0",
+    "user_agent": "antigravity/hub/2.31.0 (aidev_client; os_type=linux; arch=amd64; cl=1017595969)",
+    "note": "HTTP/2 header iteration order varies across requests; no stable order asserted."
+  }
+}

@@ -431,7 +431,7 @@ class UserAgentBuilderTests(_StatelessCase):
         self.assertEqual(
             ua,
             "antigravity/hub/9.9.9 "
-            "(aidev_client; os_type=linux; arch=amd64; cl=1009437749)",
+            "(aidev_client; os_type=linux; arch=amd64; cl=1017595969)",
         )
 
     async def test_get_user_agent_uses_hub_track_version(self):

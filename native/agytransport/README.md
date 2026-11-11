@@ -11,6 +11,12 @@ HTTP/1.1 without ALPN. The sanitized capture metadata in
 during development. Matching a capture does not establish why an account was
 restricted or guarantee compatibility with future client releases.
 
+The official 2.31.0 client now negotiates HTTP/2 for CloudCode as well (see
+`tests/fixtures/agy_transport_2.31.0.json`). We retain HTTP/1.1 for CloudCode:
+an authenticated model-list request with the new Hub UA returned 200 over
+HTTP/1.1. The helper does not require identical transport fingerprints.
+See `docs/AGY-2.31.0-特征采集-2026-11-11.md` for capture scope and evidence.
+
 ## Enable
 
 Docker builds compile the helper automatically. Set

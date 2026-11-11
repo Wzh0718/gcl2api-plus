@@ -26,13 +26,13 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-# Antigravity hub 轨迹指纹默认值（2.28.2 / CL 1009437749，官方二进制 --stamp 核验）。
+# Antigravity hub 轨迹指纹默认值（2.31.0 / CL 1017595969，官方二进制 --stamp 核验）。
 # 请求信封基线见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md。真实客户端 UA：
 #   antigravity/hub/<ver> (aidev_client; os_type=<os>; arch=<arch>; cl=<CL>)
 # 实际生效值优先级：面板配置 > ENV（ANTIGRAVITY_HUB_VERSION/ANTIGRAVITY_HUB_CL）> 这里的默认值。
 # hub 通道周更，CL 只能从新二进制 --stamp 获取；复跑方法见上述文档 §5。
-ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.28.2")
-ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1009437749")
+ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.31.0")
+ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1017595969")
 ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.3.1")
 ANTIGRAVITY_CLI_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
 ANTIGRAVITY_CLI_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
@@ -84,7 +84,7 @@ def get_antigravity_user_agent() -> str:
 # 兼容别名：导入期快照；新代码请用 get_antigravity_user_agent()。
 ANTIGRAVITY_USER_AGENT = build_antigravity_user_agent()
 
-# 官方 2.28.2 实抓：OAuth token 端点使用 Go 默认 HTTP/2 UA。
+# 官方 2.31.0 实抓：OAuth token 端点使用 Go 默认 HTTP/2 UA。
 # 原生传输会直接省略自定义 UA；此函数保留给少量探测与兼容调用。
 def get_antigravity_oauth_user_agent() -> str:
     explicit = os.getenv("ANTIGRAVITY_OAUTH_USER_AGENT", "").strip()
