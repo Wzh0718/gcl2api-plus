@@ -157,6 +157,29 @@ def test_partial_args_are_extracted_as_incremental_synthetic_content():
     assert (content, real_calls, found) == ("第一段", [], True)
 
 
+def test_partial_args_array_and_complete_tool_result_are_supported():
+    from src.converter.anti_truncation import (
+        build_synthetic_text_chunks,
+        extract_synthetic_content_from_response,
+    )
+
+    data = {"candidates": [{"content": {"parts": [{
+        "functionCall": {
+            "name": "emit_answer",
+            "partialArgs": [
+                {"jsonPath": "$.content", "stringValue": "第一"},
+                {"jsonPath": "$.content", "stringValue": "段"},
+            ],
+        }
+    }]}}]}
+    content, _, found = extract_synthetic_content_from_response(data)
+    assert (content, found) == ("第一段", True)
+
+    chunks = build_synthetic_text_chunks(data, "a" * 130, [], chunk_size=64)
+    assert len(chunks) == 3
+    assert all(chunk.startswith(b"data: ") for chunk in chunks)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["antigravity", "geminicli"])
 @pytest.mark.parametrize("prefix", ["", "流式抗截断/", "抗截断/"])

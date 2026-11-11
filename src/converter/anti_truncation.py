@@ -176,7 +176,17 @@ def extract_synthetic_content_from_response(
                     # Vertex uses partialArgs for incremental function-call
                     # argument chunks when streamFunctionCallArguments=true.
                     args = fc.get("partialArgs", fc.get("args", {}))
-                    if isinstance(args, dict):
+                    if isinstance(args, list):
+                        # Vertex partialArgs uses [{jsonPath, stringValue, ...}].
+                        for fragment in args:
+                            if not isinstance(fragment, dict):
+                                continue
+                            if "stringValue" in fragment and (
+                                fragment.get("jsonPath") in ("$.content", "content")
+                                or not fragment.get("jsonPath")
+                            ):
+                                synthetic_content += str(fragment["stringValue"])
+                    elif isinstance(args, dict):
                         synthetic_content += args.get("content", "")
                     elif isinstance(args, str):
                         # 尝试解析 JSON 字符串
@@ -297,6 +307,35 @@ def build_text_chunk_from_synthetic(
         result["response"] = modified_inner
         return result
     return modified_inner
+
+
+def build_synthetic_text_chunks(
+    original_data: Dict[str, Any],
+    synthetic_content: str,
+    real_function_calls: List[Dict[str, Any]],
+    chunk_size: int = 64,
+) -> List[bytes]:
+    """Split a complete synthetic-tool result into client-visible SSE deltas.
+
+    Some Antigravity deployments return the whole ``args`` object in one
+    upstream event even with ``streamFunctionCallArguments`` enabled. Splitting
+    here preserves the anti-truncation tool path while keeping clients' stream
+    renderers responsive after the upstream result arrives.
+    """
+    if not synthetic_content:
+        return [
+            f"data: {json.dumps(build_text_chunk_from_synthetic(original_data, '', real_function_calls), ensure_ascii=False)}\n\n".encode("utf-8")
+        ]
+    chunks: List[bytes] = []
+    pieces = [synthetic_content[i : i + chunk_size] for i in range(0, len(synthetic_content), chunk_size)]
+    for index, piece in enumerate(pieces):
+        modified = build_text_chunk_from_synthetic(original_data, piece, real_function_calls)
+        if index < len(pieces) - 1:
+            inner = modified.get("response", modified)
+            for candidate in inner.get("candidates", []):
+                candidate.pop("finishReason", None)
+        chunks.append(f"data: {json.dumps(modified, separators=(',', ':'), ensure_ascii=False)}\n\n".encode("utf-8"))
+    return chunks
 
 
 
@@ -489,13 +528,10 @@ class AntiTruncationStreamProcessor:
                             self._append_content(synthetic_content)
 
                             # 构建替换后的 chunk
-                            modified_data = build_text_chunk_from_synthetic(
+                            for synthetic_chunk in build_synthetic_text_chunks(
                                 data, synthetic_content, real_calls
-                            )
-                            json_str = json.dumps(
-                                modified_data, separators=(",", ":"), ensure_ascii=False
-                            )
-                            yield f"data: {json_str}\n\n".encode("utf-8")
+                            ):
+                                yield synthetic_chunk
 
                             # 替换后的 chunk 保留原 finishReason（若有），
                             # 已随上面的 yield 透传，标记避免收尾重复补发
