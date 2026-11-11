@@ -1,6 +1,10 @@
-"""Append configured system text without mutating the caller's nested objects."""
+"""Prefix existing system text without mutating the caller's nested objects."""
 
 from typing import Any
+
+
+class _PrefixedTextPart(dict):
+    """In-memory marker; JSON contains only the ordinary Gemini part fields."""
 
 
 async def append_configured_system_prompt(request: dict[str, Any]) -> None:
@@ -26,13 +30,15 @@ async def append_configured_system_prompt(request: dict[str, Any]) -> None:
         return
     # A+B 必须落在同一个文本 part 中；不改变客户端原有的后续 part。
     for index, part in enumerate(parts):
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            if part["text"].startswith(text):
+        if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+            if isinstance(part, _PrefixedTextPart) and getattr(part, "prefix", None) == text:
                 return
             parts = list(parts)
-            parts[index] = {**part, "text": text + part["text"]}
+            prefixed = _PrefixedTextPart({**part, "text": text + part["text"]})
+            prefixed.prefix = text
+            parts[index] = prefixed
             break
     else:
-        parts = [{"text": text}, *parts]
+        return
     request["systemInstruction"] = {**instruction, "parts": parts}
     request.pop("system_instructions", None)

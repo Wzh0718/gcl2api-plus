@@ -50,3 +50,19 @@ async def test_legacy_instruction_shape(instruction):
     config._config_cache["system_prompt_append"] = "append"
     result = await normalize_gemini_request({"model": "gemini-2.5-flash", "contents": [], "system_instructions": instruction})
     assert result["systemInstruction"]["parts"][0] == {"text": "appendoriginal"}
+
+
+@pytest.mark.parametrize("instruction", ["", "  ", {}, {"parts": []}, {"parts": [{"text": ""}]}, {"parts": [{"text": " "}]}])
+async def test_empty_b_never_injects_a(instruction):
+    config._config_cache["system_prompt_append"] = "A"
+    request = {"model": "gemini-2.5-flash", "contents": [], "systemInstruction": instruction}
+    result = await normalize_gemini_request(request)
+    assert result["systemInstruction"] == instruction
+
+
+async def test_b_beginning_with_a_is_still_prefixed():
+    import json
+    config._config_cache["system_prompt_append"] = "A"
+    result = await normalize_gemini_request({"model": "gemini-2.5-flash", "contents": [],
+                                           "systemInstruction": {"parts": [{"text": "AB"}]}})
+    assert json.loads(json.dumps(result))["systemInstruction"]["parts"] == [{"text": "AAB"}]
