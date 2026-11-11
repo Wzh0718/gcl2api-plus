@@ -44,7 +44,7 @@ def test_request_injects_synthetic_tool_without_mutating_client_request():
     declarations = [decl for tool in prepared["request"]["tools"] for decl in tool["functionDeclarations"]]
     assert [decl["name"] for decl in declarations] == ["lookup", "emit_answer"]
     assert prepared["request"]["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
-    assert prepared["request"]["toolConfig"]["functionCallingConfig"]["streamFunctionCallArguments"] is True
+    assert "streamFunctionCallArguments" not in prepared["request"]["toolConfig"]["functionCallingConfig"]
     assert "emit_answer" in prepared["request"]["systemInstruction"]["parts"][-1]["text"]
     assert apply_anti_truncation(prepared) == prepared
     prepared["request"]["contents"].append({"role": "user", "parts": []})

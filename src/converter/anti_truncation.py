@@ -108,13 +108,6 @@ def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
         tool_config["functionCallingConfig"] = func_config
         request_data["toolConfig"] = tool_config
 
-    # Vertex/Antigravity can stream function-call arguments as partialArgs.
-    # Without this flag emit_answer is buffered until its complete JSON args
-    # are available, which makes the anti-truncation model appear non-streaming.
-    func_config["streamFunctionCallArguments"] = True
-    tool_config["functionCallingConfig"] = func_config
-    request_data["toolConfig"] = tool_config
-
     # 3. 注入控制指令到 systemInstruction
     system_instruction = dict(request_data.get("systemInstruction") or {})
     if "parts" not in system_instruction:
