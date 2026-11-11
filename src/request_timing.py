@@ -21,9 +21,11 @@ class RequestTiming:
     monitor: object = None
     stages: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
+    request_info: dict = field(default_factory=dict)
 
     def details(self):
-        return {"stages": dict(self.stages), "parameters": dict(self.parameters)}
+        return {"stages": dict(self.stages), "parameters": dict(self.parameters),
+                "request": dict(self.request_info)}
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar('request_timing', default=None)
@@ -45,6 +47,10 @@ def capture_request_parameters(body):
     state = request_timing.get()
     if state is None:
         return
+    if "mode" not in state.request_info:
+        streaming = bool(body.get("stream"))
+        state.request_info.update(transport="stream" if streaming else "non_stream",
+                                  mode=_request_mode(body.get("model"), streaming))
     meta = {"stream": bool(body.get("stream")), "messages": len(body.get("messages") or []),
             "tools": len(body.get("tools") or [])}
     for name in ("max_tokens", "temperature", "top_p"):
@@ -56,6 +62,17 @@ def capture_request_parameters(body):
     if isinstance(fmt, str) and fmt in {"json_object", "json_schema", "text"}:
         meta["response_format"] = fmt
     state.parameters = meta
+
+
+def _request_mode(model, streaming):
+    if not streaming or not isinstance(model, str):
+        return "normal"
+    from src.utils import is_fake_streaming_model, is_anti_truncation_model
+    if is_fake_streaming_model(model):
+        return "fake_stream"
+    if is_anti_truncation_model(model):
+        return "anti_truncation"
+    return "normal"
 
 
 class _TimedStream(httpx.AsyncByteStream):
@@ -122,6 +139,16 @@ class RequestTimingMiddleware:
                                         '/antigravity/v1beta/', '/vertex/v1/', '/vertex/v1beta/'))):
             return await self.app(scope, receive, send)
         state = RequestTiming()
+        if ":streamGenerateContent" in path or ":generateContent" in path:
+            streaming = ":streamGenerateContent" in path
+            model = path.split("/models/", 1)[-1].split(":", 1)[0]
+            state.request_info = {"protocol": "gemini", "transport": "stream" if streaming else "non_stream",
+                                  "mode": _request_mode(model, streaming)}
+        else:
+            protocol = ("openai_responses" if path.endswith("/responses") else
+                        "anthropic" if path.endswith("/messages") else
+                        "openai_images" if "/images/" in path else "openai_chat")
+            state.request_info = {"protocol": protocol}
         token = request_timing.set(state)
 
         async def timed_receive():

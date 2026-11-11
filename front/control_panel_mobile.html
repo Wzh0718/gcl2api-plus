@@ -1408,19 +1408,19 @@
                     <table style="margin-top:6px;border-collapse:collapse;width:100%;">
                         <tr>
                             <td style="color:#666;width:90px;">OpenAI格式</td>
-                            <td><code id="mAntOpenaiUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mAntOpenaiUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
                         <tr>
                             <td style="color:#666;">Claude格式</td>
-                            <td><code id="mAntClaudeUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mAntClaudeUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
                         <tr>
                             <td style="color:#666;">Gemini格式</td>
-                            <td><code id="mAntGeminiUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mAntGeminiUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
@@ -1743,26 +1743,25 @@
                     <table style="margin-top:6px;border-collapse:collapse;width:100%;">
                         <tr>
                             <td style="color:#666;width:90px;">OpenAI格式</td>
-                            <td><code id="mGcliOpenaiUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mGcliOpenaiUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
                         <tr>
                             <td style="color:#666;">Claude格式</td>
-                            <td><code id="mGcliClaudeUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mGcliClaudeUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
                         <tr>
                             <td style="color:#666;">Gemini格式</td>
-                            <td><code id="mGcliGeminiUrl" onclick="cpUrl(this)" title="点击复制"
+                            <td><code id="mGcliGeminiUrl" onclick="cpUrl(this)" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();cpUrl(this)}" title="点击复制"
                                     style="background:#e8f0fe;padding:2px 6px;border-radius:3px;cursor:pointer;"></code>
                             </td>
                         </tr>
                     </table>
                     <script>
                         (function () { var mo = window.location.origin; document.getElementById('mGcliOpenaiUrl').textContent = mo + '/v1'; document.getElementById('mGcliClaudeUrl').textContent = mo + '/v1'; document.getElementById('mGcliGeminiUrl').textContent = mo; })();
-                        function cpUrl(el) { navigator.clipboard.writeText(el.textContent).then(function () { var s = el.style.background; el.style.background = '#b7f0b7'; setTimeout(function () { el.style.background = s; }, 800); }); }
                     </script>
                 </div>
 

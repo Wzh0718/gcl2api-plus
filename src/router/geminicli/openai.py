@@ -77,6 +77,8 @@ async def chat_completions(
 
     # 转换为字典
     normalized_dict = model_to_dict(openai_request)
+    from src.request_timing import capture_request_parameters
+    capture_request_parameters(normalized_dict)
     from src.converter.sensitive_words import filter_compatibility_system_prompts
     await filter_compatibility_system_prompts(normalized_dict, mode="geminicli")
 

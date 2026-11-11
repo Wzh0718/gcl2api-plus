@@ -2036,6 +2036,28 @@ textarea:disabled,
     color: #868e96;
 }
 
+.cm-badge-protocol {
+    background: #e8f0fe;
+    color: #2457a6;
+}
+
+.cm-badge-transport {
+    background: #e7f7ef;
+    color: #19734d;
+}
+
+.cm-badge-mode {
+    background: #fff3d6;
+    color: #8a5a00;
+}
+
+.cm-mode-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    min-width: 130px;
+}
+
 /* 调用监控：上游真实执行模型（modelVersion）高亮，标识请求被归一 */
 .cm-upstream-model {
     color: #b7791f;

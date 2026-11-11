@@ -31,6 +31,8 @@ async def chat_completions(
     log.debug(f"[VERTEX-OPENAI] Request for model: {openai_request.model}")
 
     normalized_dict = model_to_dict(openai_request)
+    from src.request_timing import capture_request_parameters
+    capture_request_parameters(normalized_dict)
 
     if is_health_check_request(normalized_dict, format="openai"):
         return JSONResponse(content=create_health_check_response(format="openai"))

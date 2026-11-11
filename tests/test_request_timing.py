@@ -295,3 +295,28 @@ def test_stage_metadata_is_bounded_and_never_contains_content():
         assert details['parameters']['response_format'] == 'json_schema'
     finally:
         request_timing.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path,body,protocol,transport,mode', [
+    ('/antigravity/v1/chat/completions', {'model': '流式抗截断/gemini-2.5-flash', 'stream': True}, 'openai_chat', 'stream', 'anti_truncation'),
+    ('/v1/responses', {'model': '假流式/gemini-2.5-flash', 'stream': True}, 'openai_responses', 'stream', 'fake_stream'),
+    ('/v1/messages', {'model': '抗截断/claude-sonnet-4-6', 'stream': False}, 'anthropic', 'non_stream', 'normal'),
+    ('/v1/messages', {'model': '抗截断/claude-sonnet-4-6', 'stream': True}, 'anthropic', 'stream', 'anti_truncation'),
+    ('/antigravity/v1beta/models/流式抗截断/gemini-2.5-flash:streamGenerateContent', {}, 'gemini', 'stream', 'anti_truncation'),
+    ('/v1beta/models/假流式/gemini-2.5-flash:generateContent', {}, 'gemini', 'non_stream', 'normal'),
+    ('/antigravity/v1/images/generations', {'model': 'image', 'stream': True}, 'openai_images', 'stream', 'normal'),
+])
+async def test_protocol_mode_metadata_survives_normalization(path, body, protocol, transport, mode):
+    from src.request_timing import capture_request_parameters
+    observed = []
+
+    async def app(scope, receive, send):
+        capture_request_parameters(body)
+        # Downstream protocol conversion strips the prefix; do not lose the original mode.
+        capture_request_parameters({'model': 'gemini-2.5-flash', 'stream': body.get('stream', False)})
+        observed.append(request_timing.get().details()['request'])
+
+    await RequestTimingMiddleware(app)({'type': 'http', 'method': 'POST', 'path': path}, None, None)
+    assert observed == [{'protocol': protocol, 'transport': transport, 'mode': mode}]
+    assert request_timing.get() is None

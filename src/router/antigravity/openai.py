@@ -296,6 +296,8 @@ async def image_generations(
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
 ):
     """Generate images using the OpenAI Images API request/response shape."""
+    from src.request_timing import capture_request_parameters
+    capture_request_parameters(model_to_dict(openai_request))
     try:
         _validate_openai_image_controls(
             response_format=openai_request.response_format,
@@ -457,6 +459,8 @@ async def chat_completions(
 
     # 转换为字典
     normalized_dict = model_to_dict(openai_request)
+    from src.request_timing import capture_request_parameters
+    capture_request_parameters(normalized_dict)
     from src.converter.sensitive_words import filter_compatibility_system_prompts
     await filter_compatibility_system_prompts(normalized_dict, mode="antigravity")
 

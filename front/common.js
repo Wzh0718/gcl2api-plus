@@ -2025,7 +2025,7 @@ function renderApiKeys(items) {
                 <label>到期时间<input data-field="expires_at" type="datetime-local" value="${escapeHtml(apiKeyDateInputValue(item.expires_at))}"></label>
             </div>
             <div class="api-key-actions">
-                <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}')"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
+                <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
                 <button type="button" class="api-key-primary" onclick="saveApiKey('${escapeHtml(item.id)}')">保存设置</button>
                 <button type="button" onclick="setApiKeyEnabled('${escapeHtml(item.id)}', ${item.status !== 'disabled'})">${item.status === 'disabled' ? '启用' : '停用'}</button>
                 ${item.reset_mode === 'manual' ? `<button type="button" onclick="resetApiKeyQuota('${escapeHtml(item.id)}')">重置额度</button>` : ''}
@@ -2085,29 +2085,78 @@ async function createApiKey(event) {
     return false;
 }
 
+function copyTextFast(value) {
+    const previousFocus = document.activeElement;
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (_) { copied = false; }
+    textarea.remove();
+    previousFocus?.focus({ preventScroll: true });
+    return copied;
+}
+
+async function cpUrl(el) {
+    const value = el?.textContent?.trim() || '';
+    if (!value) return;
+    try {
+        await writeApiKeyToClipboard(value);
+        const old = el.style.background;
+        el.style.background = '#b7f0b7';
+        setTimeout(() => { el.style.background = old; }, 800);
+        showStatus('地址已复制', 'success');
+    } catch (_) {
+        showCopyTextDialog(value, '手动复制地址');
+    }
+}
+
+function showCopyTextDialog(value, title) {
+    document.getElementById('copyTextDialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'copyTextDialog';
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    const input = document.createElement('textarea');
+    input.value = value;
+    input.readOnly = true;
+    input.setAttribute('aria-label', title);
+    input.style.cssText = 'width:100%;min-width:260px;';
+    const hint = document.createElement('p');
+    hint.textContent = '已选中文字，请按 Ctrl+C / ⌘C，或长按复制。';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '关闭';
+    close.onclick = () => dialog.close();
+    dialog.append(heading, input, hint, close);
+    dialog.addEventListener('close', () => { input.value = ''; dialog.remove(); }, { once: true });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    input.focus();
+    input.select();
+}
+
 async function writeApiKeyToClipboard(value) {
+    if (copyTextFast(value)) return;
     try {
         if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(value);
+            let timeout;
+            try {
+                await Promise.race([
+                    navigator.clipboard.writeText(value),
+                    new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('剪贴板响应超时')), 1000); })
+                ]);
+            } finally { clearTimeout(timeout); }
             return;
         }
     } catch (_) {
         // 浏览器拒绝 Clipboard API 时继续使用兼容复制方式。
     }
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    let copied = false;
-    try {
-        copied = document.execCommand('copy');
-    } finally {
-        textarea.remove();
-    }
-    if (!copied) throw new Error('浏览器未允许复制操作');
+    throw new Error('浏览器未允许复制操作');
 }
 
 // 非 JSON 响应（例如框架返回的纯文本 500）也要给出可读错误，
@@ -2131,17 +2180,26 @@ async function readJsonResponse(response, fallbackMessage) {
     throw new Error(`${fallbackMessage}（HTTP ${response.status}${snippet ? '：' + snippet : ''}）`);
 }
 
-async function copyApiKey(apiKeyId) {
+async function copyApiKey(apiKeyId, button) {
+    if (button?.disabled) return;
+    if (button) { button.disabled = true; button.textContent = '读取中…'; }
     try {
         const response = await fetch(`./api-keys/${encodeURIComponent(apiKeyId)}/secret`, {
             headers: getAuthHeaders(),
-            cache: 'no-store'
+            cache: 'no-store',
+            signal: AbortSignal.timeout(10000)
         });
         const data = await readJsonResponse(response, '读取密钥失败');
-        await writeApiKeyToClipboard(data.api_key);
-        showStatus('密钥已复制，可直接粘贴使用', 'success');
+        try {
+            await writeApiKeyToClipboard(data.api_key);
+            showStatus('密钥已复制，可直接粘贴使用', 'success');
+        } catch (_) {
+            showCopyTextDialog(data.api_key, '手动复制密钥');
+        }
     } catch (error) {
         showStatus(`复制密钥失败: ${error.message}`, 'error');
+    } finally {
+        if (button) { button.disabled = false; button.textContent = '复制密钥'; }
     }
 }
 
@@ -3091,6 +3149,20 @@ function _cmModelCell(row) {
     return `<td title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</td>`;
 }
 
+function _cmRequestModeCell(row) {
+    const info = row.timing_details?.request || row.request_info || {};
+    const protocol = info.protocol || 'unknown';
+    const transport = info.transport || '';
+    const mode = info.mode || '';
+    const protocolLabels = { openai_chat: 'OpenAI Chat', openai_responses: 'OpenAI Responses',
+        openai_images: 'OpenAI Images', anthropic: 'Anthropic', gemini: 'Gemini', unknown: '未知协议' };
+    const modeLabels = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
+    const tags = [`<span class="cm-badge cm-badge-protocol">${_cmEscape(protocolLabels[protocol] || protocol)}</span>`];
+    if (transport) tags.push(`<span class="cm-badge cm-badge-transport">${transport === 'stream' ? '流式' : '非流式'}</span>`);
+    if (mode) tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
+    return `<div class="cm-mode-tags">${tags.join(' ')}</div>`;
+}
+
 // 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
 const CM_KEY_ACCOUNT_LIMIT = 50;
 
@@ -3358,6 +3430,7 @@ function _cmRenderRealtime(records) {
         return `<tr>
             <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmEscape(row.api_key_name || '未命名密钥')}</td>
             ${_cmModelCell(row)}
+            <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.status_code)}</td>
             <td>${statusCell}</td>
@@ -3371,7 +3444,7 @@ function _cmRenderRealtime(records) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>密钥名称</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
