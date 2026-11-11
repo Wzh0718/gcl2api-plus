@@ -2180,7 +2180,8 @@ async function readJsonResponse(response, fallbackMessage) {
     throw new Error(`${fallbackMessage}（HTTP ${response.status}${snippet ? '：' + snippet : ''}）`);
 }
 
-async function copyApiKey(apiKeyId, button) {
+async function copyApiKey(apiKeyId) {
+    const button = arguments[1];
     if (button?.disabled) return;
     if (button) { button.disabled = true; button.textContent = '读取中…'; }
     try {
