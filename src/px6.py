@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import math
 import re
 from typing import Literal
 from urllib.error import HTTPError
@@ -92,7 +93,15 @@ async def fetch_owned_proxies(
                 if identity in seen:
                     continue
                 seen.add(identity)
-                nodes.append({'name': f'PX6 {identity}', 'proxy_url': url})
+                # The provider's date_end has no timezone; use its absolute Unix
+                # timestamp for scheduling rather than guessing the server timezone.
+                raw_expiry = entry.get('unixtime_end')
+                expiry = None
+                if raw_expiry not in (None, ''):
+                    expiry = float(raw_expiry)
+                    if isinstance(raw_expiry, bool) or not math.isfinite(expiry) or expiry <= 0:
+                        raise ValueError()
+                nodes.append({'name': f'PX6 {identity}', 'proxy_url': url, 'expires_at': expiry})
                 items.append({'id': identity, 'ip': str(ipaddress.ip_address(entry['ip'])),
                               'host': str(ipaddress.ip_address(entry['host'])), 'port': int(entry['port']),
                               'protocol': scheme, 'version': version,

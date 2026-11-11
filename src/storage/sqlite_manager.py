@@ -20,6 +20,7 @@ from src.storage.call_record_content import decode_details, encode_details
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
 ROUTING_WINDOW_SECONDS = 60
+PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
 
 def _active_model_cooldowns(
@@ -101,6 +102,9 @@ class SQLiteManager(AntigravityWarmupStore):
         ],
         "proxy_groups": [
             ("exclusive_assignment", "INTEGER NOT NULL DEFAULT 0")
+        ],
+        "proxy_group_nodes": [
+            ("expires_at", "REAL")
         ],
         "credential_model_stats": [
             ("upstream_total_seconds", "REAL NOT NULL DEFAULT 0"),
@@ -414,6 +418,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 failure_count INTEGER NOT NULL DEFAULT 0,
                 cooldown_until REAL,
                 last_used_at REAL,
+                expires_at REAL,
                 created_at REAL NOT NULL DEFAULT (unixepoch()),
                 updated_at REAL NOT NULL DEFAULT (unixepoch()),
                 UNIQUE(group_id, proxy_url),
@@ -1056,7 +1061,7 @@ class SQLiteManager(AntigravityWarmupStore):
             await db.execute("PRAGMA busy_timeout = 5000")
             for _ in range(candidate_limit):
                 current_time = time.time()
-                params: List[Any] = [current_time]
+                params: List[Any] = [current_time, current_time]
                 where_sql = """disabled = 0
                     AND (
                         COALESCE(proxy_mode, 'inherit') <> 'group'
@@ -1068,6 +1073,7 @@ class SQLiteManager(AntigravityWarmupStore):
                               AND pg.enabled = 1
                               AND pn.enabled = 1
                               AND (pn.cooldown_until IS NULL OR pn.cooldown_until <= ?)
+                              AND (pn.expires_at IS NULL OR pn.expires_at > ?)
                         )
                     )
                     AND NOT EXISTS (
@@ -1391,16 +1397,30 @@ class SQLiteManager(AntigravityWarmupStore):
                 if bound_node_id:
                     current_time = time.time()
                     async with db.execute(
-                        """SELECT id, name, proxy_url FROM proxy_group_nodes
+                        """SELECT id, name, proxy_url, expires_at FROM proxy_group_nodes
                            WHERE id = ? AND group_id = ? AND enabled = 1
-                             AND (cooldown_until IS NULL OR cooldown_until <= ?)""",
-                        (int(bound_node_id), group_id, current_time),
+                             AND (cooldown_until IS NULL OR cooldown_until <= ?)
+                             AND (expires_at IS NULL OR expires_at > ?)""",
+                        (int(bound_node_id), group_id, current_time, current_time),
                     ) as cursor:
                         row = await cursor.fetchone()
                     if row:
                         selected_node = {
-                            "id": row[0], "name": row[1], "proxy_url": row[2]
+                            "id": row[0], "name": row[1], "proxy_url": row[2], "expires_at": row[3]
                         }
+
+                # A still-valid sticky binding is kept unless a known, longer-lived
+                # spare exists. This also avoids cycling through same-batch expiry.
+                if selected_node and selected_node["expires_at"] is not None:
+                    if selected_node["expires_at"] <= current_time + PROXY_EXPIRY_LEAD_SECONDS:
+                        replacement = await self._select_proxy_group_node(
+                            db, group_id, commit=False, credential_name=filename,
+                            min_expires_at=current_time + PROXY_EXPIRY_LEAD_SECONDS,
+                        )
+                        if replacement:
+                            selected_node = replacement
+                        else:
+                            network["proxy_expiry_warning"] = "no_replacement"
 
                 if selected_node is None:
                     selected_node = await self._select_proxy_group_node(
@@ -1410,11 +1430,21 @@ class SQLiteManager(AntigravityWarmupStore):
                         commit=False,
                         credential_name=filename,
                     )
+                if (selected_node["id"] if selected_node else None) != bound_node_id:
                     await db.execute(
                         """UPDATE antigravity_credentials
                            SET bound_proxy_node_id = ?, proxy_bound_at = ?, updated_at = unixepoch()
                            WHERE filename = ?""",
                         (selected_node["id"] if selected_node else None, time.time(), filename),
+                    )
+                    # An IP change invalidates health evidence for the old binding.
+                    await db.execute(
+                        """UPDATE antigravity_account_health
+                           SET egress_ip = NULL, egress_country = NULL,
+                               binding_status = 'unchecked', eligibility_status = 'unchecked',
+                               eligibility_reason = NULL, eligibility_checked_at = NULL,
+                               updated_at = unixepoch() WHERE credential_name = ?""",
+                        (filename,),
                     )
                 await db.commit()
             if selected_node:
@@ -1424,10 +1454,12 @@ class SQLiteManager(AntigravityWarmupStore):
                         "proxy_node_id": selected_node["id"],
                         "bound_proxy_node_id": selected_node["id"],
                         "proxy_node_name": selected_node["name"],
+                        "proxy_expires_at": selected_node.get("expires_at"),
                     }
                 )
             else:
-                network["proxy_url"] = None
+                network.update(proxy_url=None, proxy_node_id=None, bound_proxy_node_id=None,
+                               bound_proxy_url=None, bound_proxy_node_name=None)
         return network
 
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]:
@@ -1630,6 +1662,42 @@ class SQLiteManager(AntigravityWarmupStore):
             await db.commit()
         return await self.get_proxy_group(int(group_id))
 
+    async def _proxy_expiry_summary(self, db: aiosqlite.Connection, group_id: int) -> Dict[str, int]:
+        """Count known expiries and whether expiring bindings have enough spares."""
+        now = time.time()
+        cutoff = now + PROXY_EXPIRY_LEAD_SECONDS
+        async with db.execute(
+            """SELECT
+                   COUNT(CASE WHEN n.expires_at IS NOT NULL THEN 1 END),
+                   COUNT(CASE WHEN n.enabled = 1 AND n.expires_at > ? AND n.expires_at <= ? THEN 1 END),
+                   COUNT(CASE WHEN n.enabled = 1 AND n.expires_at <= ? THEN 1 END),
+                   COUNT(CASE WHEN n.enabled = 1 AND n.expires_at > ?
+                     AND (n.cooldown_until IS NULL OR n.cooldown_until <= ?)
+                     AND (g.exclusive_assignment = 0 OR NOT EXISTS (
+                         SELECT 1 FROM antigravity_credentials a WHERE a.bound_proxy_node_id = n.id
+                     )) THEN 1 END)
+               FROM proxy_group_nodes n JOIN proxy_groups g ON g.id = n.group_id
+               WHERE n.group_id = ?""",
+            (now, cutoff, now, cutoff, now, group_id),
+        ) as cursor:
+            known, expiring, expired, spares = await cursor.fetchone()
+        async with db.execute(
+            """SELECT COUNT(*), COALESCE(MAX(g.exclusive_assignment), 0)
+               FROM antigravity_credentials a
+               JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
+               JOIN proxy_groups g ON g.id = a.proxy_group_id
+               WHERE a.proxy_mode = 'group' AND a.proxy_group_id = ? AND n.expires_at <= ?""",
+            (group_id, cutoff),
+        ) as cursor:
+            due, exclusive = await cursor.fetchone()
+        shortage = max(due - spares, 0) if exclusive else (due if not spares else 0)
+        return {
+            "expiry_known_node_count": known,
+            "expiring_node_count": expiring,
+            "expired_node_count": expired,
+            "expiry_replacement_shortage": shortage,
+        }
+
     async def get_proxy_group(self, group_id: int) -> Dict[str, Any]:
         self._ensure_initialized()
         async with aiosqlite.connect(self._db_path) as db:
@@ -1644,7 +1712,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 raise ValueError("代理组不存在")
             async with db.execute(
                 """SELECT id, name, proxy_url, enabled, failure_count,
-                          cooldown_until, last_used_at, created_at, updated_at
+                          cooldown_until, last_used_at, created_at, updated_at, expires_at
                    FROM proxy_group_nodes WHERE group_id = ? ORDER BY id""",
                 (int(group_id),),
             ) as cursor:
@@ -1654,9 +1722,12 @@ class SQLiteManager(AntigravityWarmupStore):
                 (int(group_id),),
             ) as cursor:
                 assigned_count = (await cursor.fetchone())[0]
+            expiry_summary = await self._proxy_expiry_summary(db, int(group_id))
         node_count = len(nodes)
-        enabled_node_count = sum(1 for node in nodes if node[3])
+        now = time.time()
+        enabled_node_count = sum(1 for node in nodes if node[3] and (node[9] is None or node[9] > now))
         return {
+            **expiry_summary,
             "id": row[0],
             "name": row[1],
             "description": row[2],
@@ -1680,6 +1751,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     "last_used_at": node[6],
                     "created_at": node[7],
                     "updated_at": node[8],
+                    "expires_at": node[9],
                 }
                 for node in nodes
             ],
@@ -1692,7 +1764,7 @@ class SQLiteManager(AntigravityWarmupStore):
                 """SELECT g.id, g.name, g.description, g.strategy, g.enabled,
                           g.exclusive_assignment, g.cursor, g.created_at, g.updated_at,
                           COUNT(n.id) AS node_count,
-                          COALESCE(SUM(CASE WHEN n.enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled_node_count,
+                          COALESCE(SUM(CASE WHEN n.enabled = 1 AND (n.expires_at IS NULL OR n.expires_at > unixepoch()) THEN 1 ELSE 0 END), 0) AS enabled_node_count,
                           (SELECT COUNT(*) FROM antigravity_credentials a
                            WHERE a.proxy_mode = 'group' AND a.proxy_group_id = g.id) AS assigned_account_count
                    FROM proxy_groups g
@@ -1704,15 +1776,17 @@ class SQLiteManager(AntigravityWarmupStore):
                 rows = await cursor.fetchall()
             groups: List[Dict[str, Any]] = []
             for row in rows:
+                expiry_summary = await self._proxy_expiry_summary(db, row[0])
                 async with db.execute(
                     """SELECT id, name, proxy_url, enabled, failure_count,
-                              cooldown_until, last_used_at, created_at, updated_at
+                              cooldown_until, last_used_at, created_at, updated_at, expires_at
                        FROM proxy_group_nodes WHERE group_id = ? ORDER BY id LIMIT 3""",
                     (row[0],),
                 ) as cursor:
                     node_rows = await cursor.fetchall()
                 groups.append(
                     {
+                        **expiry_summary,
                         "id": row[0],
                         "name": row[1],
                         "description": row[2],
@@ -1736,6 +1810,7 @@ class SQLiteManager(AntigravityWarmupStore):
                                 "last_used_at": node[6],
                                 "created_at": node[7],
                                 "updated_at": node[8],
+                                "expires_at": node[9],
                             }
                             for node in node_rows
                         ],
@@ -1830,15 +1905,16 @@ class SQLiteManager(AntigravityWarmupStore):
                 if existing:
                     await db.execute(
                         """UPDATE proxy_group_nodes SET name = ?, enabled = 1,
+                           expires_at = COALESCE(?, expires_at),
                            updated_at = unixepoch() WHERE id = ?""",
-                        (name, existing[0]),
+                        (name, node.get("expires_at"), existing[0]),
                     )
                     updated_count += 1
                 else:
                     await db.execute(
-                        """INSERT INTO proxy_group_nodes(group_id, name, proxy_url)
-                           VALUES (?, ?, ?)""",
-                        (int(group_id), name, proxy_url),
+                        """INSERT INTO proxy_group_nodes(group_id, name, proxy_url, expires_at)
+                           VALUES (?, ?, ?, ?)""",
+                        (int(group_id), name, proxy_url, node.get("expires_at")),
                     )
                     imported_count += 1
             await db.execute("UPDATE proxy_groups SET updated_at = unixepoch() WHERE id = ?", (int(group_id),))
@@ -1869,6 +1945,7 @@ class SQLiteManager(AntigravityWarmupStore):
     async def _select_proxy_group_node(
         self, db: aiosqlite.Connection, group_id: int, advance: bool = True,
         commit: bool = True, credential_name: str = "",
+        min_expires_at: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         current_time = time.time()
         async with db.execute(
@@ -1881,6 +1958,11 @@ class SQLiteManager(AntigravityWarmupStore):
         strategy, exclusive, group_cursor = group[0], bool(group[2]), group[3]
         occupied_sql = ""
         params: List[Any] = [int(group_id), current_time]
+        expiry_sql = "AND (expires_at IS NULL OR expires_at > ?)"
+        params.append(current_time)
+        if min_expires_at is not None:
+            expiry_sql = "AND expires_at > ?"
+            params[-1] = min_expires_at
         if exclusive:
             occupied_sql = """AND NOT EXISTS (
                 SELECT 1 FROM antigravity_credentials a
@@ -1889,9 +1971,10 @@ class SQLiteManager(AntigravityWarmupStore):
             )"""
             params.append(credential_name)
         async with db.execute(
-            f"""SELECT id, name, proxy_url FROM proxy_group_nodes
+            f"""SELECT id, name, proxy_url, expires_at FROM proxy_group_nodes
                WHERE group_id = ? AND enabled = 1
                  AND (cooldown_until IS NULL OR cooldown_until <= ?)
+                 {expiry_sql}
                  {occupied_sql}
                ORDER BY id""",
             params,
@@ -1899,16 +1982,12 @@ class SQLiteManager(AntigravityWarmupStore):
             nodes = await cursor.fetchall()
         if not nodes:
             return None
+        # Prefer nodes outside the expiry window for fresh/hard-failure bindings.
+        preferred = [n for n in nodes if n[3] is None or n[3] > current_time + PROXY_EXPIRY_LEAD_SECONDS]
+        nodes = preferred or nodes
         if strategy == "random":
-            async with db.execute(
-                f"""SELECT id, name, proxy_url FROM proxy_group_nodes
-                   WHERE group_id = ? AND enabled = 1
-                     AND (cooldown_until IS NULL OR cooldown_until <= ?)
-                     {occupied_sql}
-                   ORDER BY RANDOM() LIMIT 1""",
-                params,
-            ) as cursor:
-                selected = await cursor.fetchone()
+            import random
+            selected = random.choice(nodes)
         elif strategy == "failover":
             selected = nodes[0]
         else:
@@ -1927,7 +2006,7 @@ class SQLiteManager(AntigravityWarmupStore):
             )
         if advance and commit:
             await db.commit()
-        return {"id": selected[0], "name": selected[1], "proxy_url": selected[2]}
+        return {"id": selected[0], "name": selected[1], "proxy_url": selected[2], "expires_at": selected[3]}
 
     async def update_credential_network(
         self, filename: str, proxy_mode: str = "inherit", proxy_url: Optional[str] = None,

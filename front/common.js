@@ -750,6 +750,8 @@ function renderProxyGroups() {
                 <span><strong>${escapeHtml(group.strategy || 'round_robin')}</strong> 策略</span>
                 ${group.exclusive_assignment ? '<span><strong>独占</strong> 一账号一 IP</span>' : ''}
             </div>
+            ${group.expiry_known_node_count ? `<p>到期前 24 小时自动切换 · ${Number(group.expiring_node_count || 0)} 个即将到期 · ${Number(group.expired_node_count || 0)} 个已过期</p>` : ''}
+            ${group.expiry_replacement_shortage ? `<p role="status">${Number(group.expiry_replacement_shortage)} 个账号缺少有效备用 IP，请续费或导入更晚到期的节点；现有 IP 将保留至到期。</p>` : ''}
             <div class="proxy-node-preview">${nodes || '<span class="proxy-node-chip muted">等待导入节点</span>'}</div>
             <div class="proxy-card-actions">
                 <button type="button" onclick="selectProxyGroupForImport(${group.id})">导入节点</button>
@@ -6637,7 +6639,7 @@ async function fetchPX6Proxies(importNodes = false) {
         result.replaceChildren();
         const summary = document.createElement('p');
         summary.textContent = importNodes
-            ? `导入完成：新增 ${data.imported_count}，更新 ${data.updated_count}。`
+            ? `导入完成：新增 ${data.imported_count}，更新 ${data.updated_count}。已保存有明确到期时间的节点；请求前会检查到期时间，提前 24 小时切换到有效备用 IP。`
             : `Key 验证成功，找到 ${data.count} 个有效代理。`;
         result.append(summary);
         if (data.items?.length) {

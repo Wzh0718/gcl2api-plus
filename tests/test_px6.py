@@ -28,6 +28,28 @@ async def test_key_reads_eighty_owned_shared_ips(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_expiry_uses_provider_unix_time_not_timezone_ambiguous_date(monkeypatch):
+    entry = proxy()
+    entry['unixtime_end'] = '1900000000'
+    monkeypatch.setattr(px6, '_request_page', lambda *args: {'status': 'yes', 'list': [entry]})
+    result = await px6.fetch_owned_proxies('test-key')
+    assert result['nodes'][0]['expires_at'] == 1900000000
+    del entry['unixtime_end']
+    result = await px6.fetch_owned_proxies('test-key')
+    assert result['nodes'][0]['expires_at'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('expiry', ['bad', 'nan', 'inf', -1, True])
+async def test_malformed_provider_expiry_does_not_import_nodes(monkeypatch, expiry):
+    entry = proxy()
+    entry['unixtime_end'] = expiry
+    monkeypatch.setattr(px6, '_request_page', lambda *args: {'status': 'yes', 'list': [entry]})
+    with pytest.raises(px6.PX6Error):
+        await px6.fetch_owned_proxies('test-key')
+
+
+@pytest.mark.asyncio
 async def test_pagination_and_socks_gateway(monkeypatch):
     monkeypatch.setattr(px6, 'PAGE_SIZE', 2)
     pages = []

@@ -3012,7 +3012,7 @@
                                     <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
                                     <details>
                                         <summary>从 PX6 API Key 获取已有代理</summary>
-                                        <p class="config-note">填写 PX6 API Key 验证并读取账号下的有效代理，再导入上方选择的代理组。Key 仅用于本次读取，不保存。</p>
+                                        <p class="config-note">填写 PX6 API Key 读取并导入已有代理。保存到期时间后，请求前会检查并在到期前 24 小时切换到有效备用 IP；没有备用时保留当前 IP 至到期，请及时续费或补充节点。续费或购买后需重新导入。Key 仅用于本次读取，不保存。</p>
                                         <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
                                         <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
                                         <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
@@ -3603,7 +3603,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-concurrency-20261106"></script>
+    <script src="./front/common.js?v=px6-expiry-20261111"></script>
 
 </body>
 
