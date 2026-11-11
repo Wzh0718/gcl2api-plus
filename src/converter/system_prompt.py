@@ -15,14 +15,24 @@ async def append_configured_system_prompt(request: dict[str, Any]) -> None:
     if isinstance(instruction, str):
         instruction = {"parts": [{"text": instruction}]}
     elif instruction is None:
-        instruction = {}
+        # 没有客户端 system prompt 时，A 不注入；保持请求原样。
+        return
     if not isinstance(instruction, dict):
         return
     parts = instruction.get("parts") or []
     if not isinstance(parts, list):
         return
-    # Normalization may be repeated by retry/continuation paths.
-    if not any(isinstance(part, dict) and part.get("text") == text for part in parts):
-        parts = [*parts, {"text": text}]
+    if not parts:
+        return
+    # A+B 必须落在同一个文本 part 中；不改变客户端原有的后续 part。
+    for index, part in enumerate(parts):
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            if part["text"].startswith(text):
+                return
+            parts = list(parts)
+            parts[index] = {**part, "text": text + part["text"]}
+            break
+    else:
+        parts = [{"text": text}, *parts]
     request["systemInstruction"] = {**instruction, "parts": parts}
     request.pop("system_instructions", None)

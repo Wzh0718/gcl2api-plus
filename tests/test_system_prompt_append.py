@@ -31,7 +31,7 @@ async def test_append_preserves_original_and_does_not_duplicate(mode):
     original = deepcopy(req)
     result = await normalize_gemini_request(req, mode=mode)
     assert req == original
-    assert result["systemInstruction"]["parts"] == [{"text": "original"}, {"text": "custom text\nsecond line"}]
+    assert result["systemInstruction"]["parts"] == [{"text": "custom text\nsecond lineoriginal"}]
     second = await normalize_gemini_request(result, mode=mode)
     assert second["systemInstruction"]["parts"] == result["systemInstruction"]["parts"]
 
@@ -42,11 +42,11 @@ async def test_no_existing_system_and_empty_setting():
     assert "systemInstruction" not in result
     config._config_cache["system_prompt_append"] = "new instruction"
     result = await normalize_gemini_request(req)
-    assert result["systemInstruction"] == {"parts": [{"text": "new instruction"}]}
+    assert "systemInstruction" not in result
 
 
 @pytest.mark.parametrize("instruction", ["original", {"parts": [{"text": "original"}]}])
 async def test_legacy_instruction_shape(instruction):
     config._config_cache["system_prompt_append"] = "append"
     result = await normalize_gemini_request({"model": "gemini-2.5-flash", "contents": [], "system_instructions": instruction})
-    assert result["systemInstruction"]["parts"][-1] == {"text": "append"}
+    assert result["systemInstruction"]["parts"][0] == {"text": "appendoriginal"}

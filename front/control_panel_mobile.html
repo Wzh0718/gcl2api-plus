@@ -2604,7 +2604,7 @@
                             <div class="form-group">
                                 <label for="systemPromptAppend">追加文本:</label>
                                 <textarea id="systemPromptAppend" class="config-input" rows="6" maxlength="20000" placeholder="留空不追加，支持多行文本"></textarea>
-                                <small class="config-note">在已有系统提示后追加，适用于 GeminiCLI、Antigravity、Vertex 通道。保存后立即生效；SQLite 保存值优先于 .env，清空保存即可关闭。最多 20000 字符。</small>
+                                <small class="config-note">作为传输给上游的第一段 system prompt 注入，适用于 GeminiCLI、Antigravity、Vertex 通道。保存后立即生效；SQLite 保存值优先于 .env，清空保存即可关闭。最多 20000 字符。</small>
                             </div>
                         </div>
 
