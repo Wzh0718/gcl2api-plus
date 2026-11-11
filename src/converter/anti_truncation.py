@@ -72,7 +72,7 @@ def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         注入了合成工具和控制指令的 payload
     """
-    modified_payload = payload.copy()
+    modified_payload = _deep_copy_anti_truncation_payload(payload)
     # 拷贝 request 层，避免注入原地污染调用方的原始请求体
     # （shallow copy 下 request_data 与调用方共享同一个 dict）
     request_data = dict(modified_payload.get("request") or {})
@@ -107,6 +107,13 @@ def apply_anti_truncation(payload: Dict[str, Any]) -> Dict[str, Any]:
         func_config["mode"] = "AUTO"
         tool_config["functionCallingConfig"] = func_config
         request_data["toolConfig"] = tool_config
+
+    # Vertex/Antigravity can stream function-call arguments as partialArgs.
+    # Without this flag emit_answer is buffered until its complete JSON args
+    # are available, which makes the anti-truncation model appear non-streaming.
+    func_config["streamFunctionCallArguments"] = True
+    tool_config["functionCallingConfig"] = func_config
+    request_data["toolConfig"] = tool_config
 
     # 3. 注入控制指令到 systemInstruction
     system_instruction = dict(request_data.get("systemInstruction") or {})
@@ -166,7 +173,9 @@ def extract_synthetic_content_from_response(
                 fc = part["functionCall"]
                 if fc.get("name") == SYNTHETIC_TOOL_NAME:
                     found_synthetic = True
-                    args = fc.get("args", {})
+                    # Vertex uses partialArgs for incremental function-call
+                    # argument chunks when streamFunctionCallArguments=true.
+                    args = fc.get("partialArgs", fc.get("args", {}))
                     if isinstance(args, dict):
                         synthetic_content += args.get("content", "")
                     elif isinstance(args, str):
@@ -564,6 +573,14 @@ class AntiTruncationStreamProcessor:
                     if not finish_reason_forwarded:
                         # 流未自然收尾（无 finishReason chunk）：补发收尾信号
                         yield self._build_finish_reason_chunk()
+                    yield b"data: [DONE]\n\n"
+                    return
+
+                # 真实工具调用交回客户端执行，不能作为文本截断重复请求。
+                if has_real_tool_calls:
+                    if not finish_reason_forwarded:
+                        yield self._build_finish_reason_chunk(last_finish_reason or "STOP")
+                    self._clear_content()
                     yield b"data: [DONE]\n\n"
                     return
 
