@@ -223,6 +223,8 @@ async def stream_request(
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
 
+        from src.request_capture import bind_capture_credential
+        bind_capture_credential(current_file, final_payload, credential_data)
         stream = stream_post_async(
             url=target_url,
             body=final_payload,
@@ -478,6 +480,8 @@ async def non_stream_request(
 
     for attempt in range(max_retries + 1):
         try:
+            from src.request_capture import bind_capture_credential
+            bind_capture_credential(current_file, final_payload, credential_data)
             response = await post_async(
                 url=target_url,
                 json=final_payload,

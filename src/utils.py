@@ -316,6 +316,9 @@ async def authenticate_flexible(
         )
     
     log.debug(f"Authentication successful using {auth_method}")
+    from src.request_capture import capture_context
+    if (capture := capture_context.get()) is not None:
+        capture.api_key_id = "env"
     return token
 
 
@@ -353,6 +356,9 @@ async def authenticate_antigravity_key(
         from src.api_keys import ApiKeyPrincipal
 
         log.debug(f"Antigravity authentication successful using {auth_method} (environment key)")
+        from src.request_capture import capture_context
+        if (capture := capture_context.get()) is not None:
+            capture.api_key_id = "env"
         mark_stage("auth_finished")
         return ApiKeyPrincipal("env", "环境配置密钥", "environment", "env")
     try:
@@ -360,6 +366,9 @@ async def authenticate_antigravity_key(
         from src.storage_adapter import get_storage_adapter
 
         principal = await ApiKeyService(await get_storage_adapter()).authenticate(token)
+        from src.request_capture import capture_context
+        if (capture := capture_context.get()) is not None:
+            capture.api_key_id = principal.api_key_id
         mark_stage("auth_finished")
         return principal
     except ApiKeyAuthError as exc:

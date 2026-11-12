@@ -100,7 +100,17 @@ class CallMonitor:
 
         mark_stage("monitor_started")
         timing = request_timing.get()
-        features, details = build_request_features(upstream_request)
+        from src.request_capture import capture_context, capture_managed
+        capture = capture_context.get()
+        if capture_managed.get() or capture is not None:
+            # New inference snapshots live ONLY in the bounded evidence store.
+            # Keep a small lookup reference in billing, never duplicate raw text.
+            features = {"capture_id": capture.request_id} if capture else {}
+            details = {}
+            if capture:
+                capture.api_key_id = api_key_id
+        else:
+            features, details = build_request_features(upstream_request)
         row: Dict[str, Any] = {
             "request_id": request_id,
             "created_at": float(created_at if created_at is not None else time.time()),

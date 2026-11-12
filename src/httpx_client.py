@@ -19,6 +19,7 @@ from log import log
 from src.agy_native_transport import agy_native_transport, antigravity_profile_for_url
 from src.shadowsocks import shadowsocks_proxy_context
 from src.request_timing import add_timing_hook
+from src.request_capture import capture_post, capture_stream, active_attempt, observe_stream_headers
 
 
 def get_decoded_response_headers(headers: Any) -> Dict[str, str]:
@@ -107,6 +108,7 @@ async def get_async(
         return await client.get(url, headers=headers)
 
 
+@capture_post
 async def post_async(
     url: str,
     data: Any = None,
@@ -150,11 +152,14 @@ async def _idle_watch(iterator, idle_timeout: float, url: str):
         except StopAsyncIteration:
             return
         except asyncio.TimeoutError:
+            if (attempt := active_attempt.get()) is not None:
+                attempt.incomplete = "idle_timeout"
             log.warning(f"[STREAM] 上游超过 {idle_timeout}s 无数据，主动断开: {url[:100]}")
             return
         yield item
 
 
+@capture_stream
 async def stream_post_async(
     url: str,
     body: Dict[str, Any],
@@ -179,6 +184,7 @@ async def stream_post_async(
         async with agy_native_transport.stream(
             "POST", url, headers=headers, json=body, proxy_url=proxy_url
         ) as r:
+            observe_stream_headers(r)
             if r.status_code != 200:
                 from fastapi import Response
                 yield Response(
@@ -198,6 +204,7 @@ async def stream_post_async(
     add_timing_hook(kwargs, url)
     async with http_client.get_streaming_client(proxy_url=proxy_url, **kwargs) as client:
         async with client.stream("POST", url, json=body, headers=headers) as r:
+            observe_stream_headers(r)
             # 错误直接返回
             if r.status_code != 200:
                 from fastapi import Response

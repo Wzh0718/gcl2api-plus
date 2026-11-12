@@ -74,6 +74,14 @@ class RequestContentMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        from src.request_capture import capture_managed, capture_request
+        token = capture_managed.set(True)
+        try:
+            return await capture_request(scope, receive, send, self._observe)
+        finally:
+            capture_managed.reset(token)
+
+    async def _observe(self, scope, receive, send):
         path = scope.get("path", "")
         inference = path.startswith(("/v1/", "/v1beta/", "/antigravity/v1/", "/antigravity/v1beta/", "/vertex/v1/", "/vertex/v1beta/"))
         if scope["type"] != "http" or scope.get("method") != "POST" or not inference:
@@ -87,14 +95,23 @@ class RequestContentMiddleware:
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").split(b";")[0].strip()
         token = request_content.set(None)
         chunks = bytearray()
+        from src.capture_config import capture_settings
+        max_body = capture_settings()["request_capture_max_body_kb"] * 1024
+        overflow = False
 
         async def observe_receive():
+            nonlocal overflow
             message = await receive()
             if content_type == b"application/json" and message["type"] == "http.request":
-                chunks.extend(message.get("body", b""))
+                chunk = message.get("body", b"")
+                if len(chunks) + len(chunk) > max_body:
+                    overflow = True
+                    chunks.clear()
+                if not overflow:
+                    chunks.extend(chunk)
                 if not message.get("more_body", False):
                     try:
-                        payload = json.loads(chunks)
+                        payload = json.loads(chunks) if not overflow else None
                         if isinstance(payload, dict):
                             request_content.set(content_snapshot(payload))
                     except (ValueError, UnicodeDecodeError):

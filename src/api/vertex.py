@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import Response
 from log import log
 from src.converter.thoughtSignature_fix import decode_tool_id_and_signature
+from src.request_capture import CaptureAttempt
 
 try:
     import wreq
@@ -664,6 +665,11 @@ async def stream_request(
         auth_retry = False
         quota_retry = False
 
+        capture = CaptureAttempt(BATCH_GRAPHQL_URL,
+                                 {"model": model, "request": gemini_payload, "transport_request": payload},
+                                 "vertex:anonymous", streaming=True)
+        await capture.start()
+
         try:
             resp = await wreq.post(
                 BATCH_GRAPHQL_URL,
@@ -672,6 +678,7 @@ async def stream_request(
                 emulation=Emulation.Chrome131,
             )
         except Exception as e:
+            await capture.finish(e)
             log.error(f"[VERTEX STREAM] wreq post exception: {e}")
             if attempt < max_retries:
                 await asyncio.sleep(1 + attempt)
@@ -684,6 +691,11 @@ async def stream_request(
             )
             return
 
+        except asyncio.CancelledError as exc:
+            await capture.finish(exc)
+            raise
+
+        capture.response(resp.status, getattr(resp, "headers", {}))
         if resp.status != 200:
             try:
                 err_body = await resp.text()
@@ -691,6 +703,8 @@ async def stream_request(
                 err_body = ""
             # 错误体已读完，显式关闭响应释放连接，避免错误重试路径泄漏 fd
             await _close_wreq_response(resp)
+            capture.response(resp.status, getattr(resp, "headers", {}), err_body)
+            await capture.finish()
             log.error(f"[VERTEX STREAM] HTTP {resp.status}: {err_body[:300]}")
 
             if _is_auth_error(err_body):
@@ -772,9 +786,21 @@ async def stream_request(
                             # 只保留未被成功解析的尾部
                             buffer = text[last_end:].encode("utf-8") if last_end < len(text) else b""
         except Exception as e:
+            capture.incomplete = type(e).__name__
             log.error(f"[VERTEX STREAM] stream read error: {e}")
             if not content_yielded and attempt < max_retries:
                 need_retry = True
+        except (asyncio.CancelledError, GeneratorExit) as exc:
+            capture.incomplete = type(exc).__name__
+            raise
+        finally:
+            if auth_retry:
+                capture.response(403, getattr(resp, "headers", {}), '{"error":{"status":"UNAUTHENTICATED"}}')
+            elif quota_retry:
+                capture.response(429, getattr(resp, "headers", {}), '{"error":{"status":"RESOURCE_EXHAUSTED"}}')
+            elif not content_yielded and not capture.incomplete:
+                capture.incomplete = "empty_stream"
+            await capture.finish()
 
         if content_yielded:
             return
@@ -845,6 +871,10 @@ async def non_stream_request(
         payload = _build_request_payload(model, gemini_payload, recaptcha_token)
         headers = _batch_graphql_headers()
 
+        capture = CaptureAttempt(BATCH_GRAPHQL_URL,
+                                 {"model": model, "request": gemini_payload, "transport_request": payload},
+                                 "vertex:anonymous")
+        await capture.start()
         try:
             resp = await wreq.post(
                 BATCH_GRAPHQL_URL,
@@ -853,6 +883,7 @@ async def non_stream_request(
                 emulation=Emulation.Chrome131,
             )
         except Exception as e:
+            await capture.finish(e)
             log.error(f"[VERTEX NON-STREAM] wreq exception: {e}")
             if attempt < max_retries:
                 await asyncio.sleep(1)
@@ -863,6 +894,10 @@ async def non_stream_request(
                 media_type="application/json",
             )
 
+        except asyncio.CancelledError as exc:
+            await capture.finish(exc)
+            raise
+
         status = resp.status
         try:
             raw_text = await resp.text()
@@ -870,8 +905,10 @@ async def non_stream_request(
             raw_text = ""
         # 响应体已读完，显式关闭响应释放连接
         await _close_wreq_response(resp)
+        capture.response(status, getattr(resp, "headers", {}), raw_text if status >= 400 else b"")
 
         if status != 200:
+            await capture.finish()
             log.error(f"[VERTEX NON-STREAM] HTTP {status}: {raw_text[:300]}")
             if _is_auth_error(raw_text) and attempt < max_retries:
                 await asyncio.sleep(1)
@@ -892,6 +929,8 @@ async def non_stream_request(
         # 解析响应
         result = _build_non_stream_response(raw_text)
         if result is None:
+            capture.incomplete = "parse_failed"
+            await capture.finish()
             log.error(f"[VERTEX NON-STREAM] parse failed: {raw_text[:300]}")
             if attempt < max_retries:
                 await asyncio.sleep(1)
@@ -903,6 +942,8 @@ async def non_stream_request(
             )
 
         if isinstance(result, dict) and "auth_error" in result:
+            capture.response(401, getattr(resp, "headers", {}), json.dumps({"error": {"message": result["auth_error"]}}))
+            await capture.finish()
             if attempt < max_retries:
                 await asyncio.sleep(1)
                 continue
@@ -913,6 +954,8 @@ async def non_stream_request(
             )
 
         if isinstance(result, dict) and "quota_error" in result:
+            capture.response(429, getattr(resp, "headers", {}), json.dumps({"error": {"message": result["quota_error"]}}))
+            await capture.finish()
             if attempt < max_retries:
                 log.warning(f"[VERTEX NON-STREAM] upstream 429, retry {attempt + 1}/{max_retries}")
                 continue  # 下一轮循环会重新 fetch_recaptcha_token
@@ -922,6 +965,7 @@ async def non_stream_request(
                 media_type="application/json",
             )
 
+        await capture.finish()
         return Response(
             content=json.dumps(result, ensure_ascii=False).encode("utf-8"),
             status_code=200,

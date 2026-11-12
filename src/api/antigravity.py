@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
 from src.antigravity_400_classifier import upstream_error_log_detail
+from src.request_capture import record_local_capture, bind_capture_credential
 
 from fastapi import Response
 from config import (
@@ -375,6 +376,7 @@ async def wrap_cli_request(
         "userAgent": user_agent,
         "requestType": "image_gen" if is_image_request else "agent",
     }
+    bind_capture_credential(credential_key, payload, credential_data)
     return payload, request_id
 
 
@@ -1476,6 +1478,7 @@ async def _stream_request_inner(
                 continue  # 重试
 
         except CredentialSlotWaitTimeout:
+            await record_local_capture(slot_holder, model_name)
             rate_limited_credentials.add(slot_holder)
             if retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
@@ -1698,6 +1701,7 @@ async def _non_stream_image_request_inner(
             user_email=credential_data.get("user_email"),
             credential_key=current_file,
         )
+        bind_capture_credential(current_file, final_payload, credential_data)
         auth_headers = build_antigravity_headers(
             access_token,
             image_request=True,
@@ -1732,6 +1736,7 @@ async def _non_stream_image_request_inner(
                 request_id=last_request_id,
             )
         except CredentialSlotWaitTimeout:
+            await record_local_capture(current_file, requested_model)
             last_response = _credential_slot_backpressure_response()
             last_was_slot_backpressure = True
             await lease_tracker.release()
@@ -2391,6 +2396,7 @@ async def non_stream_request(
                 continue  # 重试
 
         except CredentialSlotWaitTimeout:
+            await record_local_capture(slot_holder, model_name)
             rate_limited_credentials.add(slot_holder)
             if retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
