@@ -85,6 +85,8 @@ ENV_MAPPINGS = {
     "CALL_RECORDS_RETENTION_DAYS": "call_records_retention_days",
 }
 
+ENV_MAPPINGS["CALL_CONTENT_CAPTURE_ENABLED"] = "call_content_capture_enabled"
+
 
 # ====================== 配置系统 ======================
 

@@ -358,5 +358,25 @@ async def call_monitor_content(
     content = await getter(request_id)
     if content is None:
         raise HTTPException(status_code=404, detail="记录不存在或已超过保留期")
+    capture_id = content.get("request_features", {}).get("capture_id")
+    if capture_id:
+        import asyncio
+        from src.capture_config import capture_policies
+        from src.request_capture import get_capture_store
+        from src.request_features import content_snapshot
+        store = get_capture_store()
+        policies = capture_policies()
+        snapshots = []
+        for name in ("normal", "errors"):
+            snapshots.extend(await asyncio.to_thread(store.query, name, policies[name],
+                                                     request_id=capture_id, limit=30))
+        chosen = next((r for r in snapshots if r.get("details", {}).get("upstream")), None)
+        chosen = chosen or next((r for r in snapshots if r.get("details")), {})
+        content["request_details"] = {stage: content_snapshot(payload) for stage, payload in
+                                      chosen.get("details", {}).items() if isinstance(payload, dict)}
+        feature_rows = await asyncio.to_thread(store.query, "features", policies["features"],
+                                               request_id=capture_id, limit=30)
+        content["request_features"] = next((r["features"] for r in feature_rows if r.get("features", {}).get("upstream")), {})
+        content.update(capture_id=capture_id, capture_state="available" if chosen else "not_available")
     from fastapi.responses import JSONResponse
     return JSONResponse(content, headers={"Cache-Control": "no-store"})

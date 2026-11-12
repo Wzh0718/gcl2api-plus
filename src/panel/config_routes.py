@@ -15,6 +15,7 @@ from src.models import ConfigSaveRequest
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
 from .utils import get_env_locked_keys
+from src.capture_config import CAPTURE_FIELDS, capture_settings, validate_capture_value
 
 
 # 创建路由器
@@ -130,12 +131,13 @@ async def get_config(token: str = Depends(verify_panel_token)):
             if key not in env_locked_keys:
                 current_config[key] = value
 
+        current_config.update(capture_settings())
         webhook_source = (
             "sqlite" if storage_config.get("dingtalk_webhook_url") is not None else
             "environment" if os.getenv("DINGTALK_WEBHOOK_URL", "").strip() else "unset"
         )
         return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys),
-                                     "webhook_source": webhook_source})
+                                     "webhook_source": webhook_source, "capture_schema": CAPTURE_FIELDS})
 
     except Exception as e:
         log.error(f"获取配置失败: {e}")
@@ -148,6 +150,15 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
     try:
 
         new_config = request.config
+
+        for key in new_config:
+            if key.startswith("request_capture_"):
+                if key not in CAPTURE_FIELDS:
+                    raise HTTPException(400, f"未知采集配置: {key}")
+                try:
+                    new_config[key] = validate_capture_value(key, new_config[key])
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
 
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
         log.debug(f"收到的password值: {new_config.get('password', 'NOT_FOUND')}")
@@ -432,6 +443,10 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
 
         # 重新加载配置缓存（关键！）
         await config.reload_config()
+
+        if set(new_config) & CAPTURE_FIELDS.keys():
+            from src.request_capture import maintain_capture
+            await maintain_capture()
 
         # 如果保活相关配置发生变化，立即重启保活服务
         keepalive_keys = {"keepalive_url", "keepalive_interval"}

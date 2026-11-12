@@ -3358,6 +3358,8 @@ function _cmRenderGrouped(rows, view) {
 
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
+    if (features.capture_id) return `<span>请求证据已关联（有保留期限）</span>
+        <button type="button" onclick="showCallMonitorContent(${index})">查看正文与重试证据</button>`;
     const feature = features.client || features.upstream;
     if (!feature) return '<span>未采集（历史记录）</span>';
     const digest = _cmEscape(feature.sha256 || '');
@@ -3398,6 +3400,16 @@ async function showCallMonitorContent(index) {
         close.textContent = '关闭';
         close.onclick = () => dialog.close();
         dialog.append(close);
+        if (data.capture_id) {
+            const notice = document.createElement('p');
+            notice.textContent = `采集 ID：${data.capture_id}。${data.capture_state === 'available' ? '正文可能包含截断或省略标记。' : '正文未保存、已过期或因容量上限被淘汰，可导出剩余特征和尝试记录。'}`;
+            dialog.append(notice);
+            const download = document.createElement('button');
+            download.type = 'button';
+            download.textContent = '导出全部尝试与异常证据';
+            download.onclick = () => downloadCaptureEvidence({ request_id: data.capture_id }, download);
+            dialog.append(download);
+        }
         const stages = data.request_details || {};
         for (const [stage, label] of [['client', '客户端原始请求'], ['upstream', '实际发送至上游']]) {
             const title = document.createElement('h4');
@@ -5667,6 +5679,7 @@ async function loadConfig() {
         if (response.ok) {
             AppState.currentConfig = data.config;
             AppState.webhookSource = data.webhook_source;
+            AppState.captureSchema = data.capture_schema || {};
             AppState.envLockedFields = new Set(data.env_locked || []);
 
             populateConfigForm();
@@ -5753,9 +5766,95 @@ function populateConfigForm() {
     const allAccountsAlert = document.getElementById('dingtalkAllAccountsAlertEnabled');
     if (allAccountsAlert) allAccountsAlert.checked = c.dingtalk_all_accounts_alert_enabled !== false;
     setConfigField('callRecordsRetentionDays', c.call_records_retention_days || 30);
+    renderCaptureSettings();
 
     // 配置加载/保存后，同步 Refresh Token 导入面板的代理地址
     syncAntigravityRefreshTokenProxy();
+}
+
+function renderCaptureSettings() {
+    const container = document.getElementById('requestCaptureSettings');
+    if (!container) return;
+    const schema = AppState.captureSchema || {};
+    const labels = { attempts: '上游尝试与最终结果', features: '请求特征', normal: '普通请求正文', errors: '异常证据与成功对照' };
+    const controls = keys => keys.map(key => {
+        const field = schema[key];
+        const id = `capture-${key}`;
+        const value = AppState.currentConfig[key] ?? field.default;
+        const locked = AppState.envLockedFields.has(key);
+        const input = field.type === 'boolean'
+            ? `<input id="${id}" type="checkbox" ${value ? 'checked' : ''} ${locked ? 'disabled' : ''}>`
+            : `<input id="${id}" class="config-input" type="number" min="${field.min}" max="${field.max}" step="1" value="${_cmEscape(value)}" ${locked ? 'disabled' : ''}>`;
+        return `<div class="form-group"><label for="${id}">${_cmEscape(field.label)}${locked ? '（环境变量锁定）' : ''}${input}</label></div>`;
+    }).join('');
+    const policyKeys = Object.keys(schema).filter(key => Object.keys(labels).some(name => key.startsWith(`request_capture_${name}_`)));
+    const commonKeys = Object.keys(schema).filter(key => !policyKeys.includes(key));
+    const grid = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px;';
+    container.innerHTML = `<h4>请求证据采集</h4>
+        <p class="config-note">各类证据独立限制容量与保留时间，先达到的限制优先生效。容量满后淘汰最旧分段；空间不足暂停写入。修改后点击页面的保存按钮。</p>
+        <div style="${grid}">${controls(commonKeys)}</div>
+        ${Object.entries(labels).map(([name, label]) => `<fieldset style="margin:12px 0;padding:12px;min-width:0;"><legend>${label}</legend>
+            <div style="${grid}">${controls(policyKeys.filter(key => key.startsWith(`request_capture_${name}_`)))}</div></fieldset>`).join('')}
+        <button type="button" onclick="refreshCaptureStatus(this)">刷新容量与丢弃状态</button>
+        <div id="captureStorageStatus" role="status" aria-live="polite"></div>
+        <h4>导出排查证据</h4>
+        <p class="config-note">填写采集 ID，或填写完整凭证文件名。单次导出有大小与条数限制，不包含认证请求头。</p>
+        <div style="${grid}">
+            <div class="form-group"><label for="captureExportRequestId">采集 ID<input id="captureExportRequestId" class="config-input" maxlength="256"></label></div>
+            <div class="form-group"><label for="captureExportAccount">凭证文件名<input id="captureExportAccount" class="config-input" maxlength="256" placeholder="ag_….json"></label></div>
+            <div class="form-group"><label for="captureExportSince">起始时间（本地时间）<input id="captureExportSince" class="config-input" type="datetime-local"></label></div>
+        </div>
+        <button type="button" onclick="exportCaptureFromSettings(this)">下载证据包</button>`;
+}
+
+async function refreshCaptureStatus(button) {
+    if (button) button.disabled = true;
+    const target = document.getElementById('captureStorageStatus');
+    try {
+        const response = await fetch('./call-monitor/capture/status', { headers: getAuthHeaders(), cache: 'no-store' });
+        const data = await readJsonResponse(response, '读取采集状态失败');
+        const labels = { attempts: '尝试与结果', features: '请求特征', normal: '普通正文', errors: '异常证据' };
+        const entries = Object.entries(data.policies || {}).map(([name, info]) =>
+            `<li>${labels[name] || _cmEscape(name)}：${info.enabled ? '开启' : '关闭'}，已用 ${(info.disk_bytes / 1048576).toFixed(2)} / ${(info.max_bytes / 1048576).toFixed(0)} MiB，最长保留 ${info.retention_hours} 小时</li>`).join('');
+        const dropped = Object.entries(data.dropped || {}).map(([reason, count]) => `${reason}: ${count}`).join('；');
+        if (target) target.innerHTML = `<p>总开关：${data.enabled ? '开启' : '关闭'}</p><ul>${entries}</ul><p>丢弃与恢复计数：${_cmEscape(dropped || '暂无')}。</p>`;
+    } catch (error) {
+        if (target) target.textContent = error.message;
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function exportCaptureFromSettings(button) {
+    const params = {};
+    const requestId = document.getElementById('captureExportRequestId')?.value.trim();
+    const account = document.getElementById('captureExportAccount')?.value.trim();
+    const since = document.getElementById('captureExportSince')?.value;
+    if (requestId) params.request_id = requestId;
+    if (account) params.credential_name = account;
+    if (since) params.since = String(new Date(since).getTime() / 1000);
+    if (!requestId && !account) return showStatus('请填写采集 ID 或凭证文件名', 'error');
+    return downloadCaptureEvidence(params, button);
+}
+
+async function downloadCaptureEvidence(params, button) {
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch(`./call-monitor/capture/export?${new URLSearchParams(params)}`, { headers: getAuthHeaders(), cache: 'no-store' });
+        if (!response.ok) throw new Error((await response.json()).detail || '导出失败');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'request-evidence.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showStatus('证据包已下载；请查看包内截断与保留状态', 'success');
+    } catch (error) {
+        showStatus(error.message, 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
 }
 
 function setConfigField(fieldId, value) {
@@ -5837,6 +5936,13 @@ async function saveConfig() {
             dingtalk_all_accounts_alert_template: getValue('dingtalkAllAccountsAlertTemplate'),
             call_records_retention_days: getInt('callRecordsRetentionDays', 30)
         };
+
+        for (const [key, field] of Object.entries(AppState.captureSchema || {})) {
+            const input = document.getElementById(`capture-${key}`);
+            if (input && !input.disabled) {
+                config[key] = field.type === 'boolean' ? input.checked : input.value;
+            }
+        }
 
         // 未填写的默认空值不能在保存其它配置时意外遮蔽日后的 Compose 环境变量。
         if (!config.dingtalk_webhook_url && !AppState.currentConfig.dingtalk_webhook_url) {

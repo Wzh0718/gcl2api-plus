@@ -20,6 +20,8 @@ def create_router() -> APIRouter:
     router.include_router(billing.router)
     router.include_router(billing.network_router)
     router.include_router(call_monitor.router)
+    from . import request_capture
+    router.include_router(request_capture.router)
     router.include_router(proxy_groups.router)
     router.include_router(warmup.router)
     router.include_router(api_keys.router)

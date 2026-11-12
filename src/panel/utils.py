@@ -159,7 +159,9 @@ def get_env_locked_keys() -> Set:
     env_locked_keys = set()
 
     # 使用 config.py 中统一维护的映射表
-    for env_key, config_key in config.ENV_MAPPINGS.items():
+    from src.capture_config import CAPTURE_FIELDS
+    mappings = {**config.ENV_MAPPINGS, **{key.upper(): key for key in CAPTURE_FIELDS}}
+    for env_key, config_key in mappings.items():
         if os.getenv(env_key):
             env_locked_keys.add(config_key)
 
