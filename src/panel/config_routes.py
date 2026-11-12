@@ -60,6 +60,8 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["sensitive_word_filter_mode"] = await config.get_sensitive_word_filter_mode()
         current_config["sensitive_word_use_default_keywords"] = await config.get_sensitive_word_use_default_keywords()
         current_config["system_prompt_append"] = await config.get_system_prompt_append()
+        current_config["antigravity_system_prompt_enabled"] = await config.get_antigravity_system_prompt_enabled()
+        current_config["antigravity_system_as_user_enabled"] = await config.get_antigravity_system_as_user_enabled()
 
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
@@ -215,6 +217,10 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(status_code=400, detail="敏感词替换规则必须是字符串")
             if len(rules_value) > 20000:
                 raise HTTPException(status_code=400, detail="敏感词替换规则过长（最多 20000 字符）")
+
+        for key in ("antigravity_system_prompt_enabled", "antigravity_system_as_user_enabled"):
+            if key in new_config and not isinstance(new_config[key], bool):
+                raise HTTPException(status_code=400, detail="AGY 提示词开关必须是布尔值")
 
         if "system_prompt_append" in new_config:
             value = new_config["system_prompt_append"]

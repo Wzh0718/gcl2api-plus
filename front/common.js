@@ -5729,6 +5729,18 @@ function populateConfigForm() {
     setConfigField('sensitiveWordReplaceRules', c.sensitive_word_replace_rules || '');
     setConfigField('sensitiveWordFilterMode', c.sensitive_word_filter_mode || 'rewrite');
     setConfigField('systemPromptAppend', c.system_prompt_append || '');
+    for (const [id, key] of [
+        ['antigravitySystemPromptEnabled', 'antigravity_system_prompt_enabled'],
+        ['antigravitySystemAsUserEnabled', 'antigravity_system_as_user_enabled'],
+    ]) {
+        const field = document.getElementById(id);
+        if (field) {
+            field.checked = Boolean(c[key]);
+            field.disabled = AppState.envLockedFields.has(key);
+            field.classList.toggle('env-locked', field.disabled);
+            field.title = field.disabled ? '由环境变量控制' : '';
+        }
+    }
     const keywordPreset = document.getElementById('sensitiveWordUseDefaultKeywords');
     if (keywordPreset) keywordPreset.checked = c.sensitive_word_use_default_keywords !== false;
 
@@ -5920,6 +5932,8 @@ async function saveConfig() {
             sensitive_word_replace_enabled: getChecked('sensitiveWordReplaceEnabled'),
             sensitive_word_replace_rules: getValue('sensitiveWordReplaceRules'),
             system_prompt_append: document.getElementById('systemPromptAppend')?.value ?? '',
+            antigravity_system_prompt_enabled: document.getElementById('antigravitySystemPromptEnabled').checked,
+            antigravity_system_as_user_enabled: document.getElementById('antigravitySystemAsUserEnabled').checked,
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
             sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
             keepalive_url: getValue('keepaliveUrl'),

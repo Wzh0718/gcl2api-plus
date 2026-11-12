@@ -38,6 +38,8 @@ AUTO_BAN_ERROR_CODES = [403]
 # 统一维护环境变量名和配置键名的映射关系
 # 格式: "环境变量名": "配置键名"
 ENV_MAPPINGS = {
+    "ANTIGRAVITY_SYSTEM_PROMPT_ENABLED": "antigravity_system_prompt_enabled",
+    "ANTIGRAVITY_SYSTEM_AS_USER_ENABLED": "antigravity_system_as_user_enabled",
     "CODE_ASSIST_ENDPOINT": "code_assist_endpoint",
     "CREDENTIALS_DIR": "credentials_dir",
     "PROXY": "proxy",
@@ -1149,3 +1151,13 @@ async def get_call_records_retention_days() -> int:
         return min(max(int(value), 1), 365)
     except (TypeError, ValueError):
         return 30
+
+
+async def get_antigravity_system_prompt_enabled() -> bool:
+    value = await get_config_value('antigravity_system_prompt_enabled', False, env_var='ANTIGRAVITY_SYSTEM_PROMPT_ENABLED')
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
+async def get_antigravity_system_as_user_enabled() -> bool:
+    value = await get_config_value('antigravity_system_as_user_enabled', False, env_var='ANTIGRAVITY_SYSTEM_AS_USER_ENABLED')
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
