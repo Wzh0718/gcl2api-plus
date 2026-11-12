@@ -151,7 +151,7 @@ def apply_sensitive_word_rules(
 
 
 async def filter_compatibility_system_prompts(request_data: Dict[str, Any], *, mode: str) -> None:
-    """兼容模式将系统提示改成 user 前执行过滤，保留真正的用户消息。"""
+    """兼容模式将 system/developer 指导改成 user 前执行过滤，保留真正的用户消息。"""
     from config import get_compatibility_mode_enabled
 
     if not await get_compatibility_mode_enabled():
@@ -170,7 +170,7 @@ async def filter_compatibility_system_prompts(request_data: Dict[str, Any], *, m
         request_data["system"] = await filtered(request_data["system"])
     messages = []
     for message in request_data.get("messages", []):
-        if message.get("role") == "system":
+        if message.get("role") in ("system", "developer"):
             message = dict(message, content=await filtered(message.get("content")))
         messages.append(message)
     request_data["messages"] = messages

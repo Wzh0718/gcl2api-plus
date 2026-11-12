@@ -59,10 +59,10 @@ def extract_content_and_reasoning(parts: list) -> tuple:
 
 async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
     """
-    根据兼容性模式处理请求体中的system消息
+    根据兼容性模式处理 system/developer 指导消息
 
-    - 兼容性模式关闭（False）：将连续的system消息合并为systemInstruction
-    - 兼容性模式开启（True）：将所有system消息转换为user消息
+    - 兼容性模式关闭（False）：将连续的 system/developer 消息合并为 systemInstruction
+    - 兼容性模式开启（True）：将所有 system/developer 消息转换为 user 消息
 
     Args:
         request_body: OpenAI或Claude格式的请求体，包含messages字段
@@ -179,7 +179,7 @@ async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
         # 兼容性模式开启：将所有system消息转换为user消息
         converted_messages = []
         for message in messages:
-            if message.get("role") == "system":
+            if message.get("role") in ("system", "developer"):
                 # 创建新的消息对象，将role改为user
                 converted_message = message.copy()
                 converted_message["role"] = "user"
@@ -207,7 +207,7 @@ async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
             role = message.get("role", "")
             content = message.get("content", "")
 
-            if role == "system" and collecting_system:
+            if role in ("system", "developer") and collecting_system:
                 # 提取system消息的文本内容
                 if isinstance(content, str):
                     if content.strip():
@@ -223,7 +223,7 @@ async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 # 遇到非system消息，停止收集
                 collecting_system = False
-                if role == "system":
+                if role in ("system", "developer"):
                     # 将后续的system消息转换为user消息
                     converted_message = message.copy()
                     converted_message["role"] = "user"

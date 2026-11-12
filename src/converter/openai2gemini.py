@@ -1937,11 +1937,10 @@ def convert_gemini_to_openai_stream(
         "choices": choices,
     }
 
-    # 只在有 usage 数据且有 finish_reason 时添加 usage
-    if usage:
-        has_finish_reason = any(choice.get("finish_reason") for choice in choices)
-        if has_finish_reason:
-            response_data["usage"] = usage
+    # Gemini 可将 usageMetadata 单独放在候选结束后的尾块中；OpenAI 用
+    # choices=[] 的 usage chunk 表达它，不能因为该块没有 finish_reason 就丢弃。
+    if usage and (not choices or any(choice.get("finish_reason") for choice in choices)):
+        response_data["usage"] = usage
 
     # 透传上游真实执行模型（modelVersion），与非流式响应保持一致
     model_version = gemini_response.get("modelVersion")
