@@ -187,13 +187,20 @@ class CredentialManager:
         """
         await self._ensure_initialized()
 
+        from src.claude_routing import bound_claude_credential
+        pinned = bound_claude_credential() if mode == "antigravity" else None
         if mode == "antigravity" and (
             image_request or "image" in (model_name or "").lower()
         ):
+            if pinned:
+                return None  # A Claude request cannot escape its account via image fallback.
+
             return await self._get_valid_antigravity_image_credential(
                 model_name=model_name or "",
                 exclude_filenames=exclude_filenames,
             )
+
+        selection_options = {"credential_name": pinned} if pinned else {}
 
         # 最多重试3次
         max_retries = 3
@@ -220,6 +227,7 @@ class CredentialManager:
                             mode=mode,
                             model_name=model_name,
                             exclude_filenames=attempted_filenames | low,
+                            **selection_options,
                         )
                         if probe is not None:
                             preferred_result = probe
@@ -244,6 +252,7 @@ class CredentialManager:
                     mode=mode,
                     model_name=model_name,
                     exclude_filenames=attempted_filenames,
+                    **selection_options,
                 )
 
             # 如果没有可用凭证，直接返回None

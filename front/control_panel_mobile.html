@@ -1434,6 +1434,7 @@
                         <label>金额额度<input id="apiKeyCreateQuota" type="number" min="0" step="0.01" placeholder="留空为不限额"></label>
                         <label>重置方式<select id="apiKeyCreateReset"><option value="manual">手动重置</option><option value="monthly">每月重置</option></select></label>
                         <label>到期时间<input id="apiKeyCreateExpires" type="datetime-local"></label>
+                        <label>Claude 固定账号<input id="apiKeyCreateClaudeCredential" type="text" maxlength="255" placeholder="凭证文件名；留空使用凭证池"></label>
                         <button type="submit" class="api-key-primary">创建密钥</button>
                     </form>
                     <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>

@@ -60,6 +60,8 @@ from src.token_estimator import estimate_input_tokens
 
 # ==================== 路由器初始化 ====================
 
+from src.claude_routing import claude_routing_options
+
 router = APIRouter()
 
 
@@ -124,13 +126,14 @@ async def messages(
         "model": gemini_dict.pop("model"),
         "request": gemini_dict
     }
+    routing_options = claude_routing_options(claude_request.model, api_request["model"])
 
     # ========== 非流式请求 ==========
     if not is_streaming:
         # 调用 API 层的非流式请求
         from src.api.antigravity import non_stream_request
         response = await non_stream_request(
-            body=api_request, api_key_id=principal.api_key_id
+            body=api_request, api_key_id=principal.api_key_id, **routing_options
         )
 
         # 检查响应状态码
@@ -167,7 +170,7 @@ async def messages(
         from src.api.antigravity import non_stream_request
 
         response = await non_stream_request(
-            body=api_request, api_key_id=principal.api_key_id
+            body=api_request, api_key_id=principal.api_key_id, **routing_options
         )
 
         # 检查响应状态码
@@ -246,7 +249,7 @@ async def messages(
         first_attempt_stream = stream_request(
             body=anti_truncation_payload,
             native=False,
-            api_key_id=principal.api_key_id,
+            api_key_id=principal.api_key_id, **routing_options,
         )
         try:
             first_chunk = await read_first_async_item(first_attempt_stream)
@@ -267,7 +270,7 @@ async def messages(
                 stream_gen = prepend_async_item(first_chunk, first_attempt_stream)
             else:
                 stream_gen = stream_request(
-                    body=payload, native=False, api_key_id=principal.api_key_id
+                    body=payload, native=False, api_key_id=principal.api_key_id, **routing_options
                 )
             return ClosingStreamingResponse(stream_gen, media_type="text/event-stream")
 
@@ -314,7 +317,7 @@ async def messages(
 
         # 调用 API 层的流式请求（不使用 native 模式）
         stream_gen = stream_request(
-            body=api_request, native=False, api_key_id=principal.api_key_id
+            body=api_request, native=False, api_key_id=principal.api_key_id, **routing_options
         )
         try:
             first_chunk = await read_first_async_item(stream_gen)

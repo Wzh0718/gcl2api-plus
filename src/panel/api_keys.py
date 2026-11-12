@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 
 class ApiKeyCreateRequest(BaseModel):
+    claude_credential_name: str | None = Field(default=None, max_length=255)
     name: str = Field(min_length=1, max_length=100)
     quota_amount: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=8)
     reset_mode: Literal["manual", "monthly"] = "manual"
@@ -26,6 +27,7 @@ class ApiKeyCreateRequest(BaseModel):
 
 
 class ApiKeyUpdateRequest(BaseModel):
+    claude_credential_name: str | None = Field(default=None, max_length=255)
     name: str | None = Field(default=None, min_length=1, max_length=100)
     status: Literal["active", "disabled"] | None = None
     quota_amount: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=8)
@@ -104,6 +106,7 @@ async def create_api_key(
     try:
         result = await ApiKeyService(await get_storage_adapter()).create_key(
             name=payload.name,
+            claude_credential_name=payload.claude_credential_name,
             quota_amount=payload.quota_amount,
             reset_mode=payload.reset_mode,
             expires_at=payload.expires_at,

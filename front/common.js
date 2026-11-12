@@ -2033,6 +2033,7 @@ function renderApiKeys(items) {
                 <label>金额额度（${escapeHtml(item.currency)}）<input data-field="quota_amount" type="number" min="0" step="0.01" value="${quotaAmount === null ? '' : escapeHtml(quotaAmount)}" placeholder="留空为不限额"></label>
                 <label>重置方式<select data-field="reset_mode"><option value="manual"${item.reset_mode === 'manual' ? ' selected' : ''}>手动重置</option><option value="monthly"${item.reset_mode === 'monthly' ? ' selected' : ''}>每月重置</option></select></label>
                 <label>到期时间<input data-field="expires_at" type="datetime-local" value="${escapeHtml(apiKeyDateInputValue(item.expires_at))}"></label>
+                <label>Claude 固定账号<input data-field="claude_credential_name" type="text" maxlength="255" value="${escapeHtml(item.claude_credential_name || '')}" placeholder="凭证文件名，如 ag_xxx.json；留空使用凭证池"><small>仅此 Key 的 Claude 请求使用该账号；不可用时不自动换号。</small></label>
             </div>
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
@@ -2078,7 +2079,8 @@ async function createApiKey(event) {
         name,
         quota_amount: quotaValue === '' ? null : quotaValue,
         reset_mode: resetMode,
-        expires_at: apiKeyExpiryPayload(expiresValue)
+        expires_at: apiKeyExpiryPayload(expiresValue),
+        claude_credential_name: document.getElementById('apiKeyCreateClaudeCredential')?.value.trim() || ''
     };
     try {
         const response = await fetch('./api-keys', {
@@ -2233,7 +2235,8 @@ async function saveApiKey(apiKeyId) {
             name: card.querySelector('[data-field="name"]')?.value.trim(),
             quota_amount: quotaValue === '' ? null : quotaValue,
             reset_mode: card.querySelector('[data-field="reset_mode"]')?.value,
-            expires_at: apiKeyExpiryPayload(card.querySelector('[data-field="expires_at"]')?.value || '')
+            expires_at: apiKeyExpiryPayload(card.querySelector('[data-field="expires_at"]')?.value || ''),
+            claude_credential_name: card.querySelector('[data-field="claude_credential_name"]')?.value.trim() || ''
         }, '密钥设置已保存');
     } catch (error) {
         showStatus(`保存失败: ${error.message}`, 'error');

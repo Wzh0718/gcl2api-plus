@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
 from src.antigravity_400_classifier import upstream_error_log_detail
 from src.request_capture import record_local_capture, bind_capture_credential
+from src.claude_routing import bind_claude_request, bind_claude_stream
 
 from fastapi import Response
 from config import (
@@ -1573,11 +1574,13 @@ class _ImageCredentialLeaseTracker:
             )
 
 
+@bind_claude_stream
 async def stream_request(
     body: Dict[str, Any],
     native: bool = False,
     headers: Optional[Dict[str, str]] = None,
     api_key_id: str = "env",
+    request_model: Optional[str] = None,
 ):
     lease_tracker = _ImageCredentialLeaseTracker()
     inner = _stream_request_inner(
@@ -1914,10 +1917,12 @@ def _convert_unknown_model_errors(func):
 
 
 @_convert_unknown_model_errors
+@bind_claude_request
 async def non_stream_request(
     body: Dict[str, Any],
     headers: Optional[Dict[str, str]] = None,
     api_key_id: str = "env",
+    request_model: Optional[str] = None,
 ) -> Response:
     """
     非流式请求函数

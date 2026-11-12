@@ -57,6 +57,8 @@ from src.task_manager import create_managed_task
 
 # ==================== 路由器初始化 ====================
 
+from src.claude_routing import claude_routing_options
+
 router = APIRouter()
 
 
@@ -116,11 +118,12 @@ async def generate_content(
         "model": normalized_dict.pop("model"),
         "request": normalized_dict
     }
+    routing_options = claude_routing_options(model, api_request["model"])
 
     # 调用 API 层的非流式请求
     from src.api.antigravity import non_stream_request
     response = await non_stream_request(
-        body=api_request, api_key_id=principal.api_key_id
+        body=api_request, api_key_id=principal.api_key_id, **routing_options
     )
 
     # 解包装响应：Antigravity API 可能返回的格式有额外的 response 包装层
@@ -193,9 +196,10 @@ async def stream_generate_content(
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
+        routing_options = claude_routing_options(model, api_request["model"])
 
         response = await non_stream_request(
-            body=api_request, api_key_id=principal.api_key_id
+            body=api_request, api_key_id=principal.api_key_id, **routing_options
         )
 
         # 检查响应状态码
@@ -260,6 +264,7 @@ async def stream_generate_content(
             "model": normalized_req.pop("model") if "model" in normalized_req else real_model,
             "request": normalized_req
         }
+        routing_options = claude_routing_options(model, api_request["model"])
 
         max_attempts = await get_anti_truncation_max_attempts()
 
@@ -269,7 +274,7 @@ async def stream_generate_content(
         first_attempt_stream = stream_request(
             body=anti_truncation_payload,
             native=False,
-            api_key_id=principal.api_key_id,
+            api_key_id=principal.api_key_id, **routing_options,
         )
         try:
             first_chunk = await read_first_async_item(first_attempt_stream)
@@ -290,7 +295,7 @@ async def stream_generate_content(
                 stream_gen = prepend_async_item(first_chunk, first_attempt_stream)
             else:
                 stream_gen = stream_request(
-                    body=payload, native=False, api_key_id=principal.api_key_id
+                    body=payload, native=False, api_key_id=principal.api_key_id, **routing_options
                 )
             return ClosingStreamingResponse(stream_gen, media_type="text/event-stream")
 
@@ -357,11 +362,12 @@ async def stream_generate_content(
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
+        routing_options = claude_routing_options(model, api_request["model"])
 
         # 所有流式请求都使用非 native 模式（SSE格式）并展开 response 包装
         log.debug(f"[ANTIGRAVITY] 使用非native模式，将展开response包装")
         stream_gen = stream_request(
-            body=api_request, native=False, api_key_id=principal.api_key_id
+            body=api_request, native=False, api_key_id=principal.api_key_id, **routing_options
         )
         try:
             first_chunk = await read_first_async_item(stream_gen)

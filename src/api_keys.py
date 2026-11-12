@@ -203,10 +203,23 @@ class ApiKeyService:
         )
         return result
 
+    async def _claude_credential(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError("Claude 账号必须是凭证文件名")
+        name = value.strip()
+        if len(name) > 255 or any(c in name for c in ("/", "\\", "\x00")) or name in (".", ".."):
+            raise ValueError("Claude 账号必须是有效凭证文件名，不能包含路径")
+        if name and await self.storage.get_credential(name, mode="antigravity") is None:
+            raise ValueError("Claude 账号不存在，请选择已导入的 Antigravity 凭证")
+        return name
+
     async def create_key(
         self,
         *,
         name: str,
+        claude_credential_name: Any = "",
         quota_amount: Any = None,
         reset_mode: str = "manual",
         expires_at: Any = None,
@@ -217,6 +230,7 @@ class ApiKeyService:
             raise ValueError("密钥名称长度必须为 1-100 个字符")
         if reset_mode not in {"manual", "monthly"}:
             raise ValueError("reset_mode 必须是 manual 或 monthly")
+        claude_credential = await self._claude_credential(claude_credential_name)
         current = _now(now)
         normalized_quota = _money(quota_amount, allow_none=True)
         normalized_expiry = _expires_at(expires_at)
@@ -227,6 +241,7 @@ class ApiKeyService:
                 record = await self.storage.create_api_key_record(
                     id=uuid.uuid4().hex,
                     name=clean_name,
+                    claude_credential_name=claude_credential,
                     key_prefix=key_prefix,
                     secret_hash=hash_api_key(api_key),
                     secret_ciphertext=self.cipher.encrypt(api_key),
@@ -299,6 +314,8 @@ class ApiKeyService:
     ) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         current = _now(now)
+        if "claude_credential_name" in updates:
+            normalized["claude_credential_name"] = await self._claude_credential(updates["claude_credential_name"])
         if "name" in updates:
             name = str(updates["name"] or "").strip()
             if not name or len(name) > 100:
