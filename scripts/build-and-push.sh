@@ -110,6 +110,7 @@ run_quality_gates() {
         export MONGODB_URI=""
         # 仅隔离发布前测试，避免测试连接操作者的 Redis；此子 Shell 不影响镜像或运行时配置。
         export REDIS_URL=""
+        export ANTIGRAVITY_NATIVE_TRANSPORT_ENABLED=false
         export PYTHONDONTWRITEBYTECODE=1
         export PYTHONPATH="${SOURCE_DIR}"
         export UV_CACHE_DIR="${UV_CACHE_DIR:-${verify_tmp}/uv-cache}"
@@ -122,6 +123,15 @@ run_quality_gates() {
             tests/test_proxy_context.py \
             tests/test_proxy_groups.py \
             tests/test_sqlite_billing_schema.py -q
+
+        printf '\n请求证据、提示词、NewAPI 兼容和 Claude 绑定专项测试\n'
+        uv run --with pytest --with pytest-asyncio pytest \
+            tests/test_request_capture_store.py \
+            tests/test_request_capture.py \
+            tests/test_request_capture_panel.py \
+            tests/test_antigravity_system_prompt.py \
+            tests/test_gateway_openai_compat.py \
+            tests/test_claude_account_binding.py -q
 
         printf '\n[2/5] 完整 pytest\n'
         uv run --with pytest --with pytest-asyncio pytest -q

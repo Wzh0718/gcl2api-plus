@@ -6,10 +6,6 @@ services:
     container_name: gcli2api
     restart: unless-stopped
     network_mode: host
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
     environment:
       # Password configuration (choose one)
       # Option 1: Use common password
@@ -106,8 +102,8 @@ services:
         max-size: "50m"
         max-file: "3"
     healthcheck:
-      # 优先使用分离密码 API_PASSWORD；仅设置通用 PASSWORD 时回退到它
-      test: ["CMD-SHELL", "python -c \"import sys, urllib.request, os; port = os.environ.get('PORT', '7861'); pw = os.environ.get('API_PASSWORD') or os.environ.get('PASSWORD', 'pwd'); req = urllib.request.Request(f'http://localhost:{port}/v1/models', headers={'Authorization': 'Bearer ' + pw}); sys.exit(0 if urllib.request.urlopen(req, timeout=10).getcode() == 200 else 1)\""]
+      # 本地存活检查，不读取账号、不请求上游模型接口。
+      test: ["CMD", "python", "-c", "import os, urllib.request; port = os.environ.get('PORT', '7861'); req = urllib.request.Request(f'http://localhost:{port}/keepalive', method='HEAD'); urllib.request.urlopen(req, timeout=10).close()"]
       interval: 30s
       timeout: 15s
       retries: 3
