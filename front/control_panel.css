@@ -354,6 +354,23 @@ pre,
     font-size: 13px;
 }
 
+.navigation-group {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    gap: 4px;
+    padding-top: 8px;
+    margin-top: 4px;
+    border-top: 1px solid var(--ui-border);
+}
+
+.navigation-group-label {
+    padding: 4px 11px;
+    color: var(--ui-faint);
+    font-size: 11px;
+    font-weight: 600;
+}
+
 .tab-slider {
     display: none;
 }
@@ -1397,6 +1414,14 @@ textarea:disabled,
     }
 
     .tabs-heading {
+        display: none;
+    }
+
+    .navigation-group {
+        display: contents;
+    }
+
+    .navigation-group-label {
         display: none;
     }
 

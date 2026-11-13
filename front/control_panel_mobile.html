@@ -1329,6 +1329,7 @@
         .api-key-empty { padding: 24px 12px; border: 1px dashed #cfd8e5; border-radius: 9px; color: #7a8494; background: #f7f9fc; text-align: center; font-size: 12px; }
     </style>
     <link rel="stylesheet" href="./front/config_tabs.css?v=20261112">
+    <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
 </head>
 
 <body>
@@ -1367,34 +1368,19 @@
 
             <!-- 移动端优化的标签页 -->
             <!-- 移动端优化的标签页 -->
-            <div class="tabs">
+            <nav class="tabs" aria-label="控制台导航">
                 <div class="tab-slider"></div>
-                <button class="tab active" onclick="switchTab('api-keys')">密钥分发</button>
-                <div class="tab-group">
-                    <button type="button" class="tab tab-group-toggle" data-group-label="账号管理" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">账号管理<span class="tab-caret">▾</span></button>
-                    <div class="tab-dropdown" role="menu">
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('antigravity')">Antigravity认证</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('upload')">凭证上传</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('antigravity-manage')">AG凭证</button>
-                    </div>
-                </div>
-                <div class="tab-group">
-                    <button type="button" class="tab tab-group-toggle" data-group-label="用量计费" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">用量计费<span class="tab-caret">▾</span></button>
-                    <div class="tab-dropdown" role="menu">
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('model-stats')">调用统计</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('call-monitor')">调用监控</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('billing')">Token计费</button>
-                    </div>
-                </div>
-                <div class="tab-group">
-                    <button type="button" class="tab tab-group-toggle" data-group-label="系统" aria-haspopup="true" aria-expanded="false" onclick="toggleTabDropdown(this)">系统<span class="tab-caret">▾</span></button>
-                    <div class="tab-dropdown" role="menu">
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('config')">配置管理</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('logs')">实时日志</button>
-                        <button type="button" class="tab-dropdown-item" role="menuitem" onclick="switchTab('about')">项目信息</button>
-                    </div>
-                </div>
-            </div>
+                <button type="button" class="tab active" aria-current="page" onclick="switchTab('api-keys', this)">密钥分发</button>
+                <button type="button" class="tab" onclick="switchTab('antigravity', this)">Antigravity认证</button>
+                <button type="button" class="tab" onclick="switchTab('upload', this)">凭证上传</button>
+                <button type="button" class="tab" onclick="switchTab('antigravity-manage', this)">AG凭证</button>
+                <button type="button" class="tab" onclick="switchTab('model-stats', this)">调用统计</button>
+                <button type="button" class="tab" onclick="switchTab('call-monitor', this)">调用监控</button>
+                <button type="button" class="tab" onclick="switchTab('billing', this)">Token计费</button>
+                <button type="button" class="tab" onclick="switchTab('config', this)">配置管理</button>
+                <button type="button" class="tab" onclick="switchTab('logs', this)">实时日志</button>
+                <button type="button" class="tab" onclick="switchTab('about', this)">项目信息</button>
+            </nav>
 
             <div id="api-keysTab" class="tab-content active">
                 <div class="api-key-shell">
@@ -2864,7 +2850,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-binding-20261113"></script>
+    <script src="./front/common.js?v=network-policy-group-ui-20261113"></script>
 </body>
 
 </html>

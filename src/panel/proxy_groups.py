@@ -139,24 +139,45 @@ async def rebind_account_network(
     filename: str,
     _token: str = Depends(verify_panel_token),
 ):
-    """Move a group account to a new node, then validate its IP and region."""
+    """Save a manual node replacement; report validation independently."""
     safe_name = _safe_credential_name(filename)
     storage = await get_storage_adapter()
     credential = await storage.get_credential(safe_name, mode="antigravity")
     if not credential:
         raise HTTPException(status_code=404, detail="Antigravity 凭证不存在")
-    try:
-        rebound = await credential_manager.rebind_antigravity_account(
-            safe_name, credential
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    network = await storage.get_credential_network(safe_name, mode="antigravity")
+    if network.get("proxy_mode") != "group":
+        raise HTTPException(status_code=400, detail="只有使用代理组的账号可以更换节点")
+    rebound = await storage.invalidate_antigravity_proxy_binding(
+        safe_name, require_replacement=True
+    )
     if not rebound:
         raise HTTPException(
             status_code=409,
-            detail="未完成重绑检测：需要代理组内有其他可用节点并配置 IP 检测地址；无备用节点时保留原绑定。若已换绑但检测未通过，请查看账号最新出口状态。",
+            detail="未更换节点：账号尚未绑定节点或代理组内没有其他可用节点，已保留原绑定。请检查备用节点是否启用、冷却、过期或已被独占。",
         )
-    return await _account_network_health_payload(safe_name)
+    check_status = "skipped"
+    message = "节点已更换并保存；未配置 IP 检测地址，已跳过出口与地区资格检测。"
+    if await get_antigravity_egress_ip_check_url():
+        try:
+            health = await credential_manager.check_antigravity_account_health(
+                safe_name, credential
+            )
+            passed = (
+                health.get("binding_status") == "healthy"
+                and health.get("eligibility_status") == "eligible"
+            )
+            check_status = "passed" if passed else "failed"
+            message = "节点已更换并保存，出口检测通过。" if passed else (
+                "节点已更换并保存，但出口检测未通过："
+                + str(health.get("eligibility_reason") or health.get("eligibility_status") or "未知原因")
+            )
+        except Exception as exc:
+            check_status = "failed"
+            message = f"节点已更换并保存，但出口检测失败：{exc}"
+    payload = await _account_network_health_payload(safe_name)
+    payload.update(rebound=True, check_status=check_status, message=message)
+    return payload
 
 
 @router.get("/proxy-groups")

@@ -252,6 +252,8 @@ async def _network(filename: str, storage: Any) -> Dict[str, Any]:
         effective = None
     elif proxy_mode == "inherit":
         effective = await get_proxy_config()
+    elif proxy_mode == "group":
+        effective = data.get("bound_proxy_url")
     else:
         effective = None
     group = None
@@ -265,6 +267,9 @@ async def _network(filename: str, storage: Any) -> Dict[str, Any]:
         "proxy_mode": proxy_mode,
         "proxy_url": mask_proxy_url(data.get("proxy_url")),
         "proxy_group_id": data.get("proxy_group_id"),
+        "bound_proxy_node_id": data.get("bound_proxy_node_id"),
+        "bound_proxy_node_name": data.get("bound_proxy_node_name"),
+        "bound_proxy_url": mask_proxy_url(data.get("bound_proxy_url")),
         "proxy_group": {
             "id": group["id"],
             "name": group["name"],
@@ -284,6 +289,23 @@ async def get_credential_network(filename: str, mode: str = "antigravity", _toke
     return await _network(filename, await get_storage_adapter())
 
 
+@network_router.post("/{filename}/network/reveal")
+async def reveal_credential_proxy(filename: str, _token: str = Depends(verify_panel_token)):
+    """Reveal a saved custom proxy only after an explicit panel action."""
+    if os.path.basename(filename) != filename or not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    storage = await get_storage_adapter()
+    if await storage.get_credential(filename, mode="antigravity") is None:
+        raise HTTPException(status_code=404, detail="凭证不存在")
+    network = await storage.get_credential_network(filename, mode="antigravity")
+    if network.get("proxy_mode") != "custom":
+        raise HTTPException(status_code=400, detail="该账号未配置专属代理")
+    return JSONResponse(
+        {"proxy_url": network.get("proxy_url")},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @network_router.patch("/{filename}/network")
 async def update_credential_network(filename: str, payload: Dict[str, Any] = Body(...), mode: str = "antigravity", _token: str = Depends(verify_panel_token)):
     if mode != "antigravity":
@@ -293,6 +315,12 @@ async def update_credential_network(filename: str, payload: Dict[str, Any] = Bod
         proxy_mode = payload.get("proxy_mode", "inherit")
         proxy_url = payload.get("proxy_url")
         if proxy_mode == "custom":
+            # The panel displays a masked address, never a reusable password.
+            # A blank replacement keeps this account's existing custom URL.
+            if not proxy_url:
+                current = await storage.get_credential_network(filename, mode="antigravity")
+                if current.get("proxy_mode") == "custom":
+                    proxy_url = current.get("proxy_url")
             proxy_url = normalize_proxy_url(proxy_url)
         updated = await storage.update_credential_network(
             filename,

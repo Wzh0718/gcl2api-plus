@@ -861,17 +861,112 @@ async function openProxyPolicyDialog({ filename = null, filenames = null } = {})
             <option value="custom" ${current.proxy_mode === 'custom' ? 'selected' : ''}>账号专属代理</option>
             <option value="direct" ${current.proxy_mode === 'direct' ? 'selected' : ''}>强制直连</option>
         </select></label>
-        <label class="proxy-dialog-field" id="proxyPolicyGroupField"><span>代理组</span><select id="proxyPolicyGroupId"><option value="">选择代理组</option>${groupOptions}</select></label>
-        <label class="proxy-dialog-field" id="proxyPolicyUrlField"><span>专属代理 URL</span><input id="proxyPolicyUrl" type="text" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
+        <div id="proxyPolicyGroupField">
+            <label class="proxy-dialog-field"><span>代理组</span><select id="proxyPolicyGroupId"><option value="">选择代理组</option>${groupOptions}</select></label>
+            ${filename ? `<div class="proxy-dialog-field proxy-saved-field">
+                <label for="proxyPolicyBoundUrl">当前绑定节点</label>
+                <span id="proxyPolicyBoundName" class="proxy-address-hint"></span>
+                <div class="proxy-address-control">
+                    <input id="proxyPolicyBoundUrl" type="text" readonly aria-describedby="proxyPolicyGroupHint">
+                    <button type="button" id="proxyPolicyRebind">更换同组节点</button>
+                </div>
+                <small id="proxyPolicyGroupHint" class="proxy-address-hint"></small>
+                <small id="proxyPolicyRebindStatus" class="proxy-address-hint" role="status"></small>
+            </div>` : '<p class="proxy-address-hint">保存后，所选账号将使用此代理组，按组策略绑定节点。</p>'}
+        </div>
+        <div id="proxyPolicyUrlField">
+            ${current.proxy_mode === 'custom' && current.proxy_url ? `<div class="proxy-dialog-field proxy-saved-field">
+                <label for="proxyPolicySavedUrl">已保存的专属代理</label>
+                <div class="proxy-address-control">
+                    <input id="proxyPolicySavedUrl" type="text" readonly spellcheck="false" aria-describedby="proxyPolicySavedHint">
+                    <button type="button" id="proxyPolicyReveal" aria-controls="proxyPolicySavedUrl" aria-pressed="false">显示密码</button>
+                </div>
+                <small id="proxyPolicySavedHint" class="proxy-address-hint" aria-live="polite">密码已隐藏，可点击右侧按钮查看完整地址。</small>
+            </div>` : ''}
+            <label class="proxy-dialog-field"><span>${current.proxy_mode === 'custom' && current.proxy_url ? '替换代理 URL（留空保留原配置）' : '专属代理 URL'}</span><input id="proxyPolicyUrl" type="text" autocomplete="off" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
+        </div>
         <div class="proxy-dialog-actions"><button value="cancel" class="secondary">取消</button><button type="button" id="proxyPolicySave">保存并实时生效</button></div>
     </form>`;
     document.body.appendChild(dialog);
+    const savedUrlField = dialog.querySelector('#proxyPolicySavedUrl');
+    if (savedUrlField) savedUrlField.value = current.proxy_url;
+    const revealButton = dialog.querySelector('#proxyPolicyReveal');
+    revealButton?.addEventListener('click', async () => {
+        if (revealButton.getAttribute('aria-pressed') === 'true') {
+            savedUrlField.value = current.proxy_url;
+            dialog.querySelector('#proxyPolicySavedHint').textContent = '密码已隐藏，可点击右侧按钮查看完整地址。';
+            revealButton.textContent = '显示密码';
+            revealButton.setAttribute('aria-pressed', 'false');
+            return;
+        }
+        revealButton.disabled = true;
+        revealButton.textContent = '读取中…';
+        revealButton.setAttribute('aria-busy', 'true');
+        try {
+            const response = await fetch(`./creds/${encodeURIComponent(filename)}/network/reveal`, {
+                method: 'POST', headers: getAuthHeaders(), cache: 'no-store'
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '读取完整代理地址失败');
+            if (!dialog.isConnected) return;
+            savedUrlField.value = data.proxy_url || '';
+            dialog.querySelector('#proxyPolicySavedHint').textContent = '已显示完整地址与密码，再次点击即可隐藏。';
+            revealButton.setAttribute('aria-pressed', 'true');
+        } catch (error) {
+            showStatus(`读取完整代理地址失败: ${error.message}`, 'error');
+        } finally {
+            revealButton.disabled = false;
+            revealButton.removeAttribute('aria-busy');
+            revealButton.textContent = revealButton.getAttribute('aria-pressed') === 'true' ? '隐藏密码' : '显示密码';
+        }
+    });
     const modeField = dialog.querySelector('#proxyPolicyMode');
+    const groupField = dialog.querySelector('#proxyPolicyGroupId');
+    const rebindButton = dialog.querySelector('#proxyPolicyRebind');
+    const saveButton = dialog.querySelector('#proxyPolicySave');
     const syncFields = () => {
         dialog.querySelector('#proxyPolicyGroupField').hidden = modeField.value !== 'group';
         dialog.querySelector('#proxyPolicyUrlField').hidden = modeField.value !== 'custom';
+        if (rebindButton) {
+            const sameGroup = current.proxy_mode === 'group' && Number(groupField.value) === Number(current.proxy_group_id);
+            const bound = sameGroup && current.bound_proxy_node_id;
+            dialog.querySelector('#proxyPolicyBoundName').textContent = sameGroup ? (current.bound_proxy_node_name || '尚未绑定节点') : '待保存新代理组';
+            dialog.querySelector('#proxyPolicyBoundUrl').value = bound ? (current.bound_proxy_url || '') : '';
+            dialog.querySelector('#proxyPolicyGroupHint').textContent = !sameGroup
+                ? '先点击“保存并实时生效”切换代理组，再更换组内节点。'
+                : bound ? '可从同组选择其他可用节点；无备用节点时保留原绑定。' : '下一次请求将按代理组策略自动绑定节点。';
+            rebindButton.disabled = !bound;
+        }
     };
     modeField.addEventListener('change', syncFields);
+    groupField.addEventListener('change', () => {
+        const status = dialog.querySelector('#proxyPolicyRebindStatus');
+        if (status) status.textContent = '';
+        syncFields();
+    });
+    rebindButton?.addEventListener('click', async () => {
+        if (rebindButton.disabled || modeField.value !== 'group') return;
+        const status = dialog.querySelector('#proxyPolicyRebindStatus');
+        rebindButton.disabled = modeField.disabled = groupField.disabled = saveButton.disabled = true;
+        rebindButton.textContent = '更换中…';
+        status.textContent = '正在更换同组节点并检测出口…';
+        try {
+            const response = await fetch(`./creds/network-health/${encodeURIComponent(filename)}/rebind`, {
+                method: 'POST', headers: getAuthHeaders()
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '更换节点失败');
+            current = { ...current, ...data.network };
+            if (dialog.isConnected) status.textContent = data.message || '同组节点已更换并保存。';
+            await Promise.all([loadProxyGroups({ silent: true }), AppState.antigravityCreds.refresh()]);
+        } catch (error) {
+            if (dialog.isConnected) status.textContent = error.message;
+        } finally {
+            modeField.disabled = groupField.disabled = saveButton.disabled = false;
+            rebindButton.textContent = '更换同组节点';
+            syncFields();
+        }
+    });
     syncFields();
     dialog.querySelector('#proxyPolicySave').addEventListener('click', async () => {
         const proxyMode = modeField.value;
@@ -881,7 +976,7 @@ async function openProxyPolicyDialog({ filename = null, filenames = null } = {})
             proxy_url: proxyMode === 'custom' ? dialog.querySelector('#proxyPolicyUrl').value.trim() : null
         };
         if (proxyMode === 'group' && !payload.proxy_group_id) return showStatus('请选择代理组', 'error');
-        if (proxyMode === 'custom' && !payload.proxy_url) return showStatus('请输入账号专属代理 URL', 'error');
+        if (proxyMode === 'custom' && !payload.proxy_url && !(filename && current.proxy_mode === 'custom' && current.proxy_url)) return showStatus('请输入账号专属代理 URL', 'error');
         try {
             const response = filename
                 ? await fetch(`./creds/${encodeURIComponent(filename)}/network?mode=antigravity`, { method: 'PATCH', headers: getAuthHeaders(), body: JSON.stringify(payload) })
@@ -896,7 +991,10 @@ async function openProxyPolicyDialog({ filename = null, filenames = null } = {})
             showStatus(`代理策略保存失败: ${error.message}`, 'error');
         }
     });
-    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    dialog.addEventListener('close', () => {
+        if (savedUrlField) savedUrlField.value = '';
+        dialog.remove();
+    }, { once: true });
     dialog.showModal();
 }
 
@@ -932,6 +1030,11 @@ async function checkAntigravityNetworkHealth(filename, rebind = false) {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '检测失败');
         await AppState.antigravityCreds.refresh();
+        if (data.rebound) {
+            showStatus(data.message, data.check_status === 'passed' ? 'success' : 'info');
+            if (data.check_status === 'failed') showMessageModal('节点已更换，检测未通过', data.message, 'error');
+            return;
+        }
         if (data.stages) {
             const summary = `文件: ${filename}\n\n${_formatCheckStage('① 代理测试', data.stages.proxy)}\n${_formatCheckStage('② 出口与地区资格', data.stages.health)}\n${_formatCheckStage('③ 消息测试', data.stages.message)}`;
             showStatus(data.ok ? '✅ 全链路检测通过' : '❌ 检测未通过', data.ok ? 'success' : 'error');

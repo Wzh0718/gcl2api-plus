@@ -892,13 +892,10 @@ setTimeout(() => console.log(JSON.stringify({delay: scheduled.at(-1).delay, time
 def test_panel_defaults_to_key_distribution_and_hides_gcli_navigation(filename):
     html = (REPO_ROOT / "front" / filename).read_text(encoding="utf-8")
 
-    if filename == "control_panel.html":
-        assert (
-            '<button type="button" class="tab active" aria-current="page" '
-            'onclick="switchTab(\'api-keys\', this)">密钥分发</button>'
-        ) in html
-    else:
-        assert '<button class="tab active" onclick="switchTab(\'api-keys\')">密钥分发</button>' in html
+    assert (
+        '<button type="button" class="tab active" aria-current="page" '
+        'onclick="switchTab(\'api-keys\', this)">密钥分发</button>'
+    ) in html
     assert "switchTab('oauth')" not in html
     assert "switchTab('manage')" not in html
     assert 'id="api-keysTab" class="tab-content active"' in html
