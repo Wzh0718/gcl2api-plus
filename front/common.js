@@ -1203,6 +1203,7 @@ function createCredCard(credInfo, manager) {
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="toggleAntigravityQuotaDetails('${pathId}')" title="查看该凭证的额度信息">查看额度</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="configureAntigravityNetwork('${filename}')" title="设置全局、直连、专属代理或代理组">网络策略</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}')" title="使用账号绑定代理检测出口 IP 与地区资格">检测出口</button>` : ''}
+        ${managerType === 'antigravity' ? `<button class="cred-btn" data-prompt-fusion-account="${escapeHtml(filename)}">提示词融合</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-concurrency-account="${escapeHtml(filename)}">并发设置</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-warmup-account="${escapeHtml(filename)}" title="配置真实业务流量渐进放量">养号</button>` : ''}
         ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="从同组选择其他可用节点并检测出口；独占组保持一账号一节点，无备用节点时保留原绑定">更换节点</button>` : ''}
@@ -1268,6 +1269,9 @@ function createCredCard(credInfo, manager) {
     });
     div.querySelectorAll('[data-concurrency-account]').forEach(button => {
         button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
+    });
+    div.querySelectorAll('[data-prompt-fusion-account]').forEach(button => {
+        button.addEventListener('click', () => openAccountPromptFusion(button.dataset.promptFusionAccount));
     });
     div.querySelectorAll('[data-warmup-account]').forEach(button => {
         button.addEventListener('click', () => {
@@ -5767,61 +5771,56 @@ async function loadConfig() {
     }
 }
 
-let promptFusionAccountOverrides = {};
-let promptFusionAccountLoadId = 0;
-
-async function loadPromptFusionAccounts() {
-    const select = document.getElementById('promptFusionAccount');
-    if (!select) return;
-    const loadId = ++promptFusionAccountLoadId;
-    const selected = select.value;
-    select.disabled = true;
-    document.getElementById('promptFusionAccountMode').disabled = true;
+async function openAccountPromptFusion(filename) {
+    const dialog = createAntigravityWarmupDialog('账号提示词融合');
+    dialog.innerHTML = `
+        <form class="proxy-policy-form">
+            <div class="proxy-dialog-head"><h3>提示词融合</h3><button type="button" class="proxy-dialog-close" aria-label="关闭">×</button></div>
+            <p class="proxy-dialog-copy">${escapeHtml(filename)}</p>
+            <div class="proxy-dialog-field"><label for="accountPromptFusionMode">该账号的融合方式</label>
+                <select id="accountPromptFusionMode" disabled><option value="inherit">跟随全局</option><option value="on">单独开启</option><option value="off">单独关闭</option></select>
+            </div>
+            <p class="proxy-dialog-copy" data-fusion-status role="status">正在读取设置…</p>
+            <p class="proxy-dialog-copy">账号设置优先于全局。首次融合使用当前账号模型并计入用量，相同输入缓存 24 小时。</p>
+            <div class="proxy-dialog-actions"><button type="submit" class="batch-btn batch-enable" disabled>保存</button><button type="button" class="batch-btn" data-fusion-cancel>取消</button></div>
+        </form>`;
+    const select = dialog.querySelector('select');
+    const save = dialog.querySelector('[type="submit"]');
+    const status = dialog.querySelector('[data-fusion-status]');
+    const endpoint = `./config/prompt-fusion/account/${encodeURIComponent(filename)}`;
+    dialog.querySelector('.proxy-dialog-close').addEventListener('click', () => dialog.close());
+    dialog.querySelector('[data-fusion-cancel]').addEventListener('click', () => dialog.close());
+    dialog.querySelector('form').addEventListener('submit', async event => {
+        event.preventDefault();
+        save.disabled = true;
+        select.disabled = true;
+        try {
+            const response = await fetch(endpoint, { method: 'PUT', headers: getAuthHeaders(), body: JSON.stringify({mode: select.value}) });
+            await readJsonResponse(response, '保存提示词融合设置失败');
+            showStatus('该账号的提示词融合设置已保存', 'success');
+            dialog.close();
+        } catch (error) {
+            status.textContent = error.message;
+            save.disabled = false;
+            select.disabled = false;
+        }
+    });
+    dialog.showModal();
     try {
-        const response = await fetch('./api-keys/accounts', { headers: getAuthHeaders() });
-        const data = await readJsonResponse(response, '加载账号失败');
-        if (loadId !== promptFusionAccountLoadId) return;
-        const accounts = new Map((data.items || []).map(a => [a.filename, a]));
-        for (const name of Object.keys(promptFusionAccountOverrides)) {
-            if (!accounts.has(name)) accounts.set(name, { filename: name, missing: true });
-        }
-        select.replaceChildren();
-        for (const [name, account] of accounts) {
-            const option = document.createElement('option');
-            option.value = name;
-            option.textContent = `${account.email || name}${account.email ? ` · ${name}` : ''}${account.missing ? '（已删除）' : account.disabled ? '（已停用）' : ''}`;
-            select.append(option);
-        }
-        if (accounts.has(selected)) select.value = selected;
-        select.disabled = !accounts.size;
-        showPromptFusionAccountMode();
-        document.getElementById('promptFusionAccountStatus').textContent = accounts.size ? '账号设置优先于全局开关；修改后点击保存更改。' : '暂无账号，请先导入账号。';
+        const response = await fetch(endpoint, { headers: getAuthHeaders() });
+        const data = await readJsonResponse(response, '读取提示词融合设置失败');
+        select.value = data.mode;
+        status.textContent = `当前全局：${data.global_enabled ? '开启' : '关闭'}。选择后点击保存，仅修改此账号。`;
+        select.disabled = false;
+        save.disabled = false;
     } catch (error) {
-        if (loadId !== promptFusionAccountLoadId) return;
-        document.getElementById('promptFusionAccountStatus').textContent = `账号列表加载失败，原设置保留：${error.message}`;
+        status.textContent = `${error.message}；请关闭后重试，原设置未改变。`;
     }
-}
-
-function showPromptFusionAccountMode() {
-    const select = document.getElementById('promptFusionAccount');
-    const mode = document.getElementById('promptFusionAccountMode');
-    mode.disabled = select.disabled || !select.value;
-    mode.value = promptFusionAccountOverrides[select.value] || 'inherit';
-}
-
-function changePromptFusionAccountMode() {
-    const name = document.getElementById('promptFusionAccount').value;
-    const mode = document.getElementById('promptFusionAccountMode').value;
-    if (!name) return;
-    if (mode === 'inherit') delete promptFusionAccountOverrides[name];
-    else promptFusionAccountOverrides[name] = mode;
 }
 
 function populateConfigForm() {
     const c = AppState.currentConfig;
     document.getElementById('promptFusionEnabled').checked = c.prompt_fusion_enabled === true;
-    promptFusionAccountOverrides = { ...(c.prompt_fusion_accounts || {}) };
-    loadPromptFusionAccounts();
 
     setConfigField('host', c.host || '0.0.0.0');
     setConfigField('port', c.port || 7861);
@@ -6060,7 +6059,6 @@ async function saveConfig() {
             antigravity_system_prompt_enabled: document.getElementById('antigravitySystemPromptEnabled').checked,
             antigravity_system_as_user_enabled: document.getElementById('antigravitySystemAsUserEnabled').checked,
             prompt_fusion_enabled: document.getElementById('promptFusionEnabled').checked,
-            prompt_fusion_accounts: { ...promptFusionAccountOverrides },
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
             sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
             keepalive_url: getValue('keepaliveUrl'),

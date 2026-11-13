@@ -2655,18 +2655,7 @@
                                 <label><input type="checkbox" id="promptFusionEnabled" /> 全局开启提示词融合</label>
                                 <small class="config-note">用当前账号、当前文本模型整理客户端系统指导，并融合 AGY 基础提示。首次会额外调用模型并计入用量；相同输入缓存 24 小时。失败时沿用原有请求。默认关闭，图片请求不处理。</small>
                             </div>
-                            <div class="form-group">
-                                <label for="promptFusionAccount">账号设置</label>
-                                <select id="promptFusionAccount" class="config-input" onchange="showPromptFusionAccountMode()" disabled><option>正在加载账号…</option></select>
-                            </div>
-                            <div class="form-group">
-                                <label for="promptFusionAccountMode">该账号的融合方式</label>
-                                <select id="promptFusionAccountMode" class="config-input" onchange="changePromptFusionAccountMode()" disabled>
-                                    <option value="inherit">跟随全局</option><option value="on">单独开启</option><option value="off">单独关闭</option>
-                                </select>
-                                <small class="config-note" id="promptFusionAccountStatus">修改后点击保存更改。账号设置优先于全局开关。</small>
-                                <button type="button" class="btn btn-secondary" onclick="loadPromptFusionAccounts()">刷新账号</button>
-                            </div>
+                            <p class="config-note">单个账号的设置请到「账号管理 → 凭证管理」中，点击对应账号的「提示词融合」。账号设置优先于全局开关。</p>
                             <small class="config-note">融合成功时优先于“将客户端 system 作为 user 角色指导”，无需另开基础提示注入。模型改写可能改变含义，建议先单账号试用。缓存不包含用户对话，但融合结果可能包含项目路径等信息。</small>
                         </div>
                         <div class="card">

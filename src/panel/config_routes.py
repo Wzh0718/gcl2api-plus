@@ -2,6 +2,10 @@
 配置路由模块 - 处理 /config/* 相关的HTTP请求
 """
 
+import asyncio
+from typing import Literal
+from pydantic import BaseModel
+
 import math
 import os
 
@@ -509,3 +513,41 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
     except Exception as e:
         log.error(f"保存配置失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+_prompt_fusion_account_lock = asyncio.Lock()
+
+
+class PromptFusionAccountRequest(BaseModel):
+    mode: Literal['inherit', 'on', 'off']
+
+
+async def _prompt_fusion_account_storage(filename):
+    storage = await get_storage_adapter()
+    if not await storage.get_credential_state(filename, mode='antigravity'):
+        raise HTTPException(404, '账号不存在')
+    return storage
+
+
+@router.get('/prompt-fusion/account/{filename:path}')
+async def get_prompt_fusion_account(filename: str, token: str = Depends(verify_panel_token)):
+    storage = await _prompt_fusion_account_storage(filename)
+    overrides = await storage.get_config('prompt_fusion_accounts', {})
+    global_enabled = await storage.get_config('prompt_fusion_enabled', False) is True
+    mode = overrides.get(filename, 'inherit')
+    return JSONResponse({'mode': mode, 'global_enabled': global_enabled}, headers={'Cache-Control': 'no-store'})
+
+
+@router.put('/prompt-fusion/account/{filename:path}')
+async def save_prompt_fusion_account(filename: str, request: PromptFusionAccountRequest, token: str = Depends(verify_panel_token)):
+    async with _prompt_fusion_account_lock:
+        storage = await _prompt_fusion_account_storage(filename)
+        overrides = dict(await storage.get_config('prompt_fusion_accounts', {}))
+        if request.mode == 'inherit':
+            overrides.pop(filename, None)
+        else:
+            overrides[filename] = request.mode
+        if not await storage.set_config('prompt_fusion_accounts', overrides):
+            raise HTTPException(500, '账号设置保存失败，请重试')
+        await config.reload_config()
+    return JSONResponse({'mode': request.mode}, headers={'Cache-Control': 'no-store'})
