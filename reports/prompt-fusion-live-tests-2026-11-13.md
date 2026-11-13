@@ -63,3 +63,16 @@ Sonnet 首次优化约 13.28 秒，原客户端指导 9426 字符、优化结果
 两者的实际上游版本与请求模型一致；最终 system 均以 AGY 基础内容开头，融合指导仍描述 DeepSeek Harness 宿主环境。各有 1 条 prompt_optimization 和 2 条 chat；第二步与第一步最终指导及缓存键完全相同，未再次优化，证明本任务内缓存复用成功。以上“压缩”仅指客户端指导字符数，不是总输入 Tokens 降幅。
 
 发现必须单列的缺陷：客户端发来 250 个工具（563501 字节），但最终上游工具列表都只剩 bash。源代码 `_ensure_empty_tool_schema_for_claude` 在处理聚合 functionDeclarations 时仅提取 declarations[0]，丢弃其它声明。这不是模型自行忘记工具，也不是压缩器主动删除工具；优化器看到的工具输入此时已只剩 bash，因此压缩产物写“only bash”。这次仅验证简单 bash 读文件任务可运行，完整 250 工具兼容性不通过。此次按测试请求仅定位并记录，没有修改该转换逻辑或追加模型调用。
+
+## 完整工具与缓存稳定性修复（11:38 UTC+8 发布）
+
+- 源码提交：`49a53a127d2ac84a1f1135cdbfcff9312abff255`（包含 `a5be65e`）。
+- Actions：https://github.com/Wzh0718/gcl2api-plus/actions/runs/43359708924 ，成功。
+- 镜像：`ghcr.io/wzh0718/gcl2api-plus@sha256:43718d46b1405a9c468f288ede77f4ac773c913e3cd3719afda27f6157195a0f`。
+- 生产启动：2026-11-13 11:38:06 UTC+8；running/healthy；keepalive HTTP 200。三个修改源码文件的 SHA256 与本地逐一一致。
+- Claude 的 `functionDeclarations` 不再只保留首项，生产容器离线检查 Opus/Sonnet 均保留 250 项。
+- 用本地模拟 HTTP 接口采集真实 dsh 250 工具，未调用线上模型。旧版相同输入清洗 30 次有 27 种输出，新版只有 1 种；循环检测改为当前递归路径，修复重复引用/临时对象导致的错误循环识别。
+- 恢复完整 Schema 后，融合输入约 422 KB；新增重复 JSON 对象/数组引用池后为 259618 字节，低于 307200 字节上限，运行时工具保持完整。
+- 四个模型各模拟 3 步，仅调用 mock 优化器 1 次；工具参数变化会重新融合。缓存版本升为 3，旧缓存不再命中。
+- 本地全量：1108 passed；CI：1102 passed、6 skipped。compileall、JS 语法、diff 检查通过。
+- 本轮无新增线上模型生成测试。以上证明转换与缓存逻辑，不代表完整工具的线上选择/执行能力已重新验收。
