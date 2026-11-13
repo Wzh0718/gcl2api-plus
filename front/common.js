@@ -87,6 +87,7 @@ const AppState = {
     apiKeyItems: [],
     apiKeysLoading: false,
     apiKeyAccounts: null,
+    apiKeyPolicyModels: null,
 
     // 冷却倒计时
     cooldownTimerInterval: null
@@ -2033,6 +2034,37 @@ async function loadApiKeyAccounts() {
     }
 }
 
+function apiKeyFusionOptions(selected = 'inherit') {
+    return [['inherit', '跟随账号 / 全局'], ['on', '单独开启'], ['off', '单独关闭']].map(([value, label]) =>
+        `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`).join('');
+}
+
+function apiKeyPolicyModelOptions(selected = '') {
+    const models = [...(AppState.apiKeyPolicyModels || [])];
+    if (selected && !models.includes(selected)) models.unshift(selected);
+    return `<option value=""${selected ? '' : ' selected'}>不限模型</option>` + models.map(model =>
+        `<option value="${escapeHtml(model)}"${selected === model ? ' selected' : ''}>${escapeHtml(model)}</option>`).join('');
+}
+
+async function loadApiKeyPolicyModels() {
+    try {
+        const response = await fetch('./api-keys/models', { headers: getAuthHeaders() });
+        const data = await readJsonResponse(response, '读取模型目录失败');
+        AppState.apiKeyPolicyModels = data.items;
+    } catch (_) {
+        AppState.apiKeyPolicyModels = null;
+    }
+    const select = document.getElementById('apiKeyCreateAllowedModel');
+    if (select) {
+        select.innerHTML = apiKeyPolicyModelOptions(select.value);
+        select.disabled = AppState.apiKeyPolicyModels === null;
+    }
+    const status = document.getElementById('apiKeyModelPolicyStatus');
+    if (status) status.textContent = AppState.apiKeyPolicyModels === null
+        ? '模型目录加载失败，已有模型限制保留，请刷新重试。'
+        : '仅允许模型按网关执行模型判断，不匹配的请求会被拒绝；目录不代表账号可用额度。Key 融合设置优先于账号和全局。';
+}
+
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
     if (!list) return;
@@ -2075,6 +2107,8 @@ function renderApiKeys(items) {
                 <label>重置方式<select data-field="reset_mode"><option value="manual"${item.reset_mode === 'manual' ? ' selected' : ''}>手动重置</option><option value="monthly"${item.reset_mode === 'monthly' ? ' selected' : ''}>每月重置</option></select></label>
                 <label>到期时间<input data-field="expires_at" type="datetime-local" value="${escapeHtml(apiKeyDateInputValue(item.expires_at))}"></label>
                 <label>绑定账号<select data-field="claude_credential_name"${AppState.apiKeyAccounts === null ? ' disabled' : ''}>${apiKeyAccountOptions(item.claude_credential_name || '')}</select><small>Gemini / Claude 共用此账号；不可用时不自动换号。</small></label>
+                <label>提示词融合<select data-field="prompt_fusion_mode">${apiKeyFusionOptions(item.prompt_fusion_mode || 'inherit')}</select></label>
+                <label>仅允许模型<select data-field="allowed_model"${AppState.apiKeyPolicyModels === null ? ' disabled' : ''}>${apiKeyPolicyModelOptions(item.allowed_model || '')}</select><small>按执行模型限制，不自动降级到其他模型。</small></label>
             </div>
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
@@ -2096,7 +2130,8 @@ async function loadApiKeys({ silent = false } = {}) {
         const [data] = await Promise.all([
             fetch('./api-keys?page_size=100', { headers: getAuthHeaders() })
                 .then(response => readJsonResponse(response, '加载密钥失败')),
-            loadApiKeyAccounts()
+            loadApiKeyAccounts(),
+            loadApiKeyPolicyModels()
         ]);
         AppState.apiKeyItems = data.items || [];
         renderApiKeys(AppState.apiKeyItems);
@@ -2124,7 +2159,9 @@ async function createApiKey(event) {
         quota_amount: quotaValue === '' ? null : quotaValue,
         reset_mode: resetMode,
         expires_at: apiKeyExpiryPayload(expiresValue),
-        claude_credential_name: document.getElementById('apiKeyCreateClaudeCredential')?.value.trim() || ''
+        claude_credential_name: document.getElementById('apiKeyCreateClaudeCredential')?.value.trim() || '',
+        prompt_fusion_mode: document.getElementById('apiKeyCreateFusionMode')?.value || 'inherit',
+        allowed_model: document.getElementById('apiKeyCreateAllowedModel')?.value || ''
     };
     try {
         const response = await fetch('./api-keys', {
@@ -2280,7 +2317,9 @@ async function saveApiKey(apiKeyId) {
             quota_amount: quotaValue === '' ? null : quotaValue,
             reset_mode: card.querySelector('[data-field="reset_mode"]')?.value,
             expires_at: apiKeyExpiryPayload(card.querySelector('[data-field="expires_at"]')?.value || ''),
-            claude_credential_name: card.querySelector('[data-field="claude_credential_name"]')?.value.trim() || ''
+            claude_credential_name: card.querySelector('[data-field="claude_credential_name"]')?.value.trim() || '',
+            prompt_fusion_mode: card.querySelector('[data-field="prompt_fusion_mode"]')?.value || 'inherit',
+            allowed_model: card.querySelector('[data-field="allowed_model"]')?.value || ''
         }, '密钥设置已保存');
     } catch (error) {
         showStatus(`保存失败: ${error.message}`, 'error');

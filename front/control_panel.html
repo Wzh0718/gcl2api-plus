@@ -2242,9 +2242,12 @@
                         <label>重置方式<select id="apiKeyCreateReset"><option value="manual">手动重置</option><option value="monthly">每月重置</option></select></label>
                         <label>到期时间<input id="apiKeyCreateExpires" type="datetime-local"></label>
                         <label>绑定账号<select id="apiKeyCreateClaudeCredential" disabled><option value="">正在加载账号…</option></select></label>
+                        <label>提示词融合<select id="apiKeyCreateFusionMode"><option value="inherit">跟随账号 / 全局</option><option value="on">单独开启</option><option value="off">单独关闭</option></select></label>
+                        <label>仅允许模型<select id="apiKeyCreateAllowedModel" disabled><option value="">不限模型</option></select></label>
                         <button type="submit" class="api-key-primary">创建密钥</button>
                     </form>
                     <p id="apiKeyAccountStatus" role="status" aria-live="polite">Gemini / Claude 共用所选账号。</p>
+                    <p id="apiKeyModelPolicyStatus" role="status" aria-live="polite">Key 融合设置优先于账号和全局；模型不限时沿用原有路由。</p>
                     <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
                 </div>
             </div>

@@ -19,6 +19,8 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 
 class ApiKeyCreateRequest(BaseModel):
+    prompt_fusion_mode: Literal["inherit", "on", "off"] = "inherit"
+    allowed_model: str = Field(default="", max_length=200)
     claude_credential_name: str | None = Field(default=None, max_length=255)
     name: str = Field(min_length=1, max_length=100)
     quota_amount: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=8)
@@ -27,6 +29,8 @@ class ApiKeyCreateRequest(BaseModel):
 
 
 class ApiKeyUpdateRequest(BaseModel):
+    prompt_fusion_mode: Literal["inherit", "on", "off"] = "inherit"
+    allowed_model: str = Field(default="", max_length=200)
     claude_credential_name: str | None = Field(default=None, max_length=255)
     name: str | None = Field(default=None, min_length=1, max_length=100)
     status: Literal["active", "disabled"] | None = None
@@ -86,6 +90,12 @@ async def list_binding_accounts(_token: str = Depends(verify_panel_token)):
         raise _unexpected(exc) from exc
 
 
+@router.get("/models")
+async def list_policy_models(_token: str = Depends(verify_panel_token)):
+    from src.antigravity_model_catalog import get_model_ids
+    return JSONResponse({'items': get_model_ids()}, headers={'Cache-Control': 'no-store'})
+
+
 @router.get("/{api_key_id}")
 async def get_api_key(api_key_id: str, _token: str = Depends(verify_panel_token)):
     try:
@@ -122,6 +132,8 @@ async def create_api_key(
         result = await ApiKeyService(await get_storage_adapter()).create_key(
             name=payload.name,
             claude_credential_name=payload.claude_credential_name,
+            prompt_fusion_mode=payload.prompt_fusion_mode,
+            allowed_model=payload.allowed_model,
             quota_amount=payload.quota_amount,
             reset_mode=payload.reset_mode,
             expires_at=payload.expires_at,

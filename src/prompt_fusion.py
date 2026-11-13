@@ -47,6 +47,10 @@ def validate_settings(values):
 
 
 async def enabled(account):
+    from src.claude_routing import key_prompt_fusion_mode
+    key_mode = key_prompt_fusion_mode()
+    if key_mode != 'inherit':
+        return key_mode == 'on'
     overrides = await get_config_value('prompt_fusion_accounts', {})
     mode = overrides.get(account, 'inherit') if isinstance(overrides, dict) else 'inherit'
     if mode == 'on':

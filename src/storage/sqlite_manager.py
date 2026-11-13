@@ -166,6 +166,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     # 管理面板中安全取回。旧记录保持 NULL 并明确标记不可恢复。
                     await self._migrate_api_key_secret_ciphertext(db)
                     await self._migrate_api_key_claude_credential(db)
+                    await self._migrate_api_key_prompt_policy(db)
 
                     # billing_daily 的联合主键需要包含调用方密钥。旧表不能通过
                     # ALTER COLUMN 修改主键，因此使用一次性事务迁移并回填环境密钥。
@@ -671,6 +672,14 @@ class SQLiteManager(AntigravityWarmupStore):
             columns = {row[1] for row in await cursor.fetchall()}
         if "claude_credential_name" not in columns:
             await db.execute("ALTER TABLE api_keys ADD COLUMN claude_credential_name TEXT NOT NULL DEFAULT ''")
+
+    async def _migrate_api_key_prompt_policy(self, db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA table_info(api_keys)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if "prompt_fusion_mode" not in columns:
+            await db.execute("ALTER TABLE api_keys ADD COLUMN prompt_fusion_mode TEXT NOT NULL DEFAULT 'inherit'")
+        if "allowed_model" not in columns:
+            await db.execute("ALTER TABLE api_keys ADD COLUMN allowed_model TEXT NOT NULL DEFAULT ''")
 
     async def _migrate_call_records_upstream_model(
         self, db: aiosqlite.Connection
@@ -2141,6 +2150,7 @@ class SQLiteManager(AntigravityWarmupStore):
         "quota_amount", "quota_used", "quota_tokens_used", "currency", "reset_mode",
         "quota_period_start", "expires_at", "last_used_at", "last_reset_at",
         "revoked_at", "created_at", "updated_at", "claude_credential_name",
+        "prompt_fusion_mode", "allowed_model",
     )
 
     @classmethod
@@ -2154,8 +2164,8 @@ class SQLiteManager(AntigravityWarmupStore):
                 """INSERT INTO api_keys(
                     id, name, key_prefix, secret_hash, secret_ciphertext, kind, status,
                     quota_amount, quota_used, quota_tokens_used, currency, reset_mode,
-                    quota_period_start, expires_at, created_at, updated_at, claude_credential_name
-                ) VALUES (?, ?, ?, ?, ?, 'managed', 'active', ?, '0.00000000', 0, ?, ?, ?, ?, ?, ?, ?)""",
+                    quota_period_start, expires_at, created_at, updated_at, claude_credential_name, prompt_fusion_mode, allowed_model
+                ) VALUES (?, ?, ?, ?, ?, 'managed', 'active', ?, '0.00000000', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     values["id"], values["name"], values["key_prefix"],
                     values["secret_hash"], values["secret_ciphertext"],
@@ -2163,6 +2173,7 @@ class SQLiteManager(AntigravityWarmupStore):
                     values["currency"], values["reset_mode"],
                     values["quota_period_start"], values.get("expires_at"),
                     values["now"], values["now"], values.get("claude_credential_name", ""),
+                    values.get("prompt_fusion_mode", "inherit"), values.get("allowed_model", ""),
                 ),
             )
             await db.commit()
@@ -2254,7 +2265,7 @@ class SQLiteManager(AntigravityWarmupStore):
         self._ensure_initialized()
         allowed = {
             "name", "status", "quota_amount", "currency", "reset_mode",
-            "quota_period_start", "expires_at", "claude_credential_name",
+            "quota_period_start", "expires_at", "claude_credential_name", "prompt_fusion_mode", "allowed_model",
         }
         unknown = set(updates) - allowed
         if unknown:

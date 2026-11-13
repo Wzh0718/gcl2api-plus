@@ -13,6 +13,8 @@ from inspect import signature
 class ClaudeRoute:
     api_key_id: str
     credential_name: str | None
+    prompt_fusion_mode: str = "inherit"
+    allowed_model: str = ""
 
 
 _route: ContextVar[ClaudeRoute | None] = ContextVar('claude_account_route', default=None)
@@ -28,11 +30,32 @@ def bound_claude_credential() -> str | None:
     return route.credential_name if route else None
 
 
+def key_prompt_fusion_mode() -> str:
+    route = _route.get()
+    return route.prompt_fusion_mode if route else 'inherit'
+
+
+def key_allowed_model() -> str:
+    route = _route.get()
+    return route.allowed_model if route else ''
+
+
+def _check_model(route, model):
+    if route and route.allowed_model and model != route.allowed_model:
+        from fastapi import HTTPException
+        raise HTTPException(403, f'该密钥仅允许执行模型：{route.allowed_model}')
+
+
+def enforce_key_model(model: str) -> None:
+    _check_model(_route.get(), model)
+
+
 async def _load_route(api_key_id, model):
     existing = _route.get()
     if existing is not None and existing.api_key_id == api_key_id:
         return existing
     credential = None
+    record = {}
     if api_key_id != 'env':
         from src.storage_adapter import get_storage_adapter
         from fastapi import HTTPException
@@ -40,7 +63,7 @@ async def _load_route(api_key_id, model):
         if record is None:
             raise HTTPException(503, '调用方密钥路由配置不可用')
         credential = record.get('claude_credential_name') or None
-    return ClaudeRoute(api_key_id, credential)
+    return ClaudeRoute(api_key_id, credential, record.get('prompt_fusion_mode', 'inherit'), record.get('allowed_model') or '')
 
 
 @asynccontextmanager
@@ -59,6 +82,7 @@ def bind_claude_request(function):
         arguments = sig.bind(*args, **kwargs)
         arguments.apply_defaults()
         async with claude_route_scope(arguments.arguments['api_key_id'], arguments.arguments.get('request_model') or arguments.arguments['body'].get('model', '')):
+            enforce_key_model(arguments.arguments['body'].get('model', ''))
             return await function(*args, **kwargs)
     return wrapped
 
@@ -70,6 +94,7 @@ def bind_claude_stream(function):
         arguments = sig.bind(*args, **kwargs)
         arguments.apply_defaults()
         route = await _load_route(arguments.arguments['api_key_id'], arguments.arguments.get('request_model') or arguments.arguments['body'].get('model', ''))
+        _check_model(route, arguments.arguments['body'].get('model', ''))
         inner = function(*args, **kwargs)
         try:
             while True:

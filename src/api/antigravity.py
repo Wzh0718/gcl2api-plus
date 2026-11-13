@@ -316,6 +316,8 @@ async def wrap_cli_request(
     其他邮箱（如企业/教育账号）改用 jetski 指纹（对齐 Antigravity-Manager）。
     credential_key 用于派生账号级稳定 sessionId 和按账号刷新模型目录。
     """
+    from src.claude_routing import enforce_key_model
+    enforce_key_model(model)
     if not skip_prompt_fusion and credential_key and credential_data and not is_antigravity_image_request(model, gemini_request):
         from src.prompt_fusion import fuse_request
         gemini_request = await fuse_request(gemini_request, model, credential_key, credential_data)
@@ -908,7 +910,8 @@ def _is_quota_exhausted_429(status_code: int, error_body: Optional[str]) -> bool
 
 def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
     """当前模型在降级链中时返回链上下一个模型，否则返回 None。"""
-    if not chain:
+    from src.claude_routing import key_allowed_model
+    if key_allowed_model() or not chain:
         return None
     try:
         index = chain.index(current_model)

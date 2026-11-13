@@ -95,3 +95,8 @@ def get_model_info(model_id: str) -> Optional[Dict[str, Any]]:
     """返回目录条目（只读语义，勿原地修改）；未知模型返回 None。"""
     entry = _catalog.get(model_id)
     return dict(entry) if entry else None
+
+
+def get_model_ids() -> list[str]:
+    """Known execution model IDs; this list does not imply account eligibility."""
+    return sorted(model for model, info in _catalog.items() if info.get('enum'))

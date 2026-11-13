@@ -215,11 +215,28 @@ class ApiKeyService:
             raise ValueError("绑定账号不存在，请选择已导入的 Antigravity 账号")
         return name
 
+    @staticmethod
+    def _prompt_fusion_mode(value):
+        if value not in ('inherit', 'on', 'off'):
+            raise ValueError('提示词融合必须为 inherit / on / off')
+        return value
+
+    @staticmethod
+    def _allowed_model(value):
+        if not isinstance(value, str):
+            raise ValueError('允许模型必须是字符串，留空表示不限')
+        value = value.strip()
+        if len(value) > 200 or any(not (c.isascii() and (c.isalnum() or c in '._-')) for c in value):
+            raise ValueError('请使用有效的网关执行模型 ID')
+        return value
+
     async def create_key(
         self,
         *,
         name: str,
         claude_credential_name: Any = "",
+        prompt_fusion_mode: str = "inherit",
+        allowed_model: str = "",
         quota_amount: Any = None,
         reset_mode: str = "manual",
         expires_at: Any = None,
@@ -231,6 +248,8 @@ class ApiKeyService:
         if reset_mode not in {"manual", "monthly"}:
             raise ValueError("reset_mode 必须是 manual 或 monthly")
         claude_credential = await self._claude_credential(claude_credential_name)
+        prompt_fusion_mode = self._prompt_fusion_mode(prompt_fusion_mode)
+        allowed_model = self._allowed_model(allowed_model)
         current = _now(now)
         normalized_quota = _money(quota_amount, allow_none=True)
         normalized_expiry = _expires_at(expires_at)
@@ -242,6 +261,8 @@ class ApiKeyService:
                     id=uuid.uuid4().hex,
                     name=clean_name,
                     claude_credential_name=claude_credential,
+                    prompt_fusion_mode=prompt_fusion_mode,
+                    allowed_model=allowed_model,
                     key_prefix=key_prefix,
                     secret_hash=hash_api_key(api_key),
                     secret_ciphertext=self.cipher.encrypt(api_key),
@@ -314,6 +335,10 @@ class ApiKeyService:
     ) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         current = _now(now)
+        if "prompt_fusion_mode" in updates:
+            normalized["prompt_fusion_mode"] = self._prompt_fusion_mode(updates["prompt_fusion_mode"])
+        if "allowed_model" in updates:
+            normalized["allowed_model"] = self._allowed_model(updates["allowed_model"])
         if "claude_credential_name" in updates:
             normalized["claude_credential_name"] = await self._claude_credential(updates["claude_credential_name"])
         if "name" in updates:
