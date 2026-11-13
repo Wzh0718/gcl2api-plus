@@ -37,6 +37,40 @@ def rows(store, name):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('close_early', [False, True])
+async def test_capture_stream_cross_task_advance_and_close(enabled, close_early):
+    from src.request_capture import capture_stream, active_attempt, observe_stream_headers
+    sentinel = object()
+    @capture_stream
+    async def chunks(url, body):
+        observe_stream_headers(httpx.Response(200))
+        assert active_attempt.get() is not sentinel
+        yield b'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}\n\n'
+        assert active_attempt.get() is not sentinel
+        yield b'data: [DONE]\n\n'
+    async def app(scope, receive, send):
+        await receive()
+        token = active_attempt.set(sentinel)
+        try:
+            stream = chunks('https://test/streamGenerateContent', {'model': 'm'})
+            assert await asyncio.create_task(anext(stream))
+            assert active_attempt.get() is sentinel
+            if not close_early:
+                assert await anext(stream)
+                with pytest.raises(StopAsyncIteration):
+                    await asyncio.create_task(anext(stream))
+            await asyncio.create_task(stream.aclose())
+            assert active_attempt.get() is sentinel
+        finally:
+            active_attempt.reset(token)
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'done'})
+    await run_request(app)
+    finished = [r for r in rows(enabled, 'attempts') if r.get('phase') == 'finished']
+    assert len(finished) == 1 and finished[0]['status_code'] == 200
+
+
+@pytest.mark.asyncio
 async def test_internal_403_survives_success_and_promotes_previous_success(enabled, monkeypatch):
     responses = iter([httpx.Response(200, json={"ok": True}),
                       httpx.Response(403, json={"error": {"code": 403, "details": [{"reason": "TOS_VIOLATION"}]}},

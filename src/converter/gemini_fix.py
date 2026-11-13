@@ -4,6 +4,7 @@ Gemini Format Utilities - 统一的 Gemini 格式处理和转换工具
 ────────────────────────────────────────────────────────────────
 """
 import json
+import re
 from typing import Any, Dict, Optional
 
 from log import log
@@ -1008,12 +1009,20 @@ async def normalize_gemini_request(
 
             # 移除 -thinking 等后缀并提取基础名
             if "claude" in model.lower():
+                # Tier suffixes in current upstream IDs select real models, not
+                # legacy gateway thinking aliases. Preserve them through routing.
+                tier_match = re.fullmatch(r"claude-(?:sonnet|opus)-(\d+)-\d+-(?:low|medium|high)", model)
+                tier_model = tier_match is not None and int(tier_match[1]) >= 5
+                execution_model = model
                 model = get_base_model_name(model).replace("-thinking", "")
 
                 # 4. Claude 模型关键词映射
                 # 使用关键词匹配而不是精确匹配，更灵活地处理各种变体
                 original_model = model
-                if "opus" in model.lower():
+                if tier_model:
+                    model = execution_model
+                    generation_config.pop("thinkingConfig", None)
+                elif "opus" in model.lower():
                     model = "claude-opus-4-6-thinking"
                 elif "sonnet" in model.lower():
                     model = "claude-sonnet-4-6"

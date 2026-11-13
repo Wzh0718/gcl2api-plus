@@ -23,6 +23,29 @@ def request():
             'tools': [{'functionDeclarations': [{'name': 'shell', 'parameters': {'type': 'OBJECT'}}]}]}
 
 
+@pytest.mark.parametrize('family', ['sonnet', 'opus'])
+@pytest.mark.parametrize('tier', ['low', 'medium', 'high'])
+async def test_current_claude_tier_is_execution_model(family, tier):
+    model = f'claude-{family}-5-5-{tier}'
+    req = request()
+    req['model'] = model
+    normalized = await normalize_gemini_request(req, mode='antigravity')
+    assert normalized['model'] == model
+    assert 'thinkingConfig' not in normalized.get('generationConfig', {})
+    assert (await normalize_gemini_request(normalized, mode='antigravity'))['model'] == model
+
+
+@pytest.mark.parametrize('alias,execution', [
+    ('claude-sonnet-4-6-high', 'claude-sonnet-4-6'),
+    ('claude-opus-4-6', 'claude-opus-4-6-thinking'),
+    ('claude-haiku', 'gemini-2.5-flash'),
+])
+async def test_legacy_claude_aliases_still_normalize(alias, execution):
+    req = request()
+    req['model'] = alias
+    assert (await normalize_gemini_request(req, mode='antigravity'))['model'] == execution
+
+
 @pytest.mark.parametrize('inject,as_user', [(False, False), (True, False), (False, True), (True, True)])
 async def test_role_options_preserve_guidance_and_tool_history(inject, as_user):
     config._config_cache.update(antigravity_system_prompt_enabled=inject, antigravity_system_as_user_enabled=as_user)

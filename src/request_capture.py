@@ -372,10 +372,18 @@ def capture_stream(function):
         credential = kwargs.pop("capture_credential", "")
         attempt = CaptureAttempt(url, body, credential, kwargs.get("proxy_url", ...), streaming=True)
         await attempt.start()
-        token = active_attempt.set(attempt)
         stream = function(url, body, *args, **kwargs)
         try:
-            async for chunk in stream:
+            while True:
+                # Consumers may advance/close a stream from different tasks.
+                # Never carry a ContextVar token across a yield boundary.
+                token = active_attempt.set(attempt)
+                try:
+                    chunk = await anext(stream)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    active_attempt.reset(token)
                 attempt.observe(chunk)
                 if hasattr(chunk, "status_code") and chunk.status_code >= 400:
                     await attempt.finish()
@@ -384,6 +392,7 @@ def capture_stream(function):
             await attempt.finish(exc)
             raise
         finally:
+            token = active_attempt.set(attempt)
             try:
                 await stream.aclose()
                 if attempt.enabled and (attempt.status is None or not attempt.received_content) and not attempt.error_body:
