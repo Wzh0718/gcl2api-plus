@@ -111,6 +111,60 @@ async def test_disabled_and_nontext_skip_optimizer(monkeypatch):
     mock.assert_not_called()
 
 
+@pytest.mark.parametrize('extra_bytes,accepted', [(0, True), (1, False)])
+async def test_300_kib_input_boundary_preserves_large_tools(monkeypatch, extra_bytes, accepted):
+    mock = AsyncMock(return_value='Ask approval before deleting. Use shell.')
+    monkeypatch.setattr(fusion, '_generate', mock)
+    raw = request()
+    raw['tools'][0]['functionDeclarations'][0]['description'] = '工具规则 ' * 10000
+    # Measure the full UTF-8 source once, then pad an ASCII field to the exact boundary.
+    await fusion.fuse_request(raw, 'gemini-test', 'a', {})
+    source = mock.call_args.args[0]
+    padding = fusion.MAX_INPUT_BYTES - len(source.encode()) + extra_bytes
+    raw['tools'][0]['functionDeclarations'][0]['description'] += 'x' * padding
+    original = deepcopy(raw)
+    mock.reset_mock()
+    result = await fusion.fuse_request(raw, 'gemini-test', 'a', {})
+    assert raw == original
+    if accepted:
+        mock.assert_awaited_once()
+        actual_source = mock.call_args.args[0]
+        assert len(actual_source.encode()) == 300 * 1024
+        assert json.loads(actual_source)['tools'] == original['tools']
+        assert result['tools'] == original['tools']
+        assert result['contents'] == original['contents']
+        assert 'You are Antigravity' in str(result['systemInstruction'])
+    else:
+        mock.assert_not_awaited()
+        assert result is raw
+
+
+async def test_large_repeated_tool_descriptions_are_losslessly_pooled(monkeypatch):
+    raw = request()
+    description = 'Preserve exact command: echo "a  b"\n  and permissions. ' * 100
+    raw['tools'] = [{'functionDeclarations': [
+        {'name': f'shell_{i}', 'description': description} for i in range(70)
+    ]}]
+    original = deepcopy(raw)
+    mock = AsyncMock(return_value='Preserve permissions and exact tool arguments.')
+    monkeypatch.setattr(fusion, '_generate', mock)
+    result = await fusion.fuse_request(raw, 'gemini-test', 'a', {})
+    mock.assert_awaited_once()
+    source = mock.call_args.args[0]
+    assert len(json.dumps(raw['tools']).encode()) > fusion.MAX_INPUT_BYTES
+    assert len(source.encode()) < fusion.MAX_INPUT_BYTES
+    packed = json.loads(source)
+    def unpack(value):
+        if isinstance(value, dict):
+            if set(value) == {'$fusion_text'}:
+                return packed['tool_reference_strings'][value['$fusion_text']]
+            return {key: unpack(child) for key, child in value.items()}
+        return [unpack(child) for child in value] if isinstance(value, list) else value
+    assert unpack(packed['tools']) == original['tools']
+    assert result['tools'] == original['tools'] and raw == original
+    assert result['contents'] == original['contents']
+
+
 async def test_cancelled_waiter_does_not_cancel_shared_work(monkeypatch):
     started, release = asyncio.Event(), asyncio.Event()
     async def generate(*args):
@@ -142,7 +196,8 @@ async def test_invalid_settings_rejected(value):
 
 
 @pytest.mark.parametrize('finish,output,valid', [('STOP', '{"guidance":"Keep approvals"}', True),
-    ('MAX_TOKENS', '{"guidance":"partial"}', False), ('STOP', '{"guidance":""}', False), ('STOP', 'bad', False)])
+    ('MAX_TOKENS', '{"guidance":"partial"}', False), ('STOP', '{"guidance":""}', False), ('STOP', 'bad', False),
+    ('STOP', json.dumps({'guidance': 'x' * (128 * 1024 + 1)}), False)])
 async def test_generate_uses_selected_account_without_recursion(monkeypatch, finish, output, valid):
     from src.api import antigravity
     from src import httpx_client, antigravity_pacing, billing
