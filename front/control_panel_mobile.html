@@ -1328,6 +1328,7 @@
         .api-key-readonly { margin: 12px 0 0; color: #687386; font-size: 11px; }
         .api-key-empty { padding: 24px 12px; border: 1px dashed #cfd8e5; border-radius: 9px; color: #7a8494; background: #f7f9fc; text-align: center; font-size: 12px; }
     </style>
+    <link rel="stylesheet" href="./front/config_tabs.css?v=20261112">
 </head>
 
 <body>
@@ -1434,9 +1435,10 @@
                         <label>金额额度<input id="apiKeyCreateQuota" type="number" min="0" step="0.01" placeholder="留空为不限额"></label>
                         <label>重置方式<select id="apiKeyCreateReset"><option value="manual">手动重置</option><option value="monthly">每月重置</option></select></label>
                         <label>到期时间<input id="apiKeyCreateExpires" type="datetime-local"></label>
-                        <label>Claude 固定账号<input id="apiKeyCreateClaudeCredential" type="text" maxlength="255" placeholder="凭证文件名；留空使用凭证池"></label>
+                        <label>绑定账号<select id="apiKeyCreateClaudeCredential" disabled><option value="">正在加载账号…</option></select></label>
                         <button type="submit" class="api-key-primary">创建密钥</button>
                     </form>
+                    <p id="apiKeyAccountStatus" role="status" aria-live="polite">Gemini / Claude 共用所选账号。</p>
                     <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
                 </div>
             </div>
@@ -2133,50 +2135,25 @@
                     <p>运行时网络、端点和代理策略集中管理；环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p>
                 </div>
 
-                <div style="display: flex; gap: 8px; margin: 15px 0; flex-wrap: wrap;">
-                    <button class="btn btn-small" onclick="loadConfig()"
-                        style="background-color: #17a2b8;">刷新配置</button>
-                    <button class="btn btn-small" onclick="saveConfig()">保存配置</button>
-                </div>
-
                 <div id="configSection">
+                    <div class="config-toolbar">
+                        <div class="config-category-tabs" role="tablist" aria-label="配置分类">
+                            <button type="button" id="config-tab-general" class="config-category-tab" role="tab" aria-selected="true" aria-controls="config-panel-general" tabindex="0" onclick="switchConfigTab('general')" onkeydown="handleConfigTabKeydown(event)">基础设置</button>
+                            <button type="button" id="config-tab-network" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-network" tabindex="-1" onclick="switchConfigTab('network')" onkeydown="handleConfigTabKeydown(event)">网络代理</button>
+                            <button type="button" id="config-tab-credentials" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-credentials" tabindex="-1" onclick="switchConfigTab('credentials')" onkeydown="handleConfigTabKeydown(event)">凭证与重试</button>
+                            <button type="button" id="config-tab-models" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-models" tabindex="-1" onclick="switchConfigTab('models')" onkeydown="handleConfigTabKeydown(event)">兼容与模型</button>
+                            <button type="button" id="config-tab-content" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-content" tabindex="-1" onclick="switchConfigTab('content')" onkeydown="handleConfigTabKeydown(event)">内容与提示</button>
+                            <button type="button" id="config-tab-alerts" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-alerts" tabindex="-1" onclick="switchConfigTab('alerts')" onkeydown="handleConfigTabKeydown(event)">保活与告警</button>
+                            <button type="button" id="config-tab-monitoring" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-monitoring" tabindex="-1" onclick="switchConfigTab('monitoring')" onkeydown="handleConfigTabKeydown(event)">监控与采集</button>
+                        </div>
+                        <div class="config-toolbar-footer">
+                            <span class="config-tabs-note">切换分类保留未保存的输入，保存更改将保存全部分类。</span>
+                            <div class="config-toolbar-actions"><button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button><button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button></div>
+                        </div>
+                    </div>
                     <div class="loading" id="configLoading">正在加载配置...</div>
                     <div id="configForm" class="hidden">
-                        <div class="card">
-                            <h4>客户端名称过滤配置</h4>
-
-                            <div class="form-group">
-                                <label>
-                                    <input type="checkbox" id="sensitiveWordReplaceEnabled" class="config-checkbox" />
-                                    启用客户端名称过滤
-                                </label>
-                                <small class="config-note">对 GeminiCLI 与 Antigravity 的 system prompt 生效，支持热更新。</small>
-                                <div class="config-info">仅处理系统提示，不改用户消息或工具调用。匹配不区分大小写，长词优先；自定义同名规则覆盖内置词库。</div>
-                            </div>
-                            <div class="form-group">
-                                <label for="sensitiveWordFilterMode">命中处理:</label>
-                                <select id="sensitiveWordFilterMode" class="config-input">
-                                    <option value="rewrite">Rewrite：替换后放行（默认）</option>
-                                    <option value="block">Block：拒绝请求，返回 HTTP 403</option>
-                                </select>
-                                <small class="config-note">Block 模式只使用查找词，不使用替换值。</small>
-                            </div>
-                            <div class="form-group">
-                                <label><input type="checkbox" id="sensitiveWordUseDefaultKeywords" class="config-checkbox" /> 启用内置客户端词库</label>
-                                <small class="config-note">包含 Claude Code、Codex、Cursor、Windsurf 等名称，默认替换为 Antigravity。</small>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="sensitiveWordReplaceRules">替换规则（每行一条）:</label>
-                                <textarea id="sensitiveWordReplaceRules" class="config-input" rows="6"
-                                    style="resize: vertical; font-family: monospace;"
-                                    placeholder="Claude Code=>Antigravity&#10;Claude Agent SDK=>&#10;# 以 # 开头为注释行"></textarea>
-                                <small class="config-note">格式：<code>查找词=>替换词</code>；不写 <code>=></code>
-                                    表示删除该词；以 <code>#</code> 开头为注释；留空则仅使用已启用的内置词库</small>
-                            </div>
-                        </div>
-
-
+                        <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">服务器配置</h4>
 
@@ -2216,9 +2193,8 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">（兼容性保留）设置后将覆盖上述两个密码，留空则使用分开的密码设置</small>
                             </div>
                         </div>
-
                         <div class="card">
-                            <h4 style="margin-top: 0; margin-bottom: 15px;">基础配置</h4>
+                            <h4 style="margin-top: 0; margin-bottom: 15px;">凭证目录</h4>
 
                             <div class="form-group">
                                 <label for="credentialsDir">凭证目录路径:</label>
@@ -2227,6 +2203,36 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">存储认证文件的目录路径</small>
                             </div>
 
+
+                        </div>
+                        <div class="card">
+                            <h4 style="margin-top: 0; margin-bottom: 15px;">配置热更新说明</h4>
+
+                            <div
+                                style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 6px; padding: 12px; font-size: 13px; color: #155724; margin-bottom: 10px;">
+                                <strong>🔥 热更新配置（立即生效）：</strong>
+                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                    <li><strong>网络配置：</strong>代理、端点配置、超时、连接数</li>
+                                    <li><strong>API配置：</strong>轮换次数、重试设置、自动封禁</li>
+                                    <li><strong>密码配置：</strong>API密码、面板密码</li>
+                                    <li><strong>功能配置：</strong>抗截断重试次数</li>
+                                </ul>
+                            </div>
+
+                            <div
+                                style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; font-size: 13px; color: #856404; margin-bottom: 10px;">
+                                <strong>🔄 需要重启的配置：</strong>
+                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                    <li><strong>服务器配置：</strong>主机地址、端口号</li>
+                                    <li><strong>文件路径：</strong>凭证目录</li>
+                                </ul>
+                            </div>
+
+                        </div>
+                        </section>
+                        <section id="config-panel-network" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-network" tabindex="0" hidden>
+                        <div class="card">
+                            <h4>全局代理</h4>
                             <div class="form-group">
                                 <label for="proxy">代理设置:</label>
                                 <input type="text" id="proxy"
@@ -2235,8 +2241,7 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">HTTP/HTTPS/SOCKS5Endpoint，留空表示不使用代理</small>
                             </div>
                         </div>
-
-                        <section class="card proxy-console" aria-labelledby="proxyConsoleTitle">
+<section class="card proxy-console" aria-labelledby="proxyConsoleTitle">
                             <div class="proxy-console-head">
                                 <div>
                                     <span class="proxy-kicker">LIVE NETWORK</span>
@@ -2274,7 +2279,6 @@
                             </div>
                             <div id="proxyGroupList" class="proxy-group-list" role="list" aria-live="polite"></div>
                         </section>
-
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">端点配置</h4>
 
@@ -2340,7 +2344,8 @@
                                     Antigravity API端点地址，用于反重力模式</small>
                             </div>
                         </div>
-
+                        </section>
+                        <section id="config-panel-credentials" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-credentials" tabindex="0" hidden>
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">自动封禁配置</h4>
 
@@ -2360,7 +2365,6 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">用逗号分隔的错误码列表</small>
                             </div>
                         </div>
-
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">错误重试配置</h4>
 
@@ -2387,8 +2391,8 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">遇到错误时每两次重试间的等待时间</small>
                             </div>
                         </div>
-
-
+                        </section>
+                        <section id="config-panel-models" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-models" tabindex="0" hidden>
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">兼容性配置</h4>
 
@@ -2579,7 +2583,6 @@
                                     User-Agent。保底版本由环境变量 ANTIGRAVITY_CLI_VERSION 提供。</small>
                             </div>
                         </div>
-
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">抗截断配置</h4>
 
@@ -2600,7 +2603,41 @@
                                 </ul>
                             </div>
                         </div>
+                        </section>
+                        <section id="config-panel-content" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-content" tabindex="0" hidden>
+                        <div class="card">
+                            <h4>客户端名称过滤配置</h4>
 
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="sensitiveWordReplaceEnabled" class="config-checkbox" />
+                                    启用客户端名称过滤
+                                </label>
+                                <small class="config-note">对 GeminiCLI 与 Antigravity 的 system prompt 生效，支持热更新。</small>
+                                <div class="config-info">仅处理系统提示，不改用户消息或工具调用。匹配不区分大小写，长词优先；自定义同名规则覆盖内置词库。</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="sensitiveWordFilterMode">命中处理:</label>
+                                <select id="sensitiveWordFilterMode" class="config-input">
+                                    <option value="rewrite">Rewrite：替换后放行（默认）</option>
+                                    <option value="block">Block：拒绝请求，返回 HTTP 403</option>
+                                </select>
+                                <small class="config-note">Block 模式只使用查找词，不使用替换值。</small>
+                            </div>
+                            <div class="form-group">
+                                <label><input type="checkbox" id="sensitiveWordUseDefaultKeywords" class="config-checkbox" /> 启用内置客户端词库</label>
+                                <small class="config-note">包含 Claude Code、Codex、Cursor、Windsurf 等名称，默认替换为 Antigravity。</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sensitiveWordReplaceRules">替换规则（每行一条）:</label>
+                                <textarea id="sensitiveWordReplaceRules" class="config-input" rows="6"
+                                    style="resize: vertical; font-family: monospace;"
+                                    placeholder="Claude Code=>Antigravity&#10;Claude Agent SDK=>&#10;# 以 # 开头为注释行"></textarea>
+                                <small class="config-note">格式：<code>查找词=>替换词</code>；不写 <code>=></code>
+                                    表示删除该词；以 <code>#</code> 开头为注释；留空则仅使用已启用的内置词库</small>
+                            </div>
+                        </div>
                         <div class="card">
                             <h4>AGY 系统提示与客户端指导</h4>
                             <div class="form-group">
@@ -2612,7 +2649,26 @@
                                 <small class="config-note">将原系统提示放在会话开头，辅助理解客户端工作流与工具，优先级降为 user。两个开关相互独立；工具定义、调用和结果继续使用实际协议。默认关闭。</small>
                             </div>
                         </div>
-
+                        <div class="card">
+                            <h4>AGY 提示词融合</h4>
+                            <div class="form-group">
+                                <label><input type="checkbox" id="promptFusionEnabled" /> 全局开启提示词融合</label>
+                                <small class="config-note">用当前账号、当前文本模型整理客户端系统指导，并融合 AGY 基础提示。首次会额外调用模型并计入用量；相同输入缓存 24 小时。失败时沿用原有请求。默认关闭，图片请求不处理。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="promptFusionAccount">账号设置</label>
+                                <select id="promptFusionAccount" class="config-input" onchange="showPromptFusionAccountMode()" disabled><option>正在加载账号…</option></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="promptFusionAccountMode">该账号的融合方式</label>
+                                <select id="promptFusionAccountMode" class="config-input" onchange="changePromptFusionAccountMode()" disabled>
+                                    <option value="inherit">跟随全局</option><option value="on">单独开启</option><option value="off">单独关闭</option>
+                                </select>
+                                <small class="config-note" id="promptFusionAccountStatus">修改后点击保存更改。账号设置优先于全局开关。</small>
+                                <button type="button" class="btn btn-secondary" onclick="loadPromptFusionAccounts()">刷新账号</button>
+                            </div>
+                            <small class="config-note">融合成功时优先于“将客户端 system 作为 user 角色指导”，无需另开基础提示注入。模型改写可能改变含义，建议先单账号试用。缓存不包含用户对话，但融合结果可能包含项目路径等信息。</small>
+                        </div>
                         <div class="card">
                             <h4>自定义系统提示</h4>
                             <div class="form-group">
@@ -2621,7 +2677,8 @@
                                 <small class="config-note">配置文本 A 与请求已有系统提示 B 直接拼接为 AB，不自动添加换行；B 为空时不注入。适用于 GeminiCLI、Antigravity、Vertex 通道。SQLite 保存值优先于 .env，清空保存即可关闭，最多 20000 字符。</small>
                             </div>
                         </div>
-
+                        </section>
+                        <section id="config-panel-alerts" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-alerts" tabindex="0" hidden>
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">保活配置</h4>
 
@@ -2643,7 +2700,6 @@
                                     5 - 86400 秒，默认 60 ✓ 支持热更新</small>
                             </div>
                         </div>
-
                         <div class="card">
                             <h4 style="margin-top:0;margin-bottom:15px;">钉钉告警</h4>
                             <div class="form-group"><label for="dingtalkWebhookUrl">Webhook URL:</label><input type="url" id="dingtalkWebhookUrl" placeholder="留空则禁用" /><small class="config-note">SQLite 优先于 Compose / .env 环境变量；清空已填写的地址并保存可禁用。</small>
@@ -2666,7 +2722,8 @@
                             <div class="form-group"><label>冷却(分钟):</label><input type="number" id="dingtalkAlertCooldownMinutes" min="0" max="1440" /></div>
                             <div class="form-group"><label for="dingtalkAlertTemplate">告警模板:</label><textarea id="dingtalkAlertTemplate" class="config-input" rows="6" maxlength="5000" placeholder="支持 {status_code} {status_codes} {count} {window_minutes} {threshold} {channel} {model} {timestamp} {keyword}"></textarea><small class="config-note">所选返回码在全部通道合计计数；变量：{status_code}、{status_codes}、{count}、{window_minutes}、{threshold}、{channel}、{model}、{timestamp}、{keyword}。</small></div>
                         </div>
-
+                        </section>
+                        <section id="config-panel-monitoring" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-monitoring" tabindex="0" hidden>
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">调用监控</h4>
 
@@ -2679,33 +2736,8 @@
                                     range）超过该天数后自动滚动清理，范围 1 - 365 天，默认 30 ✓ 支持热更新</small>
                             </div>
                         </div>
-
                         <div id="requestCaptureSettings" class="card"></div>
-
-                        <div class="card">
-                            <h4 style="margin-top: 0; margin-bottom: 15px;">配置热更新说明</h4>
-
-                            <div
-                                style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 6px; padding: 12px; font-size: 13px; color: #155724; margin-bottom: 10px;">
-                                <strong>🔥 热更新配置（立即生效）：</strong>
-                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                    <li><strong>网络配置：</strong>代理、端点配置、超时、连接数</li>
-                                    <li><strong>API配置：</strong>轮换次数、重试设置、自动封禁</li>
-                                    <li><strong>密码配置：</strong>API密码、面板密码</li>
-                                    <li><strong>功能配置：</strong>抗截断重试次数</li>
-                                </ul>
-                            </div>
-
-                            <div
-                                style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; font-size: 13px; color: #856404; margin-bottom: 10px;">
-                                <strong>🔄 需要重启的配置：</strong>
-                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                    <li><strong>服务器配置：</strong>主机地址、端口号</li>
-                                    <li><strong>文件路径：</strong>凭证目录</li>
-                                </ul>
-                            </div>
-
-                        </div>
+                        </section>
                     </div>
                 </div>
             </div>
@@ -2840,7 +2872,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=px6-expiry-20261111"></script>
+    <script src="./front/common.js?v=account-binding-20261113"></script>
 </body>
 
 </html>

@@ -1,4 +1,5 @@
 """Opt-in Antigravity baseline and caller guidance, after protocol conversion."""
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 
@@ -26,7 +27,9 @@ GUIDANCE = (
 class _PreparedRequest(dict):
     """In-memory idempotency only; no private keys are sent to the upstream."""
     def copy(self):
-        return type(self)(self)
+        result = type(self)(self)
+        result.__dict__.update(self.__dict__)
+        return result
 
 
 @lru_cache(maxsize=1)
@@ -41,10 +44,14 @@ async def prepare_antigravity_system_prompt(request: dict) -> dict:
         return request
     inject = await get_antigravity_system_prompt_enabled()
     as_user = await get_antigravity_system_as_user_enabled()
-    if not inject and not as_user:
-        return request
-
     result = _PreparedRequest(request)
+    original_instruction = request.get("systemInstruction")
+    if original_instruction is None:
+        original_instruction = request.get("system_instructions")
+    result.fusion_instruction = deepcopy(original_instruction)
+    result.fusion_moved_guidance = False
+    if not inject and not as_user:
+        return result
     instruction = result.get('systemInstruction')
     if instruction is None:
         instruction = result.get('system_instructions')
@@ -57,6 +64,7 @@ async def prepare_antigravity_system_prompt(request: dict) -> dict:
 
     if as_user:
         if nonempty_parts:
+            result.fusion_moved_guidance = True
             result['contents'] = [
                 {'role': 'user', 'parts': [{'text': GUIDANCE}, *nonempty_parts]},
                 *(result.get('contents') or []),

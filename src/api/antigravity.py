@@ -305,6 +305,8 @@ async def wrap_cli_request(
     user_email: Optional[str] = None,
     credential_key: Optional[str] = None,
     credential_data: Optional[Dict[str, Any]] = None,
+    *,
+    skip_prompt_fusion: bool = False,
 ) -> Tuple[Dict[str, Any], str]:
     """
     将 Gemini 格式请求包装成 Antigravity hub 格式（对齐 2.28.2 实抓信封）。
@@ -314,6 +316,9 @@ async def wrap_cli_request(
     其他邮箱（如企业/教育账号）改用 jetski 指纹（对齐 Antigravity-Manager）。
     credential_key 用于派生账号级稳定 sessionId 和按账号刷新模型目录。
     """
+    if not skip_prompt_fusion and credential_key and credential_data and not is_antigravity_image_request(model, gemini_request):
+        from src.prompt_fusion import fuse_request
+        gemini_request = await fuse_request(gemini_request, model, credential_key, credential_data)
     inner = dict(gemini_request)
 
     # 移除 safetySettings（CLI 不发送）

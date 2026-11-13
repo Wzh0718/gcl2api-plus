@@ -207,12 +207,12 @@ class ApiKeyService:
         if value is None:
             return ""
         if not isinstance(value, str):
-            raise ValueError("Claude 账号必须是凭证文件名")
+            raise ValueError("绑定账号必须是凭证文件名")
         name = value.strip()
         if len(name) > 255 or any(c in name for c in ("/", "\\", "\x00")) or name in (".", ".."):
-            raise ValueError("Claude 账号必须是有效凭证文件名，不能包含路径")
+            raise ValueError("绑定账号必须是有效凭证文件名，不能包含路径")
         if name and await self.storage.get_credential(name, mode="antigravity") is None:
-            raise ValueError("Claude 账号不存在，请选择已导入的 Antigravity 凭证")
+            raise ValueError("绑定账号不存在，请选择已导入的 Antigravity 账号")
         return name
 
     async def create_key(

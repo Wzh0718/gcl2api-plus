@@ -1,0 +1,125 @@
+/* Shared by the desktop and mobile control panels. */
+#configForm:not(.hidden) {
+    display: block;
+}
+
+.config-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    margin-bottom: 16px;
+    padding: 12px 0;
+    background: var(--ui-surface, #fff);
+    border-bottom: 1px solid var(--ui-border, #dbe3ed);
+}
+
+.config-category-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.config-category-tab {
+    flex: 0 0 auto;
+    min-height: 40px;
+    margin: 0;
+    padding: 8px 14px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ui-muted, #5f6b7d);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.config-category-tab:hover {
+    background: var(--ui-surface-hover, #edf2f8);
+}
+
+.config-category-tab[aria-selected="true"] {
+    border-color: var(--ui-accent, #2764ce);
+    background: var(--ui-accent-soft, #eaf1ff);
+    color: var(--ui-accent-strong, #1c4fa9);
+    font-weight: 600;
+}
+
+.config-category-tab:focus-visible,
+.config-category-panel:focus-visible {
+    outline: 2px solid var(--ui-accent, #2764ce);
+    outline-offset: 2px;
+}
+
+.config-toolbar-footer,
+.config-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.config-toolbar-footer {
+    justify-content: space-between;
+    margin-top: 12px;
+}
+
+.config-tabs-note {
+    color: var(--ui-muted, #5f6b7d);
+    font-size: 12px;
+}
+
+.config-toolbar-actions {
+    flex-shrink: 0;
+}
+
+.config-toolbar-actions .btn {
+    width: auto;
+    white-space: nowrap;
+}
+
+.config-category-panel {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 16px;
+    min-width: 0;
+}
+
+.config-category-panel[hidden] {
+    display: none;
+}
+
+.config-category-panel > .card {
+    min-width: 0;
+    margin: 0;
+}
+
+.config-category-panel .proxy-group-list {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+#requestCaptureSettings,
+#config-panel-general > :last-child {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 1100px) {
+    .config-category-panel {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    .config-category-tab {
+        flex: 1 0 auto;
+        padding: 8px 10px;
+    }
+
+    .config-toolbar-footer {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .config-toolbar-actions {
+        align-self: flex-end;
+    }
+}

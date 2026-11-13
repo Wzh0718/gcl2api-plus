@@ -192,12 +192,10 @@ class CredentialManager:
         if mode == "antigravity" and (
             image_request or "image" in (model_name or "").lower()
         ):
-            if pinned:
-                return None  # A Claude request cannot escape its account via image fallback.
-
             return await self._get_valid_antigravity_image_credential(
                 model_name=model_name or "",
                 exclude_filenames=exclude_filenames,
+                credential_name=pinned,
             )
 
         selection_options = {"credential_name": pinned} if pinned else {}
@@ -296,6 +294,7 @@ class CredentialManager:
         *,
         model_name: str,
         exclude_filenames: Optional[Set[str]] = None,
+        credential_name: Optional[str] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Reserve one image task slot, waiting when every candidate is busy."""
         attempted_filenames = set(exclude_filenames or set())
@@ -312,7 +311,8 @@ class CredentialManager:
                 if filename in active_filenames
             }
             ranked = rank_antigravity_image_candidates(
-                states,
+                {name: state for name, state in states.items() if name == credential_name}
+                if credential_name else states,
                 model_name=model_name,
                 runtime_health=self._image_runtime_health,
                 excluded_filenames=attempted_filenames,

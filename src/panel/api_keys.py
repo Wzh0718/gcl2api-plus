@@ -71,6 +71,21 @@ async def list_api_keys(
         raise _unexpected(exc) from exc
 
 
+@router.get("/accounts")
+async def list_binding_accounts(_token: str = Depends(verify_panel_token)):
+    """List account choices without exposing credential tokens or proxy settings."""
+    try:
+        states = await (await get_storage_adapter()).get_all_credential_states(mode="antigravity")
+        items = [
+            {"filename": filename, "email": state.get("user_email") or "",
+             "disabled": bool(state.get("disabled"))}
+            for filename, state in sorted(states.items())
+        ]
+        return JSONResponse({"items": items}, headers={"Cache-Control": "no-store"})
+    except Exception as exc:
+        raise _unexpected(exc) from exc
+
+
 @router.get("/{api_key_id}")
 async def get_api_key(api_key_id: str, _token: str = Depends(verify_panel_token)):
     try:

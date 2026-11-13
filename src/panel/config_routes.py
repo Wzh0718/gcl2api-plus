@@ -63,6 +63,9 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_system_prompt_enabled"] = await config.get_antigravity_system_prompt_enabled()
         current_config["antigravity_system_as_user_enabled"] = await config.get_antigravity_system_as_user_enabled()
 
+        current_config["prompt_fusion_enabled"] = await config.get_config_value("prompt_fusion_enabled", False)
+        current_config["prompt_fusion_accounts"] = await config.get_config_value("prompt_fusion_accounts", {})
+
         # 兼容性配置
         current_config["compatibility_mode_enabled"] = await config.get_compatibility_mode_enabled()
 
@@ -161,6 +164,12 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                     new_config[key] = validate_capture_value(key, new_config[key])
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from exc
+
+        from src.prompt_fusion import validate_settings
+        try:
+            validate_settings(new_config)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
         log.debug(f"收到的password值: {new_config.get('password', 'NOT_FOUND')}")

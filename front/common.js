@@ -86,6 +86,7 @@ const AppState = {
     // 下游密钥分发
     apiKeyItems: [],
     apiKeysLoading: false,
+    apiKeyAccounts: null,
 
     // 冷却倒计时
     cooldownTimerInterval: null
@@ -1992,6 +1993,42 @@ function updateBillingKeyFilter(items = AppState.apiKeyItems) {
     syncBillingQuotaPeriodControl();
 }
 
+function apiKeyAccountOptions(selected = '') {
+    const accounts = AppState.apiKeyAccounts || [];
+    const options = [`<option value=""${selected ? '' : ' selected'}>不绑定，使用凭证池</option>`];
+    if (selected && !accounts.some(account => account.filename === selected)) {
+        const status = AppState.apiKeyAccounts === null ? '当前绑定' : '已删除';
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}（${status}）</option>`);
+    }
+    accounts.forEach(account => {
+        const label = `${account.email || account.filename}${account.email ? ` · ${account.filename}` : ''}${account.disabled ? '（已停用）' : ''}`;
+        options.push(`<option value="${escapeHtml(account.filename)}"${account.filename === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
+    });
+    return options.join('');
+}
+
+async function loadApiKeyAccounts() {
+    let error = '';
+    try {
+        const response = await fetch('./api-keys/accounts', { headers: getAuthHeaders() });
+        const data = await readJsonResponse(response, '加载账号列表失败');
+        AppState.apiKeyAccounts = data.items || [];
+    } catch (err) {
+        AppState.apiKeyAccounts = null;
+        error = err.message;
+    }
+    const select = document.getElementById('apiKeyCreateClaudeCredential');
+    if (select) {
+        const selected = select.value;
+        select.innerHTML = apiKeyAccountOptions(selected);
+        select.disabled = AppState.apiKeyAccounts === null;
+    }
+    const status = document.getElementById('apiKeyAccountStatus');
+    if (status) {
+        status.textContent = error ? `账号列表加载失败：${error}；请点击刷新重试。` : 'Gemini / Claude 共用所选账号。';
+    }
+}
+
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
     if (!list) return;
@@ -2033,7 +2070,7 @@ function renderApiKeys(items) {
                 <label>金额额度（${escapeHtml(item.currency)}）<input data-field="quota_amount" type="number" min="0" step="0.01" value="${quotaAmount === null ? '' : escapeHtml(quotaAmount)}" placeholder="留空为不限额"></label>
                 <label>重置方式<select data-field="reset_mode"><option value="manual"${item.reset_mode === 'manual' ? ' selected' : ''}>手动重置</option><option value="monthly"${item.reset_mode === 'monthly' ? ' selected' : ''}>每月重置</option></select></label>
                 <label>到期时间<input data-field="expires_at" type="datetime-local" value="${escapeHtml(apiKeyDateInputValue(item.expires_at))}"></label>
-                <label>Claude 固定账号<input data-field="claude_credential_name" type="text" maxlength="255" value="${escapeHtml(item.claude_credential_name || '')}" placeholder="凭证文件名，如 ag_xxx.json；留空使用凭证池"><small>仅此 Key 的 Claude 请求使用该账号；不可用时不自动换号。</small></label>
+                <label>绑定账号<select data-field="claude_credential_name"${AppState.apiKeyAccounts === null ? ' disabled' : ''}>${apiKeyAccountOptions(item.claude_credential_name || '')}</select><small>Gemini / Claude 共用此账号；不可用时不自动换号。</small></label>
             </div>
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
@@ -2052,8 +2089,11 @@ async function loadApiKeys({ silent = false } = {}) {
     const list = document.getElementById('apiKeyList');
     if (list && !silent) list.innerHTML = '<div class="api-key-empty">正在加载密钥…</div>';
     try {
-        const response = await fetch('./api-keys?page_size=100', { headers: getAuthHeaders() });
-        const data = await readJsonResponse(response, '加载密钥失败');
+        const [data] = await Promise.all([
+            fetch('./api-keys?page_size=100', { headers: getAuthHeaders() })
+                .then(response => readJsonResponse(response, '加载密钥失败')),
+            loadApiKeyAccounts()
+        ]);
         AppState.apiKeyItems = data.items || [];
         renderApiKeys(AppState.apiKeyItems);
         updateBillingKeyFilter();
@@ -5668,6 +5708,35 @@ async function resetCliVersion() {
     }
 }
 
+function switchConfigTab(category, focus = false) {
+    const section = document.getElementById('configSection');
+    const target = document.getElementById(`config-tab-${category}`);
+    if (!section || !target || !section.contains(target)) return;
+
+    section.querySelectorAll('.config-category-tab').forEach(tab => {
+        const selected = tab === target;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+    });
+    if (focus) target.focus({ preventScroll: true });
+    // Return to the category navigation even when switching from a long panel.
+    section.scrollIntoView({ block: 'start' });
+}
+
+function handleConfigTabKeydown(event) {
+    const tabs = [...event.currentTarget.parentElement.querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(event.currentTarget);
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    switchConfigTab(tabs[next].id.replace('config-tab-', ''), true);
+}
+
 async function loadConfig() {
     const loading = document.getElementById('configLoading');
     const form = document.getElementById('configForm');
@@ -5698,8 +5767,61 @@ async function loadConfig() {
     }
 }
 
+let promptFusionAccountOverrides = {};
+let promptFusionAccountLoadId = 0;
+
+async function loadPromptFusionAccounts() {
+    const select = document.getElementById('promptFusionAccount');
+    if (!select) return;
+    const loadId = ++promptFusionAccountLoadId;
+    const selected = select.value;
+    select.disabled = true;
+    document.getElementById('promptFusionAccountMode').disabled = true;
+    try {
+        const response = await fetch('./api-keys/accounts', { headers: getAuthHeaders() });
+        const data = await readJsonResponse(response, '加载账号失败');
+        if (loadId !== promptFusionAccountLoadId) return;
+        const accounts = new Map((data.items || []).map(a => [a.filename, a]));
+        for (const name of Object.keys(promptFusionAccountOverrides)) {
+            if (!accounts.has(name)) accounts.set(name, { filename: name, missing: true });
+        }
+        select.replaceChildren();
+        for (const [name, account] of accounts) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = `${account.email || name}${account.email ? ` · ${name}` : ''}${account.missing ? '（已删除）' : account.disabled ? '（已停用）' : ''}`;
+            select.append(option);
+        }
+        if (accounts.has(selected)) select.value = selected;
+        select.disabled = !accounts.size;
+        showPromptFusionAccountMode();
+        document.getElementById('promptFusionAccountStatus').textContent = accounts.size ? '账号设置优先于全局开关；修改后点击保存更改。' : '暂无账号，请先导入账号。';
+    } catch (error) {
+        if (loadId !== promptFusionAccountLoadId) return;
+        document.getElementById('promptFusionAccountStatus').textContent = `账号列表加载失败，原设置保留：${error.message}`;
+    }
+}
+
+function showPromptFusionAccountMode() {
+    const select = document.getElementById('promptFusionAccount');
+    const mode = document.getElementById('promptFusionAccountMode');
+    mode.disabled = select.disabled || !select.value;
+    mode.value = promptFusionAccountOverrides[select.value] || 'inherit';
+}
+
+function changePromptFusionAccountMode() {
+    const name = document.getElementById('promptFusionAccount').value;
+    const mode = document.getElementById('promptFusionAccountMode').value;
+    if (!name) return;
+    if (mode === 'inherit') delete promptFusionAccountOverrides[name];
+    else promptFusionAccountOverrides[name] = mode;
+}
+
 function populateConfigForm() {
     const c = AppState.currentConfig;
+    document.getElementById('promptFusionEnabled').checked = c.prompt_fusion_enabled === true;
+    promptFusionAccountOverrides = { ...(c.prompt_fusion_accounts || {}) };
+    loadPromptFusionAccounts();
 
     setConfigField('host', c.host || '0.0.0.0');
     setConfigField('port', c.port || 7861);
@@ -5937,6 +6059,8 @@ async function saveConfig() {
             system_prompt_append: document.getElementById('systemPromptAppend')?.value ?? '',
             antigravity_system_prompt_enabled: document.getElementById('antigravitySystemPromptEnabled').checked,
             antigravity_system_as_user_enabled: document.getElementById('antigravitySystemAsUserEnabled').checked,
+            prompt_fusion_enabled: document.getElementById('promptFusionEnabled').checked,
+            prompt_fusion_accounts: { ...promptFusionAccountOverrides },
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
             sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
             keepalive_url: getValue('keepaliveUrl'),

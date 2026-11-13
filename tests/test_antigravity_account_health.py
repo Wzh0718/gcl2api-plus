@@ -1500,6 +1500,7 @@ class AntigravityQuotaProjectTests(unittest.IsolatedAsyncioTestCase):
                 return_value=None,
             ),
             patch.object(creds_panel, "fetch_quota_info", quota_mock),
+            patch.object(creds_panel, "fetch_paid_tier_info", AsyncMock(return_value=None)),
         ):
             response = await creds_panel.get_credential_quota(
                 "account.json",
@@ -1569,6 +1570,7 @@ class AntigravityQuotaProjectTests(unittest.IsolatedAsyncioTestCase):
                 return_value=None,
             ),
             patch.object(creds_panel, "fetch_quota_info", quota_mock),
+            patch.object(creds_panel, "fetch_paid_tier_info", AsyncMock(return_value=None)),
         ):
             response = await creds_panel.get_credential_quota(
                 "account.json",

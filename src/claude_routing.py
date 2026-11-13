@@ -1,4 +1,7 @@
-"""Request-scoped Claude account routing for managed Antigravity API keys."""
+"""Request-scoped account routing for managed Antigravity API keys.
+
+The legacy Claude names remain compatible with existing stored key bindings.
+"""
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -15,6 +18,11 @@ class ClaudeRoute:
 _route: ContextVar[ClaudeRoute | None] = ContextVar('claude_account_route', default=None)
 
 
+def current_api_key_id() -> str:
+    route = _route.get()
+    return route.api_key_id if route else 'env'
+
+
 def bound_claude_credential() -> str | None:
     route = _route.get()
     return route.credential_name if route else None
@@ -25,7 +33,7 @@ async def _load_route(api_key_id, model):
     if existing is not None and existing.api_key_id == api_key_id:
         return existing
     credential = None
-    if api_key_id != 'env' and 'claude' in str(model).lower():
+    if api_key_id != 'env':
         from src.storage_adapter import get_storage_adapter
         from fastapi import HTTPException
         record = await (await get_storage_adapter()).get_api_key_record(api_key_id)

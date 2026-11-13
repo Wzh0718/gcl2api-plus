@@ -130,6 +130,7 @@ run_quality_gates() {
             tests/test_request_capture.py \
             tests/test_request_capture_panel.py \
             tests/test_antigravity_system_prompt.py \
+            tests/test_prompt_fusion.py \
             tests/test_gateway_openai_compat.py \
             tests/test_claude_account_binding.py -q
 

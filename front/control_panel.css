@@ -1072,7 +1072,7 @@ textarea:disabled,
 
 /* API keys */
 .api-key-create {
-    grid-template-columns: minmax(170px, 1.2fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) minmax(180px, 1fr) auto;
+    grid-template-columns: minmax(170px, 1.2fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) minmax(180px, 1fr) minmax(180px, 1.2fr);
     margin: 0 0 18px;
     padding: 15px;
     border: 1px solid var(--ui-border);

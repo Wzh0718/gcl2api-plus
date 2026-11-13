@@ -7,6 +7,10 @@ import pytest_asyncio
 from src.api_keys import ApiKeyService
 from src.credential_manager import CredentialManager
 from src.storage_adapter import StorageAdapter
+# Import consumers before replacing the factory so lazy imports cannot retain a
+# test adapter after its fixture closes.
+from src.panel import api_keys as panel_api_keys
+import src.antigravity_dynamic_warmup
 
 
 @pytest_asyncio.fixture
@@ -52,7 +56,7 @@ async def test_invalid_or_unknown_account_cannot_be_saved(setup, value):
         await service.create_key(name='invalid', claude_credential_name=value)
 
 
-async def test_two_keys_are_isolated_and_gemini_still_uses_pool(setup):
+async def test_two_keys_are_isolated_for_claude_and_gemini(setup):
     from src.claude_routing import claude_route_scope
     _, service, manager = setup
     first = await service.create_key(name='user-a', claude_credential_name='a.json')
@@ -69,22 +73,27 @@ async def test_two_keys_are_isolated_and_gemini_still_uses_pool(setup):
     await asyncio.gather(select(first['item']['id'], 'a.json'), select(second['item']['id'], 'b.json'))
     async with claude_route_scope(first['item']['id'], 'gemini-2.5-flash'):
         results = [await manager.get_valid_credential(mode='antigravity', model_name='gemini-2.5-flash') for _ in range(4)]
+        assert [r[0] for r in results] == ['a.json'] * 4
+    unbound = (await service.create_key(name='pool'))['item']['id']
+    async with claude_route_scope(unbound, 'gemini-2.5-flash'):
+        results = [await manager.get_valid_credential(mode='antigravity', model_name='gemini-2.5-flash') for _ in range(4)]
         assert {r[0] for r in results} == {'a.json', 'b.json'}
 
 
+@pytest.mark.parametrize('model', ['claude-sonnet-4-6', 'gemini-2.5-flash', 'gemini-3.1-flash-image'])
 @pytest.mark.parametrize('reason', ['disabled', 'cooldown', 'excluded', 'deleted', 'health'])
-async def test_bound_account_unavailable_never_uses_other_account(setup, reason):
+async def test_bound_account_unavailable_never_uses_other_account(setup, reason, model):
     from src.claude_routing import claude_route_scope
     adapter, service, manager = setup
     key = (await service.create_key(name='bound', claude_credential_name='a.json'))['item']['id']
     if reason == 'disabled':await adapter.update_credential_state('a.json', {'disabled': True}, mode='antigravity')
     if reason == 'cooldown':
         import time
-        await adapter._backend.set_model_cooldown('a.json', 'claude-sonnet-4-6', time.time()+3600, mode='antigravity')
+        await adapter._backend.set_model_cooldown('a.json', model, time.time()+3600, mode='antigravity')
     if reason == 'deleted':await adapter.delete_credential('a.json', mode='antigravity')
     if reason == 'health':manager.ensure_antigravity_account_ready = AsyncMock(return_value=None)
-    async with claude_route_scope(key, 'claude-sonnet-4-6'):
-        result = await manager.get_valid_credential(mode='antigravity', model_name='claude-sonnet-4-6',
+    async with claude_route_scope(key, model):
+        result = await manager.get_valid_credential(mode='antigravity', model_name=model,
                                                   exclude_filenames={'a.json'} if reason == 'excluded' else None)
         assert result is None
 
@@ -128,7 +137,7 @@ async def test_stream_binding_survives_task_handoff_and_cancellation(setup):
 
 
 @pytest.mark.parametrize('stream', [False, True])
-@pytest.mark.parametrize('model', ['claude-sonnet-4-6', 'claude-haiku-4-5'])
+@pytest.mark.parametrize('model', ['claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-2.5-flash'])
 async def test_openai_route_keeps_bound_account_through_public_api(setup, monkeypatch, stream, model):
     import json
     from types import SimpleNamespace
@@ -168,3 +177,37 @@ async def test_old_database_migrates_binding_column_with_empty_default(setup):
         assert (await fresh.get_api_key_record(key))['claude_credential_name'] == ''
     finally:
         await fresh.close()
+
+
+async def test_gemini_image_request_keeps_account_binding_and_lease(setup):
+    from src.claude_routing import claude_route_scope
+    _, service, manager = setup
+    key = (await service.create_key(name='image', claude_credential_name='b.json'))['item']['id']
+    async with claude_route_scope(key, 'gemini-3.1-flash-image'):
+        for _ in range(2):
+            result = await manager.get_valid_credential(mode='antigravity', model_name='gemini-3.1-flash-image')
+            assert result[0] == 'b.json'
+            assert result[1]['_image_lease_id']
+            await manager.release_image_credential(result[0], result[1]['_image_lease_id'])
+        assert await manager.get_valid_credential(mode='antigravity', model_name='gemini-3.1-flash-image', exclude_filenames={'b.json'}) is None
+
+
+async def test_account_choices_require_panel_auth_and_only_return_metadata(setup, monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    panel = panel_api_keys
+    adapter, _, _ = setup
+    await adapter.update_credential_state('a.json', {'user_email': 'a@example.test', 'disabled': True}, mode='antigravity')
+    monkeypatch.setattr(panel, 'get_storage_adapter', AsyncMock(return_value=adapter))
+    app = FastAPI()
+    app.include_router(panel.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        assert (await client.get('/api-keys/accounts')).status_code in (401, 403, 422)
+        app.dependency_overrides[panel.verify_panel_token] = lambda: 'ok'
+        response = await client.get('/api-keys/accounts')
+        assert response.status_code == 200
+        assert response.headers['cache-control'] == 'no-store'
+        assert response.json()['items'] == [
+            {'filename': 'a.json', 'email': 'a@example.test', 'disabled': True},
+            {'filename': 'b.json', 'email': '', 'disabled': False},
+        ]
