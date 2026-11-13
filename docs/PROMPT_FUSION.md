@@ -43,3 +43,9 @@
 账号/全局配置存储键为 `prompt_fusion_enabled`（布尔）与 `prompt_fusion_accounts`（凭证文件名到 `inherit/on/off` 的映射），通过已认证的 `/config/get`、`/config/save` 管理。
 
 Key 策略存于 `api_keys.prompt_fusion_mode`、`api_keys.allowed_model`，通过原有已认证的 Key 创建/编辑接口管理；`/api-keys/models` 提供不触发上游调用的模型目录。
+
+### 完整工具与后续步骤缓存（2026-11-13）
+
+Claude 的 AGY 请求保留每一项 `functionDeclarations`，逐项转换为 `parameters`，兼容 snake_case 分组与 custom input_schema。Schema 清洗仅把当前递归路径视为循环，重复引用不会因对象分配/兄弟节点复用而丢失。
+
+融合缓存不包含对话历史或工具执行结果。同一 Key、账号、模型、提示词、工具定义与策略的后续步骤复用首步结果；工具权限/参数、提示词、账号或模型变化仍重新融合。缓存版本升至 3，旧的残缺工具优化结果不再命中。新增四个模型的 250 工具多步回归，优化器用 mock 验证只调用一次；这不等同于新的线上模型效果测试。

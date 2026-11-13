@@ -15,7 +15,7 @@ from log import log
 from src.converter.antigravity_system_prompt import baseline_prompt, BRIDGE
 
 TTL = 86400
-VERSION = '2'
+VERSION = '3'
 MAX_INPUT_BYTES = 300 * 1024
 MAX_OUTPUT_BYTES = 128 * 1024
 MAX_ENTRIES = 128

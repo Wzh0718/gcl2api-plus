@@ -626,7 +626,7 @@ def _clean_schema_for_parameters_json_schema(
     schema_id = id(schema)
     if schema_id in visited:
         return {"type": "object", "description": "(circular reference)"}
-    visited.add(schema_id)
+    visited = visited | {schema_id}
 
     result: Dict[str, Any]
 
@@ -634,6 +634,9 @@ def _clean_schema_for_parameters_json_schema(
     if ref_key:
         resolved = _resolve_ref(schema[ref_key], root_schema)
         if resolved:
+            if id(resolved) in visited:
+                return {"type": "object", "description": "circular reference"}
+            visited = visited | {id(resolved)}
             import copy
             result = copy.deepcopy(resolved)
             for key in ("description", "default"):

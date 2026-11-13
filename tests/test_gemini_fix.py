@@ -224,3 +224,42 @@ def test_map_antigravity_gemini_model_minimal_keyword_and_search_combo():
     assert map_antigravity_gemini_model("gemini-3.5-flash-minimal", None, None) == "gemini-3.5-flash-extra-low"
     assert map_antigravity_gemini_model("gemini-3.8-flash-high-search", None, None) == "gemini-3.8-flash-high"
     assert map_antigravity_gemini_model("假流式/gemini-3.8-flash-high", None, None) == "gemini-3.8-flash-high"
+
+
+def test_claude_preserves_all_declarations_and_builtin_groups():
+    from copy import deepcopy
+    for key in ('functionDeclarations', 'function_declarations'):
+        tools = [{key: [
+            {'name': f'tool_{i}', 'description': f'Tool {i}',
+             'parametersJsonSchema': {'type': 'object', 'properties': {'value': {'type': 'string'}}}}
+            for i in range(250)]}, {'googleSearch': {}},
+            {'custom': {'name': 'custom_tool', 'input_schema': {'type': 'object'}}}]
+        original = deepcopy(tools)
+        for model in ('claude-opus-5-5-medium', 'claude-sonnet-5-5-medium'):
+            result = _ensure_empty_tool_schema_for_claude(tools, model, 'antigravity')
+            declarations = result[0]['functionDeclarations']
+            assert [d['name'] for d in declarations] == [f'tool_{i}' for i in range(250)]
+            assert all(d['parameters']['properties']['value']['type'] == 'string' for d in declarations)
+            assert all('parametersJsonSchema' not in d for d in declarations)
+            assert result[1] == {'googleSearch': {}}
+            assert result[2]['functionDeclarations'][0]['name'] == 'custom_tool'
+        assert tools == original
+
+
+def test_schema_shared_siblings_and_references_are_not_cycles():
+    import json
+    for clean in (_clean_parameters_json_schema, _clean_schema_for_parameters_json_schema):
+        shared = {'type': 'string', 'minLength': 1}
+        schema = {'type': 'object', 'properties': {'first': shared, 'second': shared}}
+        result = clean(schema)
+        assert result['properties']['first'] == result['properties']['second']
+        assert result == clean(json.loads(json.dumps(schema)))
+        refs = {'$defs': {'item': {'type': 'object', 'properties': {'value': shared}}},
+                'type': 'object', 'properties': {f'p{i}': {'$ref': '#/$defs/item'} for i in range(250)}}
+        expected = clean(refs)
+        assert all(v == expected['properties']['p0'] for v in expected['properties'].values())
+        for _ in range(10):
+            assert clean(json.loads(json.dumps(refs))) == expected
+        recursive = {'$defs': {'node': {'type': 'object', 'properties': {'next': {'$ref': '#/$defs/node'}}}},
+                     '$ref': '#/$defs/node'}
+        assert 'circular reference' in json.dumps(clean(recursive))

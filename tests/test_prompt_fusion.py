@@ -285,3 +285,35 @@ async def test_actual_wrapper_respects_account_and_internal_bypass(monkeypatch):
         assert payload['request']['contents'] == raw['contents']
         assert 'fusion_instruction' not in json.dumps(payload)
     assert mock.await_count == 1
+
+
+@pytest.mark.parametrize('model', ['claude-opus-5-5-medium', 'claude-sonnet-5-5-medium',
+                                 'gemini-4-hydrogen-medium', 'gemini-4-argon-medium'])
+async def test_full_tools_followup_reuses_first_fusion(monkeypatch, model):
+    from src.converter.openai2gemini import convert_openai_tools_to_gemini
+    from src.converter.gemini_fix import _normalize_tools_for_internal_api, _ensure_empty_tool_schema_for_claude
+    generate = AsyncMock(return_value='Preserve all client tool permissions.')
+    monkeypatch.setattr(fusion, '_generate', generate)
+    tools = [{'type': 'function', 'function': {'name': f'tool_{i}', 'parameters': {
+        '$defs': {'value': {'type': 'object', 'properties': {'text': {'type': 'string'}}}},
+        'type': 'object', 'properties': {f'p{j}': {'$ref': '#/$defs/value'} for j in range(4)}
+    }}} for i in range(250)]
+    async def step(raw_tools, followup=False):
+        raw = request()
+        raw['tools'] = _ensure_empty_tool_schema_for_claude(_normalize_tools_for_internal_api(
+            convert_openai_tools_to_gemini(raw_tools, model)), model, 'antigravity')
+        if followup:
+            raw['contents'].append({'role': 'user', 'parts': [{'functionResponse': {
+                'name': 'tool_249', 'response': {'result': 'done'}}}]})
+        result = await fusion.fuse_request(raw, model, 'a', {})
+        assert len(result['tools'][0]['functionDeclarations']) == 250
+        assert result['contents'] == raw['contents']
+        return result
+    first = await step(tools)
+    second = await step(json.loads(json.dumps(tools)), True)
+    assert first['systemInstruction'] == second['systemInstruction']
+    assert generate.await_count == 1
+    changed = deepcopy(tools)
+    changed[-1]['function']['parameters']['properties']['new_argument'] = {'type': 'integer'}
+    await step(changed, True)
+    assert generate.await_count == 2

@@ -77,12 +77,15 @@ def _clean_parameters_json_schema(
     schema_id = id(schema)
     if schema_id in visited:
         return {"type": "object", "description": "circular reference"}
-    visited.add(schema_id)
+    visited = visited | {schema_id}
 
     ref_key = "$ref" if "$ref" in schema else ("ref" if "ref" in schema else None)
     if ref_key:
         resolved = _resolve_schema_ref(schema[ref_key], root_schema)
         if resolved:
+            if id(resolved) in visited:
+                return {"type": "object", "description": "circular reference"}
+            visited = visited | {id(resolved)}
             merged = dict(resolved)
             for key in ("description", "default"):
                 if key in schema:
@@ -306,40 +309,36 @@ def _ensure_empty_tool_schema_for_claude(tools: Any, model_name: str, mode: str 
                 normalized_tools.append(tool)
                 continue
 
-            normalized_tool = tool.copy()
-
-            schema = {"type": "object", "properties": {}}
-            name = ""
-            description = ""
-
-            # Extract schema from either format
-            custom_tool = normalized_tool.get("custom")
-            if isinstance(custom_tool, dict):
-                schema = custom_tool.get("input_schema") or custom_tool.get("inputSchema") or schema
-                name = custom_tool.get("name", "")
-                description = custom_tool.get("description", "")
-            else:
-                declarations = normalized_tool.get("functionDeclarations") or normalized_tool.get("function_declarations")
-                if isinstance(declarations, list) and declarations and isinstance(declarations[0], dict):
-                    decl = declarations[0]
-                    schema = (
-                        decl.get("parametersJsonSchema") or
-                        decl.get("parameters_json_schema") or
-                        decl.get("parameters") or schema
-                    )
-                    name = decl.get("name", "")
-                    description = decl.get("description", "")
-
-            # For ALL Claude models, try outputting functionDeclarations with parameters!
-            # If Google's backend expects parameters to translate to input_schema, this will fix the Field required error.
-            # custom input_schema 未经清洗，统一过一遍，避免 Google 前端因未知 schema 关键字报 400
-            normalized_tools.append({
-                "functionDeclarations": [{
-                    "name": name,
-                    "description": description,
-                    "parameters": _clean_parameters_json_schema(schema)
+            custom = tool.get("custom")
+            if isinstance(custom, dict):
+                declarations = [{
+                    "name": custom.get("name", ""),
+                    "description": custom.get("description", ""),
+                    "parameters": custom.get("input_schema") or custom.get("inputSchema"),
                 }]
-            })
+                group = {}
+            else:
+                declarations = tool.get("functionDeclarations", tool.get("function_declarations"))
+                if not isinstance(declarations, list):
+                    normalized_tools.append(tool.copy())
+                    continue
+                group = {k: v for k, v in tool.items()
+                         if k not in ("functionDeclarations", "function_declarations")}
+            cleaned = []
+            for declaration in declarations:
+                if not isinstance(declaration, dict):
+                    cleaned.append(declaration)
+                    continue
+                decl = declaration.copy()
+                schema = (decl.pop("parametersJsonSchema", None)
+                          or decl.pop("parameters_json_schema", None)
+                          or decl.get("parameters")
+                          or {"type": "object", "properties": {}})
+                decl.pop("parameters_json_schema", None)
+                decl["parameters"] = _clean_parameters_json_schema(schema)
+                cleaned.append(decl)
+            group["functionDeclarations"] = cleaned
+            normalized_tools.append(group)
 
         return normalized_tools
 
