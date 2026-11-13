@@ -76,3 +76,12 @@ Sonnet 首次优化约 13.28 秒，原客户端指导 9426 字符、优化结果
 - 四个模型各模拟 3 步，仅调用 mock 优化器 1 次；工具参数变化会重新融合。缓存版本升为 3，旧缓存不再命中。
 - 本地全量：1108 passed；CI：1102 passed、6 skipped。compileall、JS 语法、diff 检查通过。
 - 本轮无新增线上模型生成测试。以上证明转换与缓存逻辑，不代表完整工具的线上选择/执行能力已重新验收。
+
+## Sonnet 5.5 修复后单条线上复测（用户明确授权）
+
+- 模型 `claude-sonnet-5-5-medium`；仅运行一条 dsh 任务，自然执行两步，整体耗时 42.44 秒。
+- 优化调用 `5163693`：HTTP 200，18.138 秒。首步主调用 `5163725`：HTTP 200，23.958 秒（包含首次融合等待）；第二步主调用 `5163739`：HTTP 200，2.941 秒。仅一次 `prompt_optimization`。
+- 两步融合结果命中同一缓存键 `fd65c2d99bd00cdf746ce64ec737bb8515d7da8e5ed23888db3657bf5e21b73c`；最终 system 哈希相同，AGY baseline 保留，原客户端 guidance 9426 字符融合为 6089 字符。
+- 两步实际上游 tools 均为 420690 字节，SHA256 `59c56c2f757059cf2449af3ecc86e7154b9ef38cd5c5c7139ec5526e3d8d5509`，与本地真实 dsh 250 工具转换结果逐字节摘要一致。features 中 upstream tool_count=1 统计的是工具分组数，不能视为 functionDeclarations 数量；normal 捕获因大小限制截断，亦不以其数组长度计数。
+- 成功调用非首项 `read` 工具，读取 invoice.json 并得到 total=70，工具执行完成。
+- 最终回答仍先输出计算说明再输出 JSON：计算与工具链通过，严格“只输出 JSON”要求未通过。本次未再次重跑。
