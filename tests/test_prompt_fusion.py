@@ -317,3 +317,30 @@ async def test_full_tools_followup_reuses_first_fusion(monkeypatch, model):
     changed[-1]['function']['parameters']['properties']['new_argument'] = {'type': 'integer'}
     await step(changed, True)
     assert generate.await_count == 2
+
+
+def test_large_repeated_schema_structures_are_losslessly_pooled():
+    # No repeated long strings: compression must also work for objects/arrays.
+    schema = {'type': 'object', 'properties': {
+        f'arg{i}': {'type': 'string', 'enum': ['yes', 'no'], 'description': f'Argument {i}'}
+        for i in range(80)}}
+    tools = [{'functionDeclarations': [{'name': f'tool_{i}', 'parameters': deepcopy(schema)}
+                                      for i in range(250)]}]
+    original = deepcopy(tools)
+    source = fusion._source({'tools': tools, 'client_guidance': 'Keep approvals'})
+    packed = json.loads(source)
+    assert len(source.encode()) < fusion.MAX_INPUT_BYTES
+    assert packed['tool_reference_values']
+    def unpack(value):
+        if isinstance(value, dict):
+            if set(value) == {'$fusion_value'}:
+                return unpack(packed['tool_reference_values'][value['$fusion_value']])
+            if set(value) == {'$fusion_text'}:
+                return packed['tool_reference_strings'][value['$fusion_text']]
+            return {key: unpack(child) for key, child in value.items()}
+        return [unpack(child) for child in value] if isinstance(value, list) else value
+    assert unpack(packed['tools']) == original == tools
+    tools[0]['functionDeclarations'][0]['parameters']['$fusion_value'] = 0
+    collision = json.loads(fusion._source({'tools': tools}))
+    assert 'tool_reference_values' not in collision
+    assert collision['tools'] == tools

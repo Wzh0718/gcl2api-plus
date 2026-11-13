@@ -30,7 +30,9 @@ concise, non-repetitive runtime rules. Aim for at most 60% of the original clien
 guidance length when that can be done without losing requirements. Do not copy tool
 schemas or descriptions into the guidance: the runtime already sends those separately.
 In tools, an object {"$fusion_text": N} references the exact string at index N in
-tool_reference_strings; expand these references when interpreting tool descriptions.
+tool_reference_strings. An object {"$fusion_value": N} references the JSON object or
+array at index N in tool_reference_values. Expand both reference types recursively
+when interpreting tool definitions.
 Keep only the tool-specific workflow rules and exact protocol constraints needed to
 use them correctly. Merge duplicated wording and style
 rules with the supplied baseline. Remove only redundant persona statements and claims
@@ -217,8 +219,6 @@ def _source(payload):
     if collision:
         return original
     strings = sorted(text for text, count in counts.items() if count > 1)
-    if not strings:
-        return original
     indexes = {text: index for index, text in enumerate(strings)}
     def pack(value):
         if isinstance(value, str) and value in indexes:
@@ -229,7 +229,43 @@ def _source(payload):
             return [pack(child) for child in value]
         return value
     compressed = encode({**payload, 'tools': pack(payload['tools']), 'tool_reference_strings': strings})
-    return compressed if len(compressed.encode()) < len(original.encode()) else original
+    best = compressed if len(compressed.encode()) < len(original.encode()) else original
+    if len(best.encode()) <= MAX_INPUT_BYTES:
+        return best
+    # Full MCP schemas repeat large object/array structures as well as prose.
+    # Pool those losslessly too; runtime declarations are never changed.
+    packed = json.loads(best)
+    counts = Counter()
+    values = {}
+    collision = False
+    def collect_values(value):
+        nonlocal collision
+        if isinstance(value, (dict, list)):
+            if isinstance(value, dict) and '$fusion_value' in value:
+                collision = True
+            encoded = encode(value)
+            if len(encoded.encode()) >= 80:
+                counts[encoded] += 1
+                values[encoded] = value
+            for child in (value.values() if isinstance(value, dict) else value):
+                collect_values(child)
+    collect_values(packed['tools'])
+    if collision:
+        return best
+    repeated = sorted(key for key, count in counts.items() if count > 1)
+    indexes = {key: index for index, key in enumerate(repeated)}
+    def pack_values(value, root=False):
+        if isinstance(value, (dict, list)):
+            key = encode(value)
+            if not root and key in indexes:
+                return {'$fusion_value': indexes[key]}
+            if isinstance(value, dict):
+                return {k: pack_values(v) for k, v in value.items()}
+            return [pack_values(v) for v in value]
+        return value
+    result = encode({**packed, 'tools': pack_values(packed['tools']),
+                     'tool_reference_values': [pack_values(values[key], root=True) for key in repeated]})
+    return result if len(result.encode()) < len(best.encode()) else best
 
 
 async def fuse_request(request, model, account, credential):
