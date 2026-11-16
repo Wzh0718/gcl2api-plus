@@ -11,7 +11,7 @@ import math
 import random
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
@@ -94,6 +94,8 @@ class AntigravitySessionState:
     step_index: int
     created_at: float
     last_used_at: float
+    allocation_backend: str = "new_request"
+    allocation_key_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ _image_available_models_cache: Dict[str, Tuple[float, Set[str]]] = {}
 # Redis 客户端（懒初始化，REDIS_URL 存在时使用）
 _redis_client = None
 _redis_checked = False
+_redis_init_lock = asyncio.Lock()
 
 
 async def _get_redis():
@@ -132,19 +135,25 @@ async def _get_redis():
     global _redis_client, _redis_checked
     if _redis_checked:
         return _redis_client
-    _redis_checked = True
-    try:
-        client = create_redis_client_from_env(decode_responses=True)
-        if client is None:
-            return None
-        await client.ping()
-        _redis_client = client
-        log.info("[SESSION] Redis session store enabled")
-    except Exception as e:
-        log.warning(
-            f"[SESSION] Redis unavailable, falling back to in-memory: {type(e).__name__}"
-        )
-    return _redis_client
+    async with _redis_init_lock:
+        if _redis_checked:
+            return _redis_client
+        try:
+            client = create_redis_client_from_env(decode_responses=True)
+            if client is not None:
+                try:
+                    await client.ping()
+                except BaseException:
+                    await client.aclose()
+                    raise
+                _redis_client = client
+                log.info("[SESSION] Redis session store enabled")
+        except Exception as e:
+            log.warning(
+                f"[SESSION] Redis unavailable, falling back to in-memory: {type(e).__name__}"
+            )
+        _redis_checked = True
+        return _redis_client
 
 
 def _extract_first_user_text(request_payload: Dict[str, Any]) -> str:
@@ -168,21 +177,16 @@ def _session_key(
     model: str = "",
     credential_key: Optional[str] = None,
 ) -> str:
+    # sessionId is the existing explicit continuation contract. Without it,
+    # identical text is not evidence that two requests belong to one conversation.
+    from src.claude_routing import current_api_key_id
+
     session_id = request_payload.get("sessionId")
-    if session_id:
-        key = f"session:{session_id}"
-    else:
-        model_prefix = f"model:{model}:" if model else ""
-        first_user_text = _extract_first_user_text(request_payload)
-        if first_user_text:
-            digest = hashlib.sha256(first_user_text.encode("utf-8")).hexdigest()[:32]
-            key = f"{model_prefix}text:{digest}"
-        else:
-            key = f"{model_prefix}default"
-    credential_scope = hashlib.sha256(
-        (credential_key or "").encode("utf-8")
-    ).hexdigest()[:32]
-    return f"credential:{credential_scope}:{key}"
+    identity = [credential_key or "", current_api_key_id(), model, str(session_id)]
+    if not session_id:
+        return "request:" + uuid.uuid4().hex
+    digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+    return f"explicit:v2:{digest}"
 
 
 def _prune_session_states(now: float) -> None:
@@ -228,6 +232,23 @@ def _make_new_state(
     )
 
 
+# One server-side operation covers initialization, allocation and TTL renewal.
+_SESSION_ALLOCATE_LUA = """
+local raw = redis.call('GET', KEYS[1])
+local state
+if raw then
+    state = cjson.decode(raw)
+    state.step_index = state.step_index + 1
+    state.last_used_at = tonumber(ARGV[2])
+else
+    state = cjson.decode(ARGV[1])
+end
+local result = cjson.encode(state)
+redis.call('SET', KEYS[1], result, 'EX', ARGV[3])
+return result
+"""
+
+
 async def _get_session_state(
     request_payload: Dict[str, Any],
     model: str = "",
@@ -236,21 +257,23 @@ async def _get_session_state(
     now = time.time()
     key = _session_key(request_payload, model, credential_key)
     first_user_text = _extract_first_user_text(request_payload)
+    from src.operational_audit import reference
+    def allocated(state, backend):
+        return replace(state, allocation_backend=backend, allocation_key_ref=reference(key))
+
+    if not request_payload.get("sessionId"):
+        return allocated(_make_new_state(first_user_text, now, credential_key), "new_request")
 
     redis = await _get_redis()
     if redis is not None:
         redis_key = f"{_REDIS_KEY_PREFIX}{key}"
         try:
-            raw = await redis.get(redis_key)
-            if raw:
-                data = json.loads(raw)
-                state = AntigravitySessionState(**data)
-                state.step_index += 1
-                state.last_used_at = now
-            else:
-                state = _make_new_state(first_user_text, now, credential_key)
-            await redis.set(redis_key, json.dumps(state.__dict__), ex=SESSION_TTL_SECONDS)
-            return state
+            initial = _make_new_state(first_user_text, now, credential_key)
+            raw = await redis.eval(
+                _SESSION_ALLOCATE_LUA, 1, redis_key,
+                json.dumps(initial.__dict__), str(now), SESSION_TTL_SECONDS,
+            )
+            return allocated(AntigravitySessionState(**json.loads(raw)), "redis")
         except Exception as e:
             log.warning(
                 f"[SESSION] Redis error, falling back to memory: {type(e).__name__}"
@@ -262,10 +285,10 @@ async def _get_session_state(
     if state:
         state.step_index += 1
         state.last_used_at = now
-        return state
+        return allocated(state, "memory")
     state = _make_new_state(first_user_text, now, credential_key)
     _session_states[key] = state
-    return state
+    return allocated(state, "memory")
 
 
 def _generate_request_id(conversation_id: str, trajectory_id: str, step: int) -> str:
@@ -348,8 +371,9 @@ async def wrap_cli_request(
 
     if not is_image_request:
         # Agent 请求沿用 hub 会话字段；原生图片请求不携带这些字段。
-        if not inner.get("sessionId"):
-            inner["sessionId"] = state.session_id
+        # Caller sessionId selects the local conversation; the upstream sessionId
+        # identifies the account installation and must not pass through caller input.
+        inner["sessionId"] = state.session_id
         inner["labels"] = _build_labels(model, state)
 
         # generationConfig 默认值按模型目录补齐，对齐真实 agent 请求
@@ -384,7 +408,11 @@ async def wrap_cli_request(
         "userAgent": user_agent,
         "requestType": "image_gen" if is_image_request else "agent",
     }
-    bind_capture_credential(credential_key, payload, credential_data)
+    bind_capture_credential(credential_key, payload, credential_data, session_info={
+        "source": "explicit" if gemini_request.get("sessionId") else "independent_request",
+        "backend": state.allocation_backend, "key_ref": state.allocation_key_ref,
+        "step": state.step_index,
+    })
     return payload, request_id
 
 

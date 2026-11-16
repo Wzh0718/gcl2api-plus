@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
 from log import log
+from src.credential_revision import next_credential_revision, checked_state_updates
 
 
 class PSQLManager:
@@ -321,6 +322,7 @@ class PSQLManager:
         """存储或更新凭证"""
         self._ensure_initialized()
         filename = os.path.basename(filename)
+        credential_data = next_credential_revision(credential_data)
 
         try:
             table_name = self._get_table_name(mode)
@@ -359,6 +361,25 @@ class PSQLManager:
         except Exception as e:
             log.error(f"Error storing credential {filename}: {e}")
             return False
+
+    async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None):
+        self._ensure_initialized()
+        state = checked_state_updates(state_updates)
+        state.pop("preview", None)  # this backend has no preview column
+        table = self._get_table_name(mode)
+        values = [json.dumps(next_credential_revision(replacement))]
+        assignments = ["credential_data = $1", "updated_at = EXTRACT(EPOCH FROM NOW())"]
+        for field, value in state.items():
+            values.append(json.dumps(value) if isinstance(value, (dict, list)) else int(value) if isinstance(value, bool) else value)
+            assignments.append(f"{field} = ${len(values)}")
+        values.extend([os.path.basename(filename), json.dumps(dict(expected))])
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE {table} SET {', '.join(assignments)} "
+                f"WHERE filename = ${len(values)-1} AND credential_data::jsonb = ${len(values)}::jsonb",
+                *values,
+            )
+        return result == "UPDATE 1"
 
     async def get_credential(self, filename: str, mode: str = "geminicli") -> Optional[Dict[str, Any]]:
         """获取凭证数据"""

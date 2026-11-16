@@ -5,16 +5,25 @@
 import asyncio
 import inspect
 import json
+import os
+import random
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from log import log
+from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
 
 from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
 
+
+REFRESH_LEASE_TTL = 60
+REFRESH_LEASE_RENEW_INTERVAL = 15
+REFRESH_OPERATION_TIMEOUT = 45
+REFRESH_WAIT_TIMEOUT = 90
+REFRESH_FAILURE_COOLDOWN = 5
 
 IMAGE_CAPACITY_DEMOTION_SECONDS = 60
 
@@ -94,6 +103,7 @@ class CredentialManager:
 
     def __init__(self):
         # 核心状态
+        self._refresh_tasks: Dict[Tuple[str, str], asyncio.Task] = {}
         self._initialized = False
         self._storage_adapter = None
         self._image_runtime_health: Dict[str, Dict[str, Any]] = {}
@@ -117,6 +127,9 @@ class CredentialManager:
     async def close(self):
         """清理资源"""
         log.debug("Closing credential manager...")
+        # Let shielded refreshes persist their results before shutting storage down.
+        if self._refresh_tasks:
+            await asyncio.gather(*list(self._refresh_tasks.values()), return_exceptions=True)
         await self.reset_image_account_leases()
         self._initialized = False
         log.debug("Credential manager closed")
@@ -727,25 +740,8 @@ class CredentialManager:
             if not credential_data:
                 return None
 
-            # 创建凭证对象并自动刷新 token
-            from .google_oauth_api import Credentials, get_user_email
-            from .proxy_groups import proxy_argument_from_network
-
-            credentials = Credentials.from_dict(credential_data)
-            if mode == "antigravity":
-                network = await self._storage_adapter.resolve_credential_network(credential_name, mode=mode)
-                credentials.proxy_url = proxy_argument_from_network(network)
-            if not credentials:
-                return None
-
-            # 自动刷新 token（如果需要）
-            token_refreshed = await credentials.refresh_if_needed()
-
-            # 如果 token 被刷新了，更新存储
-            if token_refreshed:
-                log.info(f"Token已自动刷新: {credential_name} (mode={mode})")
-                updated_data = credentials.to_dict()
-                await self._storage_adapter.store_credential(credential_name, updated_data, mode=mode)
+            from .google_oauth_api import get_user_email
+            _, credentials = await self.get_account_credentials(credential_name, mode)
 
             # 获取邮箱
             email = await get_user_email(
@@ -882,11 +878,10 @@ class CredentialManager:
                     file_expiry = file_expiry.replace(tzinfo=timezone.utc)
 
                 # 检查是否还有足够有效期
-                # antigravity 提前 900 秒刷新（对齐 Antigravity-Manager 的
-                # TOKEN_REFRESH_SKEW_SECONDS），geminicli 保持 5 分钟缓冲
+                # 官方 Linux agy 使用 300 秒提前过期窗口；geminicli 同样保留 5 分钟缓冲。
                 now = datetime.now(timezone.utc)
                 time_left = (file_expiry - now).total_seconds()
-                refresh_buffer = 900 if mode == "antigravity" else 300
+                refresh_buffer = 300
 
                 log.debug(
                     f"Token时间检查: "
@@ -909,13 +904,190 @@ class CredentialManager:
             log.error(f"检查token过期时出错: {e}")
             return True
 
+    async def get_account_credentials(self, filename: str, mode: str = "geminicli"):
+        """Load an existing account through the single refresh/persistence path.
+
+        The returned Credentials also delegates later refreshes to this manager,
+        including nested userinfo/project helper calls.
+        """
+        await self._ensure_initialized()
+        filename = os.path.basename(filename)
+        data = await self._storage_adapter.get_credential(filename, mode=mode)
+        if data is None:
+            raise ValueError("Credential no longer exists")
+        if await self._should_refresh_token(data, mode=mode):
+            data = await self._refresh_token(data, filename, mode=mode)
+            if data is None:
+                raise ValueError("Credential refresh failed or authorization changed")
+        credentials = Credentials.from_dict(data)
+        if mode == "antigravity":
+            from .proxy_groups import proxy_argument_from_network
+            network = await self._storage_adapter.resolve_credential_network(filename, mode=mode)
+            credentials.proxy_url = proxy_argument_from_network(network)
+
+        async def refresh_bound():
+            _, latest = await self.get_account_credentials(filename, mode)
+            changed = credentials.access_token != latest.access_token
+            for field in ("access_token", "refresh_token", "client_id", "client_secret",
+                          "expires_at", "project_id", "oauth_client_key", "proxy_url"):
+                setattr(credentials, field, getattr(latest, field))
+            return changed
+
+        credentials._refresh_callback = refresh_bound
+        return dict(data), credentials
+
+    async def _current_valid_credential(self, filename, mode):
+        current = await self._storage_adapter.get_credential(filename, mode=mode)
+        if current is not None and not await self._should_refresh_token(current, mode=mode):
+            return current
+        return None
+
     async def _refresh_token(
         self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli"
     ) -> Optional[Dict[str, Any]]:
+        """Share one refresh per account within this manager/event loop.
+
+        Shield the task so cancellation of one request does not cancel other
+        waiters or interrupt saving a rotated token. The worker also acquires a database lease.
+        """
+        filename = os.path.basename(filename)
+        key = (mode, filename)
+        task = self._refresh_tasks.get(key)
+        joined = task is not None
+        if task is None:
+            task = asyncio.create_task(self._refresh_token_once(dict(credential_data), filename, mode),
+                                       name="oauth-refresh:" + uuid.uuid4().hex)
+            self._refresh_tasks[key] = task
+
+            def finished(done):
+                if self._refresh_tasks.get(key) is done:
+                    self._refresh_tasks.pop(key, None)
+                if not done.cancelled():
+                    done.exception()  # retrieve errors even if all waiters cancelled
+
+            task.add_done_callback(finished)
+        audit("refresh_requested", account_ref=reference(filename), mode=mode,
+              refresh_event_id=task.get_name().removeprefix("oauth-refresh:"),
+              source=inspect.currentframe().f_back.f_code.co_name,
+              outcome="joined" if joined else "created",
+              revision_ref=reference(credential_data.get("_credential_revision")), **expiry_state(credential_data))
+        result = await asyncio.shield(task)
+        return dict(result) if result is not None else None
+
+    async def _refresh_token_once(self, credential_data, filename, mode="geminicli"):
+        name = asyncio.current_task().get_name()
+        event_id = name.removeprefix("oauth-refresh:") if name.startswith("oauth-refresh:") else uuid.uuid4().hex
+        token = refresh_context.set({"refresh_event_id": event_id,
+                                     "account_ref": reference(filename), "mode": mode})
+        started = time.monotonic()
+        outcome = "cancelled"
+        audit("refresh_started", revision_ref=reference(credential_data.get("_credential_revision")),
+              **expiry_state(credential_data))
+        try:
+            result = await self._refresh_token_coordinated(credential_data, filename, mode)
+            outcome = "credential_available" if result is not None else "no_result"
+            return result
+        finally:
+            audit("refresh_finished", outcome=outcome, duration_ms=round((time.monotonic()-started)*1000))
+            refresh_context.reset(token)
+
+    async def _refresh_token_coordinated(self, credential_data, filename, mode="geminicli"):
+        """Cross-process single flight. Coordination failure never falls back to OAuth."""
+        await self._ensure_initialized()
+        owner = uuid.uuid4().hex
+        acquired = False
+        work = heartbeat = None
+        result = None
+        try:
+            deadline = time.monotonic() + REFRESH_WAIT_TIMEOUT
+            delay = 0.1
+            wait_started = time.monotonic()
+            attempts = 0
+            while time.monotonic() < deadline:
+                current = await self._storage_adapter.get_credential(filename, mode=mode)
+                if current is None:
+                    audit("refresh_skipped", reason="credential_deleted")
+                    return None
+                if not await self._should_refresh_token(current, mode=mode):
+                    audit("refresh_reused", revision_ref=reference(current.get("_credential_revision")))
+                    return current
+                status = await self._storage_adapter.acquire_refresh_lease(filename, owner, mode, ttl=REFRESH_LEASE_TTL)
+                attempts += 1
+                if attempts == 1 or status != "busy":
+                    audit("refresh_lease", outcome=status, lease_owner_ref=reference(owner),
+                          attempts=attempts, waited_ms=round((time.monotonic()-wait_started)*1000))
+                if status == "acquired":
+                    acquired = True
+                    break
+                if status == "cooldown":
+                    return None
+                if status != "busy":
+                    raise RuntimeError("Unexpected refresh lease status")
+                await asyncio.sleep(delay * random.uniform(0.8, 1.2))
+                delay = min(delay * 1.5, 1.0)
+            if not acquired:
+                audit("refresh_lease", outcome="wait_timeout", attempts=attempts)
+                log.warning(f"等待刷新租约超时: {filename} (mode={mode})")
+                return None
+
+            async def renew():
+                while True:
+                    await asyncio.sleep(REFRESH_LEASE_RENEW_INTERVAL)
+                    if not await self._storage_adapter.renew_refresh_lease(filename, owner, mode, ttl=REFRESH_LEASE_TTL):
+                        audit("refresh_lease", outcome="lost")
+                        raise RuntimeError("Refresh lease ownership lost")
+
+            # Bound each attempt. A blocked/lost heartbeat stops the operation;
+            # the atomic lease check in CAS remains the final write fence.
+            heartbeat = asyncio.create_task(renew())
+            work = asyncio.create_task(self._refresh_token_owned(
+                current, filename, mode, lease_owner=owner
+            ))
+            done, _ = await asyncio.wait((work, heartbeat), timeout=REFRESH_OPERATION_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat in done:
+                await heartbeat
+            if work not in done:
+                raise TimeoutError("Refresh exceeded lease operation deadline")
+            result = await work
+            return result
+        except Exception as exc:
+            audit("refresh_coordination_failed", error_type=type(exc).__name__)
+            log.error(f"刷新租约协调失败: {filename} (mode={mode}, type={type(exc).__name__})")
+            return None
+        finally:
+            tasks = [task for task in (work, heartbeat) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if acquired:
+                try:
+                    # Share failures briefly too, avoiding queued sequential retries.
+                    await self._storage_adapter.release_refresh_lease(
+                        filename, owner, mode, cooldown=REFRESH_FAILURE_COOLDOWN if result is None else 0
+                    )
+                    audit("refresh_lease", outcome="released", lease_owner_ref=reference(owner))
+                except Exception:
+                    audit("refresh_lease", outcome="release_failed")
+                    log.warning(f"刷新租约释放失败，将自动过期: {filename} (mode={mode})")
+
+    async def _refresh_token_owned(
+        self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli", *, lease_owner: str
+    ) -> Optional[Dict[str, Any]]:
         """刷新token并更新存储"""
         await self._ensure_initialized()
+        expected = None
         try:
-            # 创建Credentials对象
+            # A caller may have queued a stale snapshot before another refresh
+            # completed. Re-read persisted state before making an OAuth request.
+            current = await self._storage_adapter.get_credential(filename, mode=mode)
+            if current is None:
+                return None  # do not recreate an account deleted during selection
+            expected = dict(current)
+            credential_data = dict(current)
+            if not await self._should_refresh_token(credential_data, mode=mode):
+                return credential_data
             creds = Credentials.from_dict(credential_data)
             if mode == "antigravity":
                 from .proxy_groups import proxy_argument_from_network
@@ -930,15 +1102,28 @@ class CredentialManager:
                 log.error(f"没有refresh_token，无法刷新: {filename} (mode={mode})")
                 # 自动禁用没有refresh_token的凭证
                 try:
-                    await self.update_credential_state(filename, {"disabled": True}, mode=mode)
-                    log.warning(f"凭证已自动禁用（缺少refresh_token）: {filename}")
+                    await self._storage_adapter.compare_and_swap_credential(
+                        filename, expected, expected, mode=mode, lease_owner=lease_owner, state_updates={"disabled": True}
+                    )
                 except Exception as e:
                     log.error(f"禁用凭证失败 {filename}: {e}")
                 return None
 
+            # Revalidate immediately before outbound I/O after potentially slow
+            # credential/network resolution. Never start with an expired lease.
+            if not await self._storage_adapter.renew_refresh_lease(
+                filename, lease_owner, mode, ttl=REFRESH_LEASE_TTL
+            ):
+                return None
             # 刷新token
             log.debug(f"正在刷新token: {filename} (mode={mode})")
+            audit("oauth_operation_started", revision_ref=reference(expected.get("_credential_revision")),
+                  proxy_config_ref=reference(creds.proxy_url) if isinstance(creds.proxy_url, str) else None,
+                  proxy_mode="default_unresolved" if creds.proxy_url is ... else "direct" if creds.proxy_url is None else "explicit")
+            oauth_started = time.monotonic()
             await creds.refresh()
+            audit("oauth_operation_succeeded", duration_ms=round((time.monotonic()-oauth_started)*1000),
+                  refresh_token_changed=creds.refresh_token != expected.get("refresh_token"))
 
             # 更新凭证数据
             if creds.access_token:
@@ -949,13 +1134,26 @@ class CredentialManager:
             if creds.expires_at:
                 credential_data["expiry"] = creds.expires_at.isoformat()
 
-            # 保存到存储
-            await self._storage_adapter.store_credential(filename, credential_data, mode=mode)
-            log.info(f"Token刷新成功并已保存: {filename} (mode={mode})")
+            # Preserve OAuth rotation and the client used for this authorization.
+            if creds.refresh_token:
+                credential_data["refresh_token"] = creds.refresh_token
+            if creds.oauth_client_key:
+                credential_data["oauth_client_key"] = creds.oauth_client_key
 
-            return credential_data
+            # 保存到存储
+            saved = await self._storage_adapter.compare_and_swap_credential(
+                filename, expected, credential_data, mode=mode, lease_owner=lease_owner
+            )
+            audit("refresh_write_result", committed=bool(saved))
+            if saved:
+                log.info(f"Token刷新成功并已保存: {filename} (mode={mode})")
+            else:
+                log.info(f"丢弃过期的刷新结果（凭证已变更或删除）: {filename} (mode={mode})")
+            return await self._current_valid_credential(filename, mode)
 
         except Exception as e:
+            audit("refresh_failed", error_type=type(e).__name__, http_status=getattr(e, "status_code", None),
+                  oauth_event_id=getattr(e, "evidence_id", None))
             error_msg = str(e)
             log.error(f"Token刷新失败 {filename} (mode={mode}): {error_msg}")
 
@@ -974,36 +1172,24 @@ class CredentialManager:
             # 状态码不足以证明授权失效；需要明确的 OAuth 撤销/过期证据。
             is_permanent_failure = self._is_permanent_refresh_failure(diagnostic_text, status_code)
 
-            if mode == "antigravity" and (status_code or is_permanent_failure):
-                # Always retain an OAuth diagnosis, including client/configuration
-                # errors; previously permanent refresh failures saved an empty {}.
-                await self.record_api_call_result(
-                    filename, False, status_code or 400, mode=mode,
-                    error_message=diagnostic_text, error_source="oauth",
+            # An old OAuth failure must not disable or annotate a replacement
+            # authorization. Persist diagnosis and disable together under the CAS.
+            if expected is not None and (status_code or is_permanent_failure):
+                from .antigravity_400_classifier import classify_antigravity_400
+                code = status_code or 400
+                detail = classify_antigravity_400(diagnostic_text, source="oauth").to_json()
+                updates = {"error_codes": [code], "error_messages": {str(code): detail}}
+                if is_permanent_failure:
+                    updates["disabled"] = True
+                applied = await self._storage_adapter.compare_and_swap_credential(
+                    filename, expected, expected, mode=mode, lease_owner=lease_owner, state_updates=updates
                 )
-
-            if is_permanent_failure:
-                log.warning(f"检测到凭证永久失效 (HTTP {status_code}): {filename}")
-                # 记录失效状态
-                if mode != "antigravity":
-                    await self.record_api_call_result(
-                        filename, False, status_code or 400, mode=mode, error_message=error_msg
-                    )
-
-                # 禁用失效凭证
-                try:
-                    # 直接禁用该凭证（随机选择机制会自动跳过它）
-                    disabled_ok = await self.update_credential_state(filename, {"disabled": True}, mode=mode)
-                    if disabled_ok:
-                        log.warning(f"永久失效凭证已禁用: {filename}")
-                    else:
-                        log.warning("永久失效凭证禁用失败，将由上层逻辑继续处理")
-                except Exception as e2:
-                    log.error(f"禁用永久失效凭证时出错 {filename}: {e2}")
-            else:
-                # 网络错误或其他临时性错误，不封禁凭证
-                log.warning(f"Token刷新失败但非永久性错误 (HTTP {status_code})，不封禁凭证: {filename}")
-                if mode == "antigravity":
+                if not applied:
+                    return await self._current_valid_credential(filename, mode)
+            if not is_permanent_failure and mode == "antigravity":
+                # Only the still-current authorization may influence its proxy binding.
+                current = await self._storage_adapter.get_credential(filename, mode=mode)
+                if current == expected:
                     await self._cool_dead_proxy_node(filename, error_msg)
 
             return None

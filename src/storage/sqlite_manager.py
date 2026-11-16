@@ -14,6 +14,9 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from log import log
+import inspect
+from src.operational_audit import make_event, reference
+from src.credential_revision import credential_snapshot, next_credential_revision, checked_state_updates
 from src.storage.antigravity_warmup_store import AntigravityWarmupStore
 from src.storage.call_record_content import decode_details, encode_details
 
@@ -245,6 +248,24 @@ class SQLiteManager(AntigravityWarmupStore):
 
     async def _create_tables(self, db: aiosqlite.Connection):
         """创建数据库表和索引"""
+        # Shared across workers using this database; no OAuth network I/O in transactions.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS credential_refresh_leases (
+                mode TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                expires_at REAL NOT NULL,
+                PRIMARY KEY (mode, filename)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS credential_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at REAL NOT NULL,
+                event_json TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_credential_audit_time ON credential_audit_events(created_at)")
         # 凭证表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS credentials (
@@ -1255,6 +1276,24 @@ class SQLiteManager(AntigravityWarmupStore):
 
     # ============ StorageBackend 协议方法 ============
 
+    async def _audit_credential(self, db, filename, mode, operation, old=None, new=None, *, outcome="committed", expected=None, state_updates=None):
+        # Same transaction as the mutation; rolled-back writes leave no success audit.
+        caller = inspect.currentframe().f_back
+        while caller is not None and os.path.basename(caller.f_code.co_filename) in ("sqlite_manager.py", "storage_adapter.py"):
+            caller = caller.f_back
+        event = make_event("credential_write", account_ref=reference(filename), mode=mode,
+                           source=caller.f_code.co_name if caller is not None else "unknown",
+                           state_fields=",".join(sorted(state_updates or {})),
+                           operation=operation, outcome=outcome, committed=outcome == "committed",
+                           old_revision_ref=reference((old or {}).get("_credential_revision")),
+                           new_revision_ref=reference((new or {}).get("_credential_revision")),
+                           expected_revision_ref=reference((expected or {}).get("_credential_revision")))
+        await db.execute("INSERT INTO credential_audit_events(created_at,event_json) VALUES (?,?)",
+                         (event["created_at"], json.dumps(event)))
+        # Indexed, bounded history: 30 days and at most 100,000 small rows.
+        await db.execute("DELETE FROM credential_audit_events WHERE created_at < ?", (time.time()-30*86400,))
+        await db.execute("DELETE FROM credential_audit_events WHERE id <= (SELECT MAX(id)-100000 FROM credential_audit_events)")
+
     async def store_credential(self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:
         """存储或更新凭证"""
         self._ensure_initialized()
@@ -1263,7 +1302,7 @@ class SQLiteManager(AntigravityWarmupStore):
         filename = os.path.basename(filename)
         # proxy_mode/proxy_url are columns, never duplicate account proxy secrets
         # inside the credential JSON blob.
-        persisted_credential_data = dict(credential_data)
+        persisted_credential_data = next_credential_revision(credential_data)
         persisted_credential_data.pop("proxy_mode", None)
         persisted_credential_data.pop("proxy_url", None)
         persisted_credential_data.pop("proxy_group_id", None)
@@ -1273,10 +1312,11 @@ class SQLiteManager(AntigravityWarmupStore):
         try:
             table_name = self._get_table_name(mode)
             async with aiosqlite.connect(self._db_path) as db:
+                await db.execute("BEGIN IMMEDIATE")
                 # 检查凭证是否存在
                 async with db.execute(f"""
                     SELECT disabled, error_codes, last_success, user_email,
-                           rotation_order, call_count
+                           rotation_order, call_count, credential_data
                     FROM {table_name} WHERE filename = ?
                 """, (filename,)) as cursor:
                     existing = await cursor.fetchone()
@@ -1323,6 +1363,9 @@ class SQLiteManager(AntigravityWarmupStore):
                         time.time(),
                     ))
 
+                await self._audit_credential(db, filename, mode, "store",
+                                             json.loads(existing[6]) if existing else None,
+                                             persisted_credential_data)
                 await db.commit()
                 log.debug(f"Stored credential: {filename} (mode={mode})")
                 return True
@@ -1330,6 +1373,113 @@ class SQLiteManager(AntigravityWarmupStore):
         except Exception as e:
             log.error(f"Error storing credential {filename}: {e}")
             return False
+
+    async def acquire_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60):
+        """Return acquired/busy/cooldown using the database clock and one writer transaction."""
+        self._ensure_initialized()
+        self._get_table_name(mode)
+        if not owner or ttl <= 0:
+            raise ValueError("Lease requires an owner and positive TTL")
+        filename = os.path.basename(filename)
+        async with aiosqlite.connect(self._db_path) as db:
+            # Contended waiters use reads only; avoid taking SQLite's writer
+            # lock on every poll. Expiry/acquisition is still decided atomically below.
+            async with db.execute("""
+                SELECT owner FROM credential_refresh_leases
+                WHERE mode=? AND filename=?
+                  AND expires_at > (julianday('now') - 2440587.5) * 86400
+            """, (mode, filename)) as cursor:
+                active = await cursor.fetchone()
+            if active is not None:
+                return "acquired" if active[0] == owner else "busy" if active[0] else "cooldown"
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("""
+                INSERT INTO credential_refresh_leases (mode, filename, owner, expires_at)
+                VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400 + ?)
+                ON CONFLICT(mode, filename) DO UPDATE SET
+                    owner=excluded.owner, expires_at=excluded.expires_at
+                WHERE credential_refresh_leases.expires_at <= (julianday('now') - 2440587.5) * 86400
+            """, (mode, filename, owner, ttl))
+            async with db.execute(
+                "SELECT owner FROM credential_refresh_leases WHERE mode=? AND filename=?",
+                (mode, filename),
+            ) as cursor:
+                row = await cursor.fetchone()
+            await db.commit()
+        return "acquired" if row[0] == owner else "busy" if row[0] else "cooldown"
+
+    async def renew_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60):
+        self._ensure_initialized()
+        self._get_table_name(mode)
+        if not owner or ttl <= 0:
+            raise ValueError("Lease requires an owner and positive TTL")
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("""
+                UPDATE credential_refresh_leases
+                SET expires_at=(julianday('now') - 2440587.5) * 86400 + ?
+                WHERE mode=? AND filename=? AND owner=?
+                  AND expires_at > (julianday('now') - 2440587.5) * 86400
+            """, (ttl, mode, os.path.basename(filename), owner))
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def release_refresh_lease(self, filename, owner, mode="geminicli", *, cooldown=0):
+        self._ensure_initialized()
+        self._get_table_name(mode)
+        if not owner or cooldown < 0:
+            raise ValueError("Lease requires an owner and nonnegative cooldown")
+        async with aiosqlite.connect(self._db_path) as db:
+            args = (mode, os.path.basename(filename), owner)
+            if cooldown:
+                await db.execute("""
+                    UPDATE credential_refresh_leases SET owner='',
+                        expires_at=(julianday('now') - 2440587.5) * 86400 + ?
+                    WHERE mode=? AND filename=? AND owner=?
+                      AND expires_at > (julianday('now') - 2440587.5) * 86400
+                """, (cooldown, *args))
+            else:
+                await db.execute(
+                    "DELETE FROM credential_refresh_leases WHERE mode=? AND filename=? AND owner=?", args
+                )
+            await db.commit()
+
+    async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None, lease_owner=None):
+        """Update only an existing, unchanged authorization; never upsert."""
+        self._ensure_initialized()
+        filename = os.path.basename(filename)
+        table = self._get_table_name(mode)
+        state = checked_state_updates(state_updates)
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if lease_owner is not None:
+                async with db.execute("""
+                    SELECT 1 FROM credential_refresh_leases
+                    WHERE mode=? AND filename=? AND owner=?
+                      AND expires_at > (julianday('now') - 2440587.5) * 86400
+                """, (mode, filename, lease_owner)) as cursor:
+                    if await cursor.fetchone() is None:
+                        await self._audit_credential(db, filename, mode, "cas", outcome="lease_rejected", expected=expected)
+                        await db.commit()
+                        return False
+            async with db.execute(f"SELECT credential_data FROM {table} WHERE filename = ?", (filename,)) as cursor:
+                row = await cursor.fetchone()
+            if row is None or json.loads(row[0]) != credential_snapshot(expected):
+                await self._audit_credential(db, filename, mode, "cas",
+                                             json.loads(row[0]) if row else None,
+                                             outcome="revision_conflict" if row else "deleted", expected=expected)
+                await db.commit()
+                return False
+            data = next_credential_revision(credential_snapshot(replacement))
+            assignments = ["credential_data = ?", "updated_at = unixepoch()"]
+            values = [json.dumps(data)]
+            for field, value in state.items():
+                assignments.append(f"{field} = ?")
+                values.append(json.dumps(value) if isinstance(value, (dict, list)) else value)
+            values.append(filename)
+            await db.execute(f"UPDATE {table} SET {', '.join(assignments)} WHERE filename = ?", values)
+            await self._audit_credential(db, filename, mode, "cas", expected, data, expected=expected, state_updates=state)
+            await db.commit()
+            return True
 
     async def get_credential(self, filename: str, mode: str = "geminicli") -> Optional[Dict[str, Any]]:
         """获取凭证数据"""
@@ -3388,12 +3538,18 @@ class SQLiteManager(AntigravityWarmupStore):
         try:
             table_name = self._get_table_name(mode)
             async with aiosqlite.connect(self._db_path) as db:
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(f"SELECT credential_data FROM {table_name} WHERE filename=?", (filename,)) as cursor:
+                    old_row = await cursor.fetchone()
                 # 精确匹配删除
                 result = await db.execute(f"""
                     DELETE FROM {table_name} WHERE filename = ?
                 """, (filename,))
                 deleted_count = result.rowcount
 
+                await self._audit_credential(db, filename, mode, "delete",
+                                             json.loads(old_row[0]) if old_row else None,
+                                             outcome="committed" if deleted_count else "not_found")
                 await db.commit()
 
                 if deleted_count > 0:

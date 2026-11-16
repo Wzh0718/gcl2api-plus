@@ -169,7 +169,7 @@ async def test_session_cache_is_isolated_by_credential():
     from src.api import antigravity
 
     antigravity._session_states.clear()
-    request = {"contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
+    request = {"sessionId": "explicit-conversation", "contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
     with patch.object(antigravity, "_get_redis", AsyncMock(return_value=None)):
         account_a = await antigravity._get_session_state(request, "gemini-test", "a.json")
         account_a_first_step = account_a.step_index
@@ -193,14 +193,17 @@ async def test_redis_session_keys_are_isolated_by_credential():
         def __init__(self):
             self.values = {}
 
-        async def get(self, key):
-            return self.values.get(key)
-
-        async def set(self, key, value, ex):
-            self.values[key] = value
+        async def eval(self, script, numkeys, key, initial, now, ttl):
+            import json
+            state = json.loads(self.values.get(key, initial))
+            if key in self.values:
+                state["step_index"] += 1
+                state["last_used_at"] = float(now)
+            self.values[key] = json.dumps(state)
+            return self.values[key]
 
     redis = FakeRedis()
-    request = {"contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
+    request = {"sessionId": "explicit-conversation", "contents": [{"role": "user", "parts": [{"text": "same conversation"}]}]}
     with patch.object(antigravity, "_get_redis", AsyncMock(return_value=redis)):
         account_a = await antigravity._get_session_state(request, "gemini-test", "a.json")
         account_b = await antigravity._get_session_state(request, "gemini-test", "b.json")

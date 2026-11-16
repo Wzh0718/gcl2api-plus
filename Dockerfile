@@ -46,6 +46,8 @@ ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
 # jemalloc 配置：启用后台线程回收、脏页衰减时间 5 秒（默认 10 秒）
 ENV MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000"
 
+ARG APP_BUILD_REVISION=unknown
+ENV APP_BUILD_REVISION=${APP_BUILD_REVISION}
 WORKDIR /app
 
 # Copy only requirements first for better caching

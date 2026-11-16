@@ -47,3 +47,8 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.GHCR_IMAGE }}
         run: ./scripts/build-and-push.sh
+
+      - name: Record immutable release reference
+        run: |
+          echo "Commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: $GHCR_IMAGE:sha-$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

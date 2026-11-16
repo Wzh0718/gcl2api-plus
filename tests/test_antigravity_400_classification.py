@@ -81,7 +81,10 @@ async def test_geminicli_configured_400_retains_existing_policy(monkeypatch):
 async def test_400_persists_structured_classification_even_without_response_body(error_message, category):
     manager = CredentialManager()
     manager._initialized = True
-    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace())
+    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace(), get_credential=AsyncMock(return_value={"proxy_mode": "direct"}), acquire_refresh_lease=AsyncMock(return_value='acquired'),
+                                                renew_refresh_lease=AsyncMock(return_value=True),
+                                                release_refresh_lease=AsyncMock(),
+                                                compare_and_swap_credential=AsyncMock(return_value=True))
     manager.update_credential_state = AsyncMock()
 
     await manager.record_api_call_result(
@@ -102,7 +105,10 @@ async def test_400_persists_structured_classification_even_without_response_body
 async def test_persisted_400_diagnostics_exclude_upstream_secrets_and_request_content():
     manager = CredentialManager()
     manager._initialized = True
-    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace())
+    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace(), get_credential=AsyncMock(return_value={"proxy_mode": "direct"}), acquire_refresh_lease=AsyncMock(return_value='acquired'),
+                                                renew_refresh_lease=AsyncMock(return_value=True),
+                                                release_refresh_lease=AsyncMock(),
+                                                compare_and_swap_credential=AsyncMock(return_value=True))
     manager.update_credential_state = AsyncMock()
     body = json.dumps({"error": {
         "status": "INVALID_ARGUMENT",
@@ -226,7 +232,10 @@ async def test_refresh_invalid_grant_persists_nonempty_oauth_diagnosis_before_di
 
     manager = CredentialManager()
     manager._initialized = True
-    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace())
+    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace(), get_credential=AsyncMock(return_value={"proxy_mode": "direct"}), acquire_refresh_lease=AsyncMock(return_value='acquired'),
+                                                renew_refresh_lease=AsyncMock(return_value=True),
+                                                release_refresh_lease=AsyncMock(),
+                                                compare_and_swap_credential=AsyncMock(return_value=True))
     manager.update_credential_state = AsyncMock(return_value=True)
     failure = TokenError('{"error":"invalid_grant","error_description":"Token has been expired or revoked."}')
     failure.status_code = 400
@@ -236,13 +245,13 @@ async def test_refresh_invalid_grant_persists_nonempty_oauth_diagnosis_before_di
     result = await manager._refresh_token({"proxy_mode": "direct"}, "account.json", mode="antigravity")
 
     assert result is None
-    updates = [call.args[1] for call in manager.update_credential_state.await_args_list]
+    updates = [call.kwargs["state_updates"] for call in manager._storage_adapter.compare_and_swap_credential.await_args_list]
     diagnosis = next(update["error_messages"]["400"] for update in updates if "error_messages" in update)
     data = json.loads(diagnosis) if isinstance(diagnosis, str) else diagnosis
     assert data["source"] == "oauth"
     assert data["category"] == "oauth_invalid_grant"
     assert data["reason"]
-    assert {"disabled": True} in updates
+    assert any(update.get("disabled") is True for update in updates)
 
 
 @pytest.mark.asyncio
@@ -297,7 +306,10 @@ async def test_refresh_uses_final_structured_oauth_error_instead_of_previous_cli
 
     manager = CredentialManager()
     manager._initialized = True
-    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace())
+    manager._storage_adapter = SimpleNamespace(_backend=SimpleNamespace(), get_credential=AsyncMock(return_value={"proxy_mode": "direct"}), acquire_refresh_lease=AsyncMock(return_value='acquired'),
+                                                renew_refresh_lease=AsyncMock(return_value=True),
+                                                release_refresh_lease=AsyncMock(),
+                                                compare_and_swap_credential=AsyncMock(return_value=True))
     manager.update_credential_state = AsyncMock(return_value=True)
     failure = TokenError(
         'All clients failed: first {"reason":"INVALID_GRANT"}; final {"reason":"INVALID_CLIENT"}',
@@ -310,7 +322,7 @@ async def test_refresh_uses_final_structured_oauth_error_instead_of_previous_cli
     result = await manager._refresh_token({"proxy_mode": "direct"}, "account.json", mode="antigravity")
 
     assert result is None
-    updates = [call.args[1] for call in manager.update_credential_state.await_args_list]
+    updates = [call.kwargs["state_updates"] for call in manager._storage_adapter.compare_and_swap_credential.await_args_list]
     assert not any(update.get("disabled") is True for update in updates)
     diagnosis = next(update["error_messages"]["400"] for update in updates if "error_messages" in update)
     data = json.loads(diagnosis) if isinstance(diagnosis, str) else diagnosis

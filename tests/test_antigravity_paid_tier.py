@@ -149,6 +149,9 @@ def _mock_collect_deps(monkeypatch, paid_tier):
 
     monkeypatch.setattr(creds_module, "get_storage_adapter", fake_get_storage_adapter)
     monkeypatch.setattr(creds_module, "Credentials", _FakeCredentials)
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(creds_module.credential_manager, "get_account_credentials",
+                        AsyncMock(return_value=(credential_data, _FakeCredentials(credential_data))))
     monkeypatch.setattr(creds_module, "proxy_argument_from_network", lambda network: None)
     monkeypatch.setattr(creds_module, "fetch_quota_info", fake_fetch_quota_info)
     monkeypatch.setattr(creds_module, "fetch_paid_tier_info", fake_fetch_paid_tier_info)

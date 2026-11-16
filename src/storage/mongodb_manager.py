@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from log import log
+from src.credential_revision import next_credential_revision, checked_state_updates
 
 
 class MongoDBManager:
@@ -542,6 +543,7 @@ class MongoDBManager:
 
         # 统一使用 basename 处理文件名
         filename = os.path.basename(filename)
+        credential_data = next_credential_revision(credential_data)
 
         try:
             collection_name = self._get_collection_name(mode)
@@ -615,6 +617,26 @@ class MongoDBManager:
         except Exception as e:
             log.error(f"Error storing credential {filename}: {e}")
             return False
+
+    async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None):
+        self._ensure_initialized()
+        state = checked_state_updates(state_updates)
+        filename = os.path.basename(filename)
+        result = await self._db[self._get_collection_name(mode)].update_one(
+            {"filename": filename, "credential_data": dict(expected)},
+            {"$set": {"credential_data": next_credential_revision(replacement),
+                      "updated_at": time.time(), **state}},
+            upsert=False,
+        )
+        if result.matched_count and ("disabled" in state or "tier" in state):
+            doc = await self._db[self._get_collection_name(mode)].find_one(
+                {"filename": filename}, projection={"disabled": 1, "tier": 1, "_id": 0}
+            )
+            if doc is None:
+                await self._redis_remove_cred(mode, filename)
+            else:
+                await self._redis_sync_cred(mode, filename, bool(doc.get("disabled")), doc.get("tier") or "pro")
+        return result.matched_count == 1
 
     async def get_credential(self, filename: str, mode: str = "geminicli") -> Optional[Dict[str, Any]]:
         """获取凭证数据"""

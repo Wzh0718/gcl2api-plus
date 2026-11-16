@@ -7,6 +7,7 @@ from typing import Any, Mapping, Optional, Tuple
 
 from src.antigravity_error_classifier import classify_antigravity_403
 from src.httpx_client import get_async, post_async
+from src.egress_probe import observe_egress
 from src.proxy_groups import proxy_argument_from_network
 from src.utils import get_antigravity_user_agent
 
@@ -139,27 +140,32 @@ async def check_antigravity_account_health(
 
     try:
         proxy_url = proxy_argument_from_network(network)
-        ip_response = await get_async(
-            ip_check_url,
-            headers={"User-Agent": get_antigravity_user_agent()},
-            timeout=15.0,
-            proxy_url=proxy_url,
-        )
-        if ip_response.status_code != 200:
-            # 回显服务临时不可用（如 429 限流）：响应已经穿过代理，说明代理链路
-            # 本身正常，这次失败不包含任何账号或地区证据。保留既有健康状态，
-            # 只记录原因并刷新检查时间，避免每个请求都重试打满回显服务。
+        async def fetch_echo(resolved_proxy):
+            return await get_async(
+                ip_check_url,
+                headers={"User-Agent": get_antigravity_user_agent()},
+                timeout=15.0,
+                proxy_url=resolved_proxy,
+            )
+
+        def parse_echo(response):
+            payload = _response_payload(response)
+            if not isinstance(payload, Mapping):
+                raise ValueError("IP echo response is not a JSON object")
+            return parse_egress_identity(payload)
+
+        observation = await observe_egress(ip_check_url, proxy_url, fetch_echo, parse_echo)
+        if observation.error_type:
+            raise ValueError(observation.error_type)
+        if observation.status != 200:
             return await storage.update_antigravity_account_health(
                 credential_name,
                 eligibility_reason=(
-                    f"IP echo temporarily unavailable: HTTP {ip_response.status_code}"
+                    f"IP echo temporarily unavailable: HTTP {observation.status}"
                 ),
                 eligibility_checked_at=timestamp,
             )
-        ip_payload = _response_payload(ip_response)
-        if not isinstance(ip_payload, Mapping):
-            raise ValueError("IP echo response is not a JSON object")
-        egress_ip, egress_country = parse_egress_identity(ip_payload)
+        egress_ip, egress_country = observation.ip, observation.country
     except Exception as exc:
         return await storage.update_antigravity_account_health(
             credential_name,

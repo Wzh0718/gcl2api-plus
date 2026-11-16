@@ -21,6 +21,9 @@ from log import log
 
 from src.httpx_client import get_async, post_async
 from src.oauth_clients import get_candidates, list_clients
+from src.oauth_error_evidence import record_refresh_failure
+from src.operational_audit import emit as audit, reference
+import uuid
 
 
 class ProjectEligibilityError(ValueError):
@@ -57,10 +60,11 @@ def _check_project_eligibility(data: Dict[str, Any]) -> None:
 class TokenError(Exception):
     """Token相关错误"""
 
-    def __init__(self, message, *, status_code=None, error_code=None):
+    def __init__(self, message, *, status_code=None, error_code=None, evidence_id=None):
         super().__init__(message)
         self.status_code = status_code
         self.error_code = error_code
+        self.evidence_id = evidence_id
 
 
 async def refresh_access_token_with_clients(
@@ -78,6 +82,17 @@ async def refresh_access_token_with_clients(
         "refresh_token": refresh_token,
         "grant_type": "refresh_token",
     }
+    from config import get_antigravity_native_transport_enabled_sync
+
+    evidence_context = dict(
+        refresh_token=refresh_token, client_key=client.key,
+        client_secret=client.client_secret, proxy_url=proxy_url, token_url=token_url,
+        transport="antigravity_native" if get_antigravity_native_transport_enabled_sync() else "httpx",
+        started=time.monotonic(),
+    )
+    network_event_id = uuid.uuid4().hex
+    audit("oauth_http_started", network_event_id=network_event_id, oauth_client_key=client.key,
+          endpoint_ref=reference(token_url), proxy_config_ref=reference(proxy_url) if isinstance(proxy_url, str) else None)
     try:
         response = await post_async(
             token_url,
@@ -86,22 +101,31 @@ async def refresh_access_token_with_clients(
             proxy_url=proxy_url,
             transport="antigravity",
         )
-    except Exception as e:
-        error_msg = f"刷新请求异常 (client={client.key}): {type(e).__name__}"
+    except BaseException as e:
+        audit("oauth_http_finished", network_event_id=network_event_id, outcome="exception",
+              error_type=type(e).__name__, duration_ms=round((time.monotonic()-evidence_context["started"])*1000))
+        if not isinstance(e, Exception):
+            raise
+        event_id = record_refresh_failure(exception=e, **evidence_context)
+        error_msg = f"刷新请求异常 (client={client.key}, oauth_event_id={event_id}): {type(e).__name__}"
         log.error(error_msg)
-        raise TokenError(error_msg) from e
+        raise TokenError(error_msg, evidence_id=event_id) from e
 
+    audit("oauth_http_finished", network_event_id=network_event_id, http_status=response.status_code,
+          duration_ms=round((time.monotonic()-evidence_context["started"])*1000), outcome="response")
     if response.status_code == 200:
         log.debug(f"Token刷新成功 (client={client.key})")
         return response.json(), client.key
     from src.antigravity_400_classifier import classify_antigravity_400
 
+    event_id = record_refresh_failure(response=response, **evidence_context)
     decision = classify_antigravity_400(response.text or "", source="oauth")
     raise TokenError(
-        f"OAuth client 刷新失败 (client={client.key}): "
+        f"OAuth client 刷新失败 (client={client.key}, oauth_event_id={event_id}): "
         f"HTTP {response.status_code}: {decision.to_json()}",
         status_code=response.status_code,
         error_code=decision.reason.lower(),
+        evidence_id=event_id,
     )
 
 
@@ -127,6 +151,7 @@ class Credentials:
         self.project_id = project_id
         self.proxy_url = proxy_url
         self.oauth_client_key = oauth_client_key
+        self._refresh_callback = None
 
         # 反代配置将在使用时异步获取
         self.oauth_base_url = None
@@ -143,6 +168,8 @@ class Credentials:
 
     async def refresh_if_needed(self) -> bool:
         """如果需要则刷新token"""
+        if self._refresh_callback is not None:
+            return await self._refresh_callback()
         if not self.is_expired():
             return False
 
@@ -198,6 +225,9 @@ class Credentials:
 
     async def refresh(self):
         """刷新访问令牌"""
+        if self._refresh_callback is not None:
+            await self._refresh_callback()
+            return
         if not self.refresh_token:
             raise TokenError("无刷新令牌")
 

@@ -232,6 +232,7 @@ printf '\n==> 使用 Buildx 构建 %s 平台镜像并推送，同时标记 %s �
 docker buildx build \
     --platform "${PLATFORMS}" \
     --pull \
+    --build-arg "APP_BUILD_REVISION=${BUILD_COMMIT}" \
     --provenance=false \
     "${ANNOTATION_ARGS[@]+"${ANNOTATION_ARGS[@]}"}" \
     --label "org.opencontainers.image.source=${SOURCE_URL}" \
@@ -239,6 +240,7 @@ docker buildx build \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
     -t "${DATE_IMAGE}" \
     -t "${LATEST_IMAGE}" \
+    -t "${IMAGE_NAME}:sha-${BUILD_COMMIT}" \
     --push \
     ${EXTRA_BUILD_ARGS} \
     "${SOURCE_DIR}" \
@@ -248,3 +250,4 @@ printf '\n发布完成:\n'
 printf '  %s (%s)\n' "${DATE_IMAGE}" "${PLATFORMS}"
 printf '  %s (%s)\n' "${LATEST_IMAGE}" "${PLATFORMS}"
 printf '  构建提交: %s\n' "${BUILD_COMMIT}"
+printf '  固定提交标签: %s:sha-%s\n' "${IMAGE_NAME}" "${BUILD_COMMIT}"

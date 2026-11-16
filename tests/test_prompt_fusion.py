@@ -272,7 +272,8 @@ async def test_actual_wrapper_respects_account_and_internal_bypass(monkeypatch):
     monkeypatch.setattr(antigravity_model_catalog, 'get_model_enum', lambda model: 'TEST')
     monkeypatch.setattr(antigravity_model_catalog, 'get_model_info', lambda model: {})
     monkeypatch.setattr(antigravity, '_get_session_state', AsyncMock(return_value=SimpleNamespace(
-        conversation_id='conversation', trajectory_id='trajectory', step_index=1, session_id='session')))
+        conversation_id='conversation', trajectory_id='trajectory', step_index=1, session_id='session',
+        allocation_backend='new_request', allocation_key_ref='test-key')))
     mock = AsyncMock(return_value='Adapted instructions')
     monkeypatch.setattr(fusion, '_generate', mock)
     config._config_cache['prompt_fusion_accounts'] = {'a': 'off', 'b': 'on'}

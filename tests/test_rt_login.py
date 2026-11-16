@@ -248,10 +248,12 @@ async def test_project_verification_requires_project_even_with_tier(monkeypatch,
         store_credential=AsyncMock(), update_credential_state=AsyncMock(),
     )
     credential = SimpleNamespace(
-        access_token="at-test", refresh_if_needed=AsyncMock(return_value=False),
+        access_token="at-test", proxy_url=None, refresh_if_needed=AsyncMock(return_value=False),
     )
     monkeypatch.setattr(creds, "get_storage_adapter", AsyncMock(return_value=storage))
     monkeypatch.setattr(creds.Credentials, "from_dict", lambda data: credential)
+    monkeypatch.setattr(creds.credential_manager, "get_account_credentials",
+                        AsyncMock(return_value=({"project_id": "old-project"}, credential)))
     monkeypatch.setattr(creds, "get_antigravity_api_url", AsyncMock(return_value="https://example.test"))
     discovery = AsyncMock(return_value=(None, "pro", None))
     if age_restricted:

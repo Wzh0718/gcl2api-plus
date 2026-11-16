@@ -229,6 +229,7 @@ async def test_antigravity_credentials_include_network_context_and_switch_atomic
     assert await manager.update_credential_network("two.json", "direct", None)
 
     first = await manager.get_credential("one.json", mode="antigravity")
+    assert first.pop("_credential_revision")
     assert first == {"access_token": "one", "project_id": "p1"}
     await manager.update_credential_state("two.json", {"disabled": True}, mode="antigravity")
     first_selected = await manager.get_next_available_credential(mode="antigravity")

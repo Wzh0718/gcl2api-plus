@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import uuid
 
 from log import log
+from src.operational_audit import identity, reference
 from src.capture_config import capture_directory, capture_policies, capture_settings
 from src.storage.request_capture_store import CaptureStore, POLICIES
 
@@ -107,7 +108,21 @@ def features(payload):
     for key in ("sessionId", "labels", "metadata"):
         if key in inner:
             envelope[key] = fingerprint(inner[key])
+    labels = inner.get("labels") if isinstance(inner.get("labels"), dict) else {}
+    correlation = {k: fingerprint(labels[k]) for k in (
+        "cascade_id", "root_cascade_id", "trajectory_id", "request_id", "model_enum"
+    ) if k in labels}
+    step = str(labels.get("last_step_index", ""))
+    if step.isdigit() and len(step) < 12:
+        correlation["last_step_index"] = int(step)
+    rid = str(payload.get("requestId", "")).split("/")
+    if len(rid) == 5 and rid[0] == "agent":
+        correlation["request_conversation"] = fingerprint(rid[1])
+        correlation["request_trajectory"] = fingerprint(rid[3])
+        if rid[4].isdigit() and len(rid[4]) < 12:
+            correlation["request_step"] = int(rid[4])
     return {"parts": {k: fingerprint(v) for k, v in snapshot.items()}, "envelope": envelope,
+            "correlation": correlation,
             "message_count": len(snapshot.get("messages", [])) if isinstance(snapshot.get("messages"), list) else 0,
             "tool_count": len(snapshot.get("tools", [])) if isinstance(snapshot.get("tools"), list) else 0}
 
@@ -123,10 +138,11 @@ class CaptureContext:
     last_account: str = ""
     ingress: dict = field(default_factory=dict)
     account_networks: dict = field(default_factory=dict)
+    account_sessions: dict = field(default_factory=dict)
     request_model: str = ""
 
 
-def bind_capture_credential(credential_name, payload, credential_data=None):
+def bind_capture_credential(credential_name, payload, credential_data=None, *, session_info=None):
     context = capture_context.get()
     if context is not None and credential_name and isinstance(payload, dict):
         key = payload.get("requestId") or f"payload:{id(payload)}"
@@ -134,12 +150,17 @@ def bind_capture_credential(credential_name, payload, credential_data=None):
             if len(context.credentials) >= 64:
                 context.credentials.pop(next(iter(context.credentials)))
             context.credentials[key] = credential_name
+            if session_info:
+                if len(context.account_sessions) >= 64:
+                    context.account_sessions.pop(next(iter(context.account_sessions)))
+                context.account_sessions[key] = session_info
             if credential_data:
                 if len(context.account_networks) >= 64:
                     context.account_networks.pop(next(iter(context.account_networks)))
                 context.account_networks[credential_name] = {k: credential_data[k] for k in (
                     "proxy_mode", "proxy_group_id", "bound_proxy_node_id", "oauth_client_key",
                 ) if k in credential_data}
+                context.account_networks[credential_name]["revision_ref"] = reference(credential_data.get("_credential_revision"))
 
 
 async def record_local_capture(credential_name, model, reason="capacity_busy"):
@@ -160,7 +181,7 @@ async def write_event(policy, event):
         return False
     try:
         return await asyncio.to_thread(
-            get_capture_store().write, policy, event, capture_policies(settings)[policy],
+            get_capture_store().write, policy, {**identity(), **event}, capture_policies(settings)[policy],
             min_free_bytes=capture_policies(settings)[policy]["min_free_bytes"],
             max_entry_bytes=settings["request_capture_max_entry_kb"] * 1024,
         )
@@ -226,7 +247,10 @@ class CaptureAttempt:
                       "target_host": target.hostname, "target_path": target.path,
                       "proxy_host": proxy.hostname if proxy else ("inherit" if proxy_url is ... else "direct"),
                       "streaming": streaming, "kind": "upstream", "phase": "started"}
-        self.event.update(ingress=context.ingress, network=context.account_networks.get(account, {}))
+        self.event.update(identity(), account_ref=reference(account), ingress=context.ingress,
+                          network={**context.account_networks.get(account, {}),
+                                   "proxy_config_ref": reference(proxy_url) if isinstance(proxy_url, str) else None},
+                          session_allocation=context.account_sessions.get(payload.get("requestId"), {}))
         self.feature_data = {"client": context.client_features, "upstream": features(payload)}
         if settings["request_capture_normal_enabled"] or settings["request_capture_errors_enabled"]:
             self.details = {"client": context.client,

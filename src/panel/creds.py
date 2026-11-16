@@ -585,20 +585,7 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
     if not credential_data:
         raise HTTPException(status_code=404, detail="凭证不存在")
 
-    # 创建凭证对象
-    credentials = Credentials.from_dict(credential_data)
-    if mode == "antigravity":
-        network = await storage_adapter.resolve_credential_network(filename, mode=mode)
-        credentials.proxy_url = proxy_argument_from_network(network)
-
-    # 确保token有效（自动刷新）
-    token_refreshed = await credentials.refresh_if_needed()
-
-    # 如果token被刷新了，更新存储
-    if token_refreshed:
-        log.info(f"Token已自动刷新: {filename} (mode={mode})")
-        credential_data = credentials.to_dict()
-        await storage_adapter.store_credential(filename, credential_data, mode=mode)
+    credential_data, credentials = await credential_manager.get_account_credentials(filename, mode)
 
     # 重新获取project id（仅 antigravity 模式请求积分）
     if mode == "antigravity":
@@ -640,15 +627,13 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
                 log.warning(f"启用API服务失败: {e}")
 
     if project_id:
-        credential_data["project_id"] = project_id
-
-    if project_id:
-        await storage_adapter.store_credential(filename, credential_data, mode=mode)
+        updated_data = dict(credential_data, project_id=project_id)
 
         # 检验成功后自动解除禁用状态并清除错误码
         state_update = {
             "disabled": False,
-            "error_codes": []
+            "error_codes": [],
+            "error_messages": {}
         }
 
         # 同步更新状态表中的 tier 字段
@@ -658,14 +643,13 @@ async def verify_credential_project_common(filename: str, mode: str = "geminicli
         if mode == "geminicli":
             state_update["preview"] = True
 
-        await storage_adapter.update_credential_state(filename, state_update, mode=mode)
-
-        if mode == "antigravity":
-            await _recover_credential_after_success(
-                filename,
-                mode=mode,
-                model_name="gemini-2.5-flash",
-            )
+        saved = await storage_adapter.compare_and_swap_credential(
+            filename, credential_data, updated_data, mode=mode, state_updates=state_update
+        )
+        if not saved:
+            return JSONResponse(status_code=409, content={
+                "success": False, "message": "验证期间授权已变更或删除，请重新检查"
+            })
 
         log.info(f"检验 {mode} 凭证成功: {filename} - Project ID: {project_id}, Tier: {subscription_tier} - 已解除禁用并清除错误码")
 
@@ -1366,20 +1350,7 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
         if not credential_data:
             return {"success": False, "filename": filename, "error": "凭证不存在"}
 
-        # 使用 Credentials 对象自动处理 token 刷新
-        creds = Credentials.from_dict(credential_data)
-        network = await storage_adapter.resolve_credential_network(filename, mode="antigravity")
-        creds.proxy_url = proxy_argument_from_network(network)
-
-        # 自动刷新 token（如果需要）
-        await creds.refresh_if_needed()
-
-        # 如果 token 被刷新了，更新存储
-        updated_data = creds.to_dict()
-        if updated_data != credential_data:
-            log.info(f"Token已自动刷新: {filename}")
-            await storage_adapter.store_credential(filename, updated_data, mode=mode)
-            credential_data = updated_data
+        credential_data, creds = await credential_manager.get_account_credentials(filename, mode)
 
         # 获取访问令牌
         access_token = credential_data.get("access_token") or credential_data.get("token")
@@ -1566,17 +1537,7 @@ async def configure_preview_channel(
         if not credential_data:
             raise HTTPException(status_code=404, detail="凭证不存在")
 
-        # 创建凭证对象并刷新 token（如果需要）
-        credentials = Credentials.from_dict(credential_data)
-        if mode == "antigravity":
-            network = await storage_adapter.resolve_credential_network(filename, mode=mode)
-            credentials.proxy_url = proxy_argument_from_network(network)
-        token_refreshed = await credentials.refresh_if_needed()
-
-        if token_refreshed:
-            log.info(f"Token已自动刷新: {filename}")
-            credential_data = credentials.to_dict()
-            await storage_adapter.store_credential(filename, credential_data, mode=mode)
+        credential_data, credentials = await credential_manager.get_account_credentials(filename, mode)
 
         # 获取 access_token 和 project_id
         access_token = credential_data.get("access_token") or credential_data.get("token")
@@ -1791,18 +1752,7 @@ async def test_credential(
         if not credential_data:
             raise HTTPException(status_code=404, detail="凭证不存在")
 
-        # 创建凭证对象并尝试刷新 token（如果需要）
-        credentials = Credentials.from_dict(credential_data)
-        if mode == "antigravity":
-            network = await storage_adapter.resolve_credential_network(filename, mode=mode)
-            credentials.proxy_url = proxy_argument_from_network(network)
-        token_refreshed = await credentials.refresh_if_needed()
-
-        # 如果 token 被刷新了，更新存储
-        if token_refreshed:
-            log.info(f"Token已自动刷新: {filename} (mode={mode})")
-            credential_data = credentials.to_dict()
-            await storage_adapter.store_credential(filename, credential_data, mode=mode)
+        credential_data, credentials = await credential_manager.get_account_credentials(filename, mode)
 
         # 获取访问令牌
         access_token = credential_data.get("access_token") or credential_data.get("token")

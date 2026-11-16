@@ -24,6 +24,14 @@ class StorageBackend(Protocol):
         """存储凭证数据"""
         ...
 
+    async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None, lease_owner=None) -> bool: ...
+
+    async def acquire_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60) -> str: ...
+
+    async def renew_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60) -> bool: ...
+
+    async def release_refresh_lease(self, filename, owner, mode="geminicli", *, cooldown=0) -> None: ...
+
     async def get_credential(self, filename: str, mode: str = "geminicli") -> Optional[Dict[str, Any]]:
         """获取凭证数据"""
         ...
@@ -131,6 +139,27 @@ class StorageAdapter:
         """存储凭证数据"""
         self._ensure_initialized()
         return await self._backend.store_credential(filename, credential_data, mode)
+
+    async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None, lease_owner=None):
+        self._ensure_initialized()
+        options = {"state_updates": state_updates}
+        if lease_owner is not None:
+            options["lease_owner"] = lease_owner
+        return await self._backend.compare_and_swap_credential(
+            filename, expected, replacement, mode, **options
+        )
+
+    async def acquire_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60):
+        self._ensure_initialized()
+        return await self._backend.acquire_refresh_lease(filename, owner, mode, ttl=ttl)
+
+    async def renew_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60):
+        self._ensure_initialized()
+        return await self._backend.renew_refresh_lease(filename, owner, mode, ttl=ttl)
+
+    async def release_refresh_lease(self, filename, owner, mode="geminicli", *, cooldown=0):
+        self._ensure_initialized()
+        return await self._backend.release_refresh_lease(filename, owner, mode, cooldown=cooldown)
 
     async def get_credential(self, filename: str, mode: str = "geminicli") -> Optional[Dict[str, Any]]:
         """获取凭证数据"""

@@ -1488,7 +1488,13 @@ class AntigravityQuotaProjectTests(unittest.IsolatedAsyncioTestCase):
         quota_mock = AsyncMock(
             return_value={"success": True, "models": {}, "groups": []}
         )
+        from src.credential_manager import CredentialManager
+        manager = CredentialManager()
+        manager._initialized = True
+        manager._storage_adapter = FakeStorage()
         with (
+            patch.object(creds_panel.credential_manager, "get_account_credentials",
+                         AsyncMock(side_effect=manager.get_account_credentials)),
             patch.object(
                 creds_panel,
                 "get_storage_adapter",
@@ -1558,7 +1564,13 @@ class AntigravityQuotaProjectTests(unittest.IsolatedAsyncioTestCase):
                 "groups": [],
             }
         )
+        from src.credential_manager import CredentialManager
+        manager = CredentialManager()
+        manager._initialized = True
+        manager._storage_adapter = FakeStorage()
         with (
+            patch.object(creds_panel.credential_manager, "get_account_credentials",
+                         AsyncMock(side_effect=manager.get_account_credentials)),
             patch.object(
                 creds_panel,
                 "get_storage_adapter",
