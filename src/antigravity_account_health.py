@@ -198,7 +198,7 @@ async def check_antigravity_account_health(
                 egress_country=egress_country,
                 binding_status="proxy_drift",
                 eligibility_status="unchecked",
-                eligibility_reason="Egress IP is already assigned to another account",
+                eligibility_reason="出口 IP 已被其他账号占用，或仍处于账号删除后的 7 天保留期",
                 eligibility_checked_at=timestamp,
             )
 

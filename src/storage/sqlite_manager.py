@@ -470,6 +470,35 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             )
         """)
 
+        # Deleted accounts reserve their last observed public exit for seven days.
+        # Keep this separate from health: late probes must not extend the hold.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_egress_reservations (
+                credential_name TEXT NOT NULL,
+                egress_ip TEXT NOT NULL,
+                deleted_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                PRIMARY KEY (credential_name, egress_ip)
+            )
+        """)
+        await db.execute("""CREATE INDEX IF NOT EXISTS idx_ag_egress_reservations_ip
+                            ON antigravity_egress_reservations(egress_ip, expires_at)""")
+        # Legacy orphans have no reliable deletion timestamp. Start one bounded
+        # hold at migration, then remove the orphan so restarts cannot renew it.
+        migration_time = time.time()
+        await db.execute("""
+            INSERT OR IGNORE INTO antigravity_egress_reservations
+                (credential_name, egress_ip, deleted_at, expires_at)
+            SELECT h.credential_name, h.egress_ip, ?, ?
+            FROM antigravity_account_health h
+            WHERE h.egress_ip IS NOT NULL AND h.egress_ip <> ''
+              AND NOT EXISTS (SELECT 1 FROM antigravity_credentials a
+                              WHERE a.filename = h.credential_name)
+        """, (migration_time, migration_time + 7 * 86400))
+        await db.execute("""DELETE FROM antigravity_account_health
+            WHERE NOT EXISTS (SELECT 1 FROM antigravity_credentials a
+                              WHERE a.filename = credential_name)""")
+
         # 配置表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS config (
@@ -1681,9 +1710,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         filename = os.path.basename(filename)
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
-                """SELECT 1 FROM antigravity_account_health
-                   WHERE egress_ip = ? AND credential_name <> ? LIMIT 1""",
-                (egress_ip, filename),
+                """SELECT 1 FROM antigravity_account_health h
+                   JOIN antigravity_credentials a ON a.filename = h.credential_name
+                   WHERE h.egress_ip = ? AND h.credential_name <> ?
+                   UNION ALL
+                   SELECT 1 FROM antigravity_egress_reservations
+                   WHERE egress_ip = ? AND credential_name <> ? AND expires_at > ?
+                   LIMIT 1""",
+                (egress_ip, filename, egress_ip, filename, time.time()),
             ) as cursor:
                 return await cursor.fetchone() is not None
 
@@ -3552,6 +3586,21 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     DELETE FROM {table_name} WHERE filename = ?
                 """, (filename,))
                 deleted_count = result.rowcount
+
+                if mode == "antigravity" and deleted_count:
+                    deleted_at = time.time()
+                    await db.execute("""
+                        INSERT OR REPLACE INTO antigravity_egress_reservations
+                            (credential_name, egress_ip, deleted_at, expires_at)
+                        SELECT credential_name, egress_ip, ?, ?
+                        FROM antigravity_account_health
+                        WHERE credential_name = ? AND egress_ip IS NOT NULL
+                          AND egress_ip <> ''
+                    """, (deleted_at, deleted_at + 7 * 86400, filename))
+                    await db.execute(
+                        "DELETE FROM antigravity_account_health WHERE credential_name = ?",
+                        (filename,),
+                    )
 
                 await self._audit_credential(db, filename, mode, "delete",
                                              json.loads(old_row[0]) if old_row else None,
