@@ -6148,7 +6148,7 @@ function populateConfigForm() {
     setConfigField('port', c.port || 7861);
     setConfigField('configApiPassword', c.api_password || '');
     setConfigField('configPanelPassword', c.panel_password || '');
-    setConfigField('configPassword', c.password || 'pwd');
+    setConfigField('configPassword', c.password ?? '');
     setConfigField('credentialsDir', c.credentials_dir || '');
     setConfigField('proxy', c.proxy || '');
     setConfigField('codeAssistEndpoint', c.code_assist_endpoint || '');
@@ -6342,7 +6342,7 @@ async function saveConfig() {
             port: getInt('port', 7861),
             api_password: getValue('configApiPassword'),
             panel_password: getValue('configPanelPassword'),
-            password: getValue('configPassword', 'pwd'),
+            password: getValue('configPassword'),
             code_assist_endpoint: getValue('codeAssistEndpoint'),
             credentials_dir: getValue('credentialsDir'),
             proxy: getValue('proxy'),

@@ -176,7 +176,6 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             raise HTTPException(400, str(exc)) from exc
 
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
-        log.debug(f"收到的password值: {new_config.get('password', 'NOT_FOUND')}")
 
         # 验证配置项
         if "retry_429_max_retries" in new_config:
@@ -457,8 +456,6 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                     saved = await storage_adapter.set_config(key, value)
                 if not saved:
                     raise HTTPException(status_code=500, detail="配置写入 SQLite 失败，请重试")
-                if key in ("password", "api_password", "panel_password"):
-                    log.debug(f"设置{key}字段为: {value}")
 
         # 重新加载配置缓存（关键！）
         await config.reload_config()
@@ -491,14 +488,6 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 await (await get_call_monitor(storage_adapter)).cleanup()
             except Exception as e:
                 log.warning(f"按新保留期清理调用记录失败: {e}")
-
-        # 验证保存后的结果
-        test_api_password = await config.get_api_password()
-        test_panel_password = await config.get_panel_password()
-        test_password = await config.get_server_password()
-        log.debug(f"保存后立即读取的API密码: {test_api_password}")
-        log.debug(f"保存后立即读取的面板密码: {test_panel_password}")
-        log.debug(f"保存后立即读取的通用密码: {test_password}")
 
         # 构建响应消息
         response_data = {

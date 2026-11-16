@@ -2129,7 +2129,7 @@
     </style>
     <link rel="stylesheet" href="./front/control_panel.css?v=network-policy-20261113">
     <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
-    <link rel="stylesheet" href="./front/config_tabs.css?v=account-telemetry-20261116">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=telemetry-proxy-password-fix-20261116">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
 </head>
 
@@ -2983,8 +2983,8 @@
 
                             <div class="form-group">
                                 <label for="configPassword">通用密码:</label>
-                                <input type="text" id="configPassword" class="config-input" placeholder="pwd" />
-                                <small class="config-note">（兼容性保留）设置后将覆盖上述两个密码，留空则使用分开的密码设置</small>
+                                <input type="text" id="configPassword" class="config-input" placeholder="留空使用分开的密码设置" />
+                                <small class="config-note">（兼容性保留）仅在对应的独立密码未设置时使用；留空表示不设置通用密码</small>
                             </div>
                         </div>
                         <div class="config-group">
@@ -3643,7 +3643,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-telemetry-20261116"></script>
+    <script src="./front/common.js?v=telemetry-proxy-password-fix-20261116"></script>
 
 </body>
 
