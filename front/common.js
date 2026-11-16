@@ -1309,6 +1309,7 @@ function createCredCard(credInfo, manager) {
         ${managerType === 'antigravity' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}')" title="使用账号绑定代理检测出口 IP 与地区资格">检测出口</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-prompt-fusion-account="${escapeHtml(filename)}">提示词融合</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-concurrency-account="${escapeHtml(filename)}">并发设置</button>` : ''}
+        ${managerType === 'antigravity' ? `<button class="cred-btn" data-telemetry-account="${escapeHtml(filename)}">遥测设置</button>` : ''}
         ${managerType === 'antigravity' ? `<button class="cred-btn" data-warmup-account="${escapeHtml(filename)}" title="配置真实业务流量渐进放量">养号</button>` : ''}
         ${managerType === 'antigravity' && credInfo.proxy_mode === 'group' ? `<button class="cred-btn" onclick="checkAntigravityNetworkHealth('${filename}', true)" title="从同组选择其他可用节点并检测出口；独占组保持一账号一节点，无备用节点时保留原绑定">更换节点</button>` : ''}
         ${managerType === 'antigravity' ? (credInfo.enable_credit
@@ -1374,6 +1375,9 @@ function createCredCard(credInfo, manager) {
     div.querySelectorAll('[data-concurrency-account]').forEach(button => {
         button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
     });
+    div.querySelectorAll('[data-telemetry-account]').forEach(button => {
+        button.addEventListener('click', () => openAccountTelemetryDialog(button.dataset.telemetryAccount));
+    });
     div.querySelectorAll('[data-prompt-fusion-account]').forEach(button => {
         button.addEventListener('click', () => openAccountPromptFusion(button.dataset.promptFusionAccount));
     });
@@ -1384,6 +1388,68 @@ function createCredCard(credInfo, manager) {
     });
 
     return div;
+}
+
+async function openAccountTelemetryDialog(filename) {
+    document.getElementById('accountTelemetryDialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'accountTelemetryDialog';
+    dialog.className = 'proxy-policy-dialog telemetry-settings-dialog';
+    dialog.setAttribute('aria-labelledby', 'accountTelemetryTitle');
+    dialog.innerHTML = `<form class="proxy-policy-form">
+        <div class="proxy-dialog-head"><h3 id="accountTelemetryTitle">账号遥测</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p class="telemetry-account">${escapeHtml(filename)}</p>
+        <label class="proxy-dialog-field"><span>遥测模式</span><select name="mode" disabled><option value="off">关闭</option><option value="preview">仅本地预览</option><option value="send">发送至 Google</option></select></label>
+        <p class="telemetry-help">独立绑定此账号的身份与环境，不影响其他账号。</p>
+        <div class="telemetry-notice"><strong>仅记录真实请求元数据</strong><span>包含模型、用量、耗时和会话标识，不含提示词和回答。发送模式使用此账号认证与绑定出口；Google 处理效果尚未验证，不修改账号的数据分享偏好。</span></div>
+        <div data-status class="telemetry-status" aria-live="polite">正在加载…</div>
+        <p data-error role="alert" class="proxy-dialog-copy"></p>
+        <div class="proxy-dialog-actions"><button type="button" data-refresh class="secondary">刷新状态</button><button type="button" data-close class="secondary">取消</button><button type="submit" disabled>保存</button></div>
+    </form>`;
+    const form = dialog.querySelector('form');
+    const save = form.querySelector('[type="submit"]');
+    const errorLabel = dialog.querySelector('[data-error]');
+    const statusLabel = dialog.querySelector('[data-status]');
+    const endpoint = `./creds/${encodeURIComponent(filename)}/telemetry?mode=antigravity`;
+    const display = data => {
+        form.elements.mode.value = data.mode;
+        statusLabel.innerHTML = _telemetryFacts([
+            ['账号身份', data.identity_ready ? '已获取' : '请先获取邮箱'],
+            ['环境绑定', data.environment_matches ? '一致' : '未绑定或已变化'],
+            ['最近处理', `${CM_TELEMETRY_LABELS[data.last_outcome] || '暂无事件'}${data.last_http_status ? ` · HTTP ${data.last_http_status}` : ''}`],
+            ['处理时间', data.last_event_at ? new Date(data.last_event_at * 1000).toLocaleString() : '—'],
+            ['安装标识', data.installation_id || '保存后建立', true]
+        ]);
+    };
+    const load = async () => {
+        try {
+            errorLabel.textContent = '';
+            const response = await fetch(endpoint, { headers: getAuthHeaders() });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '加载失败');
+            display(data);
+            form.elements.mode.disabled = false;
+            save.disabled = false;
+        } catch (error) { errorLabel.textContent = error.message; }
+    };
+    dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
+    dialog.querySelector('[data-refresh]').addEventListener('click', load);
+    dialog.addEventListener('close', () => dialog.remove());
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        save.disabled = true;
+        errorLabel.textContent = '';
+        try {
+            const response = await fetch(endpoint, { method: 'PATCH', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: form.elements.mode.value }) });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '保存失败');
+            display(data);
+        } catch (error) { errorLabel.textContent = error.message; }
+        finally { save.disabled = false; }
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    await load();
 }
 
 function openAccountConcurrencyDialog(filename) {
@@ -3194,6 +3260,7 @@ function onCallMonitorRangeChange(select) {
 
 function toggleCallMonitorMask() {
     callMonitorState.mask = !callMonitorState.mask;
+    document.getElementById('cmTelemetryDialog')?.close();
     renderCallMonitor(); // 脱敏是纯前端渲染，直接用缓存数据重绘
 }
 
@@ -3633,6 +3700,118 @@ async function showCallMonitorContent(index) {
     }
 }
 
+function _telemetryFacts(entries) {
+    return `<dl class="telemetry-facts">${entries.map(([label, value, wide]) =>
+        `<div${wide ? ' class="telemetry-fact-wide"' : ''}><dt>${_cmEscape(label)}</dt><dd>${_cmEscape(value)}</dd></div>`
+    ).join('')}</dl>`;
+}
+
+const CM_TELEMETRY_LABELS = {
+    queued: '排队中', sending: '发送中', preview: '本地预览', sent: 'HTTP 成功',
+    send_failed: '发送失败', discarded_binding_changed: '绑定变化，已丢弃',
+    preview_write_failed: '预览写入失败', processing_failed: '处理失败'
+};
+
+function _cmTelemetryCell(row, index) {
+    if (row.channel && row.channel !== 'antigravity') return '<span class="cm-muted">不适用</span>';
+    const info = row.telemetry || {};
+    const labels = (info.outcomes || []).map(value => CM_TELEMETRY_LABELS[value] || '未知状态');
+    const label = info.count ? labels.join(' / ') : '未记录';
+    const tone = (info.outcomes || []).some(value => ['send_failed', 'preview_write_failed', 'processing_failed'].includes(value)) ? 'error' : info.count ? 'active' : 'muted';
+    return `<button type="button" class="cm-telemetry-link telemetry-${tone}" onclick="showCallMonitorTelemetry(${index})" aria-label="查看遥测：${_cmEscape(label)}">${_cmEscape(label)}${info.count > 1 ? ` · ${info.count} 条` : ''}</button>`;
+}
+
+async function showCallMonitorTelemetry(index) {
+    if (callMonitorState.mask) {
+        showStatus('请先关闭脱敏，再查看账号遥测详情', 'info');
+        return;
+    }
+    const row = callMonitorState.lastData?.records?.[index];
+    if (!row) return;
+    document.getElementById('cmTelemetryDialog')?.close();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'cmTelemetryDialog';
+    dialog.className = 'proxy-policy-dialog cm-telemetry-dialog';
+    dialog.setAttribute('aria-labelledby', 'cmTelemetryTitle');
+    dialog.innerHTML = `<div class="proxy-dialog-head"><h3 id="cmTelemetryTitle">本次请求遥测</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p data-account class="telemetry-account"></p>
+        <p class="telemetry-help">本次请求的实际事件与发送结果。HTTP 成功不代表 Google 已采用事件。</p>
+        <div data-events aria-live="polite"></div>
+        <div class="proxy-dialog-actions"><button type="button" data-refresh>刷新状态</button><button type="button" data-close>关闭</button></div>`;
+    dialog.querySelector('[data-account]').textContent = row.user_email || row.credential_name || '未知账号';
+    const content = dialog.querySelector('[data-events]');
+    const refresh = dialog.querySelector('[data-refresh]');
+    const load = async () => {
+        refresh.disabled = true;
+        content.textContent = '正在加载遥测信息…';
+        try {
+            if (!row.timing_id) {
+                content.textContent = '该历史请求没有关联标识，无法追溯遥测信息。';
+                return;
+            }
+            const params = new URLSearchParams({ timing_id: row.timing_id, credential_name: row.credential_name || '' });
+            const response = await fetch(`./call-monitor/telemetry?${params}`, { headers: getAuthHeaders(), cache: 'no-store' });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || '加载失败');
+            if (!dialog.isConnected) return;
+            content.replaceChildren();
+            if (!data.events?.length) {
+                content.textContent = '本次请求暂无遥测记录。可能未启用、未满足账号与环境校验、仍在处理，或记录已到期清理；不会用当前账号设置推断历史状态。';
+                return;
+            }
+            for (const item of data.events) {
+                const section = document.createElement('section');
+                section.className = 'cm-telemetry-event';
+                const heading = document.createElement('h4');
+                heading.textContent = CM_TELEMETRY_LABELS[item.outcome] || '未知状态';
+                const summary = document.createElement('p');
+                const mode = item.mode === 'preview' ? '仅本地预览' : '发送至 Google';
+                summary.textContent = `${mode} · ${item.attempts} 次发送尝试${item.http_status ? ` · HTTP ${item.http_status}` : ''} · ${new Date(item.updated_at * 1000).toLocaleString()}`;
+                const facts = document.createElement('div');
+                facts.innerHTML = _telemetryFacts([
+                    ['模型', item.event.model_id || '—'],
+                    ['耗时', `${item.event.duration_ms ?? '—'} ms`],
+                    ['输入 / 输出用量', `${item.event.promptTokenCount ?? '—'} / ${item.event.candidatesTokenCount ?? '—'}`],
+                    ['请求结果', ({ completed: '已完成', incomplete: '未完成', cancelled: '已取消', network_error: '网络错误', http_error: '请求失败' })[item.event.outcome] || '未知']
+                ]);
+                const binding = document.createElement('details');
+                const bindingTitle = document.createElement('summary');
+                bindingTitle.textContent = '账号与环境绑定';
+                const bindingContent = document.createElement('div');
+                bindingContent.innerHTML = _telemetryFacts([
+                    ['账号', item.filename], ['传输', item.binding.native_transport ? '原生传输' : 'HTTP 客户端'],
+                    ['安装标识', item.binding.installation_id, true],
+                    ['环境摘要', item.binding.environment_ref, true],
+                    ['出口摘要', item.binding.route_ref || '未记录', true],
+                    ['UA', item.binding.user_agent, true], ['事件 ID', item.event_id, true]
+                ]);
+                binding.append(bindingTitle, bindingContent);
+                const details = document.createElement('details');
+                const title = document.createElement('summary');
+                title.textContent = '查看事件字段 · 不含对话正文';
+                const fields = document.createElement('pre');
+                fields.className = 'cm-telemetry-json';
+                fields.textContent = JSON.stringify({ event_name: 'gateway_generation_finished', ...item.event }, null, 2);
+                details.append(title, fields);
+                section.append(heading, summary, facts, binding, details);
+                content.append(section);
+            }
+            const retention = document.createElement('p');
+            retention.className = 'proxy-dialog-copy';
+            retention.textContent = `遥测历史最多保留 ${data.retention_days} 天、${data.max_events.toLocaleString()} 条，删除账号时一并清理。`;
+            content.append(retention);
+        } catch (error) {
+            content.textContent = `遥测信息加载失败：${error.message}。请点击刷新重试。`;
+        } finally { refresh.disabled = false; }
+    };
+    dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
+    refresh.addEventListener('click', load);
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    await load();
+}
+
 function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
@@ -3652,13 +3831,14 @@ function _cmRenderRealtime(records) {
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
             <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${_cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
         </tr>`;
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>请求特征 / 详情</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>遥测</th><th>请求特征 / 详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;

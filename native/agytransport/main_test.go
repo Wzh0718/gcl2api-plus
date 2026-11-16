@@ -33,6 +33,10 @@ func TestEndpointProfilesMatchCapturedTransportShape(t *testing.T) {
 	if oauth.TLSNextProto != nil {
 		t.Fatal("OAuth must retain the standard Go HTTP/2 transport")
 	}
+	telemetry, err := pool.transport("telemetry", "")
+	if err != nil || !telemetry.ForceAttemptHTTP2 || telemetry.TLSNextProto != nil {
+		t.Fatal("telemetry must retain standard Go HTTP/2 transport", err)
+	}
 }
 
 func TestRelayStreamsAndReusesUpstreamConnection(t *testing.T) {
@@ -93,26 +97,30 @@ func TestRelayStreamsAndReusesUpstreamConnection(t *testing.T) {
 }
 
 func TestOAuthUsesStandardGoUserAgent(t *testing.T) {
-	userAgent := make(chan string, 1)
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userAgent <- r.Header.Get("User-Agent")
-		_, _ = io.WriteString(w, "{}")
-	}))
-	defer target.Close()
-	relay := &server{
-		allowedHosts: map[string]bool{"127.0.0.1": true},
-		allowHTTP:    true,
-		pool:         newTransportPool(),
-	}
-	req, _ := http.NewRequest("POST", "http://relay.invalid/request", strings.NewReader("grant_type=refresh_token"))
-	req.Header.Set("X-Agy-Target-Url", target.URL)
-	req.Header.Set("X-Agy-Profile", "oauth")
-	req.Header.Set("X-Agy-Timeout-Ms", "1000")
-	req.Header.Set("User-Agent", "vscode/1.X.X (Antigravity/2.28.2)")
-	recorder := httptest.NewRecorder()
-	relay.ServeHTTP(recorder, req)
-	if got := <-userAgent; got != "Go-http-client/1.1" {
-		t.Fatalf("OAuth must use the default Go User-Agent, got %q", got)
+	for _, profile := range []string{"oauth", "telemetry"} {
+		t.Run(profile, func(t *testing.T) {
+			userAgent := make(chan string, 1)
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				userAgent <- r.Header.Get("User-Agent")
+				_, _ = io.WriteString(w, "{}")
+			}))
+			defer target.Close()
+			relay := &server{
+				allowedHosts: map[string]bool{"127.0.0.1": true},
+				allowHTTP:    true,
+				pool:         newTransportPool(),
+			}
+			req, _ := http.NewRequest("POST", "http://relay.invalid/request", strings.NewReader("grant_type=refresh_token"))
+			req.Header.Set("X-Agy-Target-Url", target.URL)
+			req.Header.Set("X-Agy-Profile", profile)
+			req.Header.Set("X-Agy-Timeout-Ms", "1000")
+			req.Header.Set("User-Agent", "vscode/1.X.X (Antigravity/2.28.2)")
+			recorder := httptest.NewRecorder()
+			relay.ServeHTTP(recorder, req)
+			if got := <-userAgent; got != "Go-http-client/1.1" {
+				t.Fatalf("OAuth must use the default Go User-Agent, got %q", got)
+			}
+		})
 	}
 }
 

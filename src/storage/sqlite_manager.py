@@ -18,6 +18,7 @@ import inspect
 from src.operational_audit import make_event, reference
 from src.credential_revision import credential_snapshot, next_credential_revision, checked_state_updates
 from src.storage.antigravity_warmup_store import AntigravityWarmupStore
+from src.storage.antigravity_telemetry_store import AntigravityTelemetryStore
 from src.storage.call_record_content import decode_details, encode_details
 
 
@@ -49,7 +50,7 @@ def _visible_error_codes(
     return [code for code in codes if str(code) != "429"]
 
 
-class SQLiteManager(AntigravityWarmupStore):
+class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     """SQLite 数据库管理器"""
 
     # 状态字段常量
@@ -674,6 +675,7 @@ class SQLiteManager(AntigravityWarmupStore):
             ON call_records(credential_name, created_at)
         """)
 
+        await self._create_telemetry_tables(db)
         log.debug("SQLite tables and indexes created")
 
     async def _migrate_api_key_secret_ciphertext(

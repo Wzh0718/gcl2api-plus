@@ -105,6 +105,9 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     global global_credential_manager
 
+    from src.antigravity_telemetry import telemetry_service
+    telemetry_service.closed = False
+
     log.info("启动 GCLI2API 主服务")
 
     # 初始化配置缓存（优先执行）
@@ -231,6 +234,10 @@ async def lifespan(app: FastAPI):
         log.info("所有异步任务已关闭")
     except Exception as e:
         log.error(f"关闭异步任务时出错: {e}")
+
+    # Drain account telemetry before closing credential storage and transport.
+    from src.antigravity_telemetry import telemetry_service
+    await telemetry_service.close()
 
     # 然后关闭凭证管理器（使用单例实例而非未赋值的全局变量）
     try:

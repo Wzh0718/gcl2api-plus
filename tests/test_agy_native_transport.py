@@ -8,6 +8,7 @@ import pytest
 def test_antigravity_profile_matches_official_endpoint_split():
     from src.httpx_client import antigravity_profile_for_url
 
+    assert antigravity_profile_for_url("https://play.googleapis.com/log") == "telemetry"
     assert antigravity_profile_for_url("https://oauth2.googleapis.com/token") == "oauth"
     assert antigravity_profile_for_url("https://www.googleapis.com/oauth2/v2/userinfo") == "cloudcode"
     assert antigravity_profile_for_url(

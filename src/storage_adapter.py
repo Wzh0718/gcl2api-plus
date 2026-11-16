@@ -149,6 +149,26 @@ class StorageAdapter:
             filename, expected, replacement, mode, **options
         )
 
+    async def get_telemetry_account(self, filename=None, *, access_token=None):
+        self._ensure_initialized()
+        return await self._backend.get_telemetry_account(filename, access_token=access_token)
+
+    async def save_telemetry_event(self, snapshot, event, outcome, status=None, attempts=0):
+        self._ensure_initialized()
+        return await self._backend.save_telemetry_event(snapshot, event, outcome, status, attempts)
+
+    async def list_telemetry_events(self, timing_ids):
+        self._ensure_initialized()
+        return await self._backend.list_telemetry_events(timing_ids)
+
+    async def configure_account_telemetry(self, filename, expected, mode, environment):
+        self._ensure_initialized()
+        return await self._backend.configure_account_telemetry(filename, expected, mode, environment)
+
+    async def record_telemetry_outcome(self, account_id, policy_revision, outcome, status=None):
+        self._ensure_initialized()
+        return await self._backend.record_telemetry_outcome(account_id, policy_revision, outcome, status)
+
     async def acquire_refresh_lease(self, filename, owner, mode="geminicli", *, ttl=60):
         self._ensure_initialized()
         return await self._backend.acquire_refresh_lease(filename, owner, mode, ttl=ttl)

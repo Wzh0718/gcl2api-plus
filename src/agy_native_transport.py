@@ -36,6 +36,8 @@ def antigravity_profile_for_url(url: str) -> str:
     parsed = urlsplit(url)
     if parsed.hostname == "oauth2.googleapis.com":
         return "oauth"
+    if parsed.hostname == "play.googleapis.com":
+        return "telemetry"
     return "cloudcode"
 
 
@@ -72,6 +74,7 @@ class AgyNativeTransport:
             for parsed in (urlsplit(value) for value in urls)
             if parsed.hostname
         }
+        hosts.add("play.googleapis.com")
         hosts.update(
             host.strip()
             for host in os.getenv(

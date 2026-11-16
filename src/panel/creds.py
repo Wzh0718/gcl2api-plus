@@ -9,7 +9,7 @@ import os
 import time
 import zipfile
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
@@ -912,6 +912,36 @@ async def get_cred_detail(
     except Exception as e:
         log.error(f"获取凭证详情失败 {filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AccountTelemetryRequest(BaseModel):
+    mode: Literal["off", "preview", "send"]
+
+
+@router.get("/{filename}/telemetry")
+async def get_account_telemetry(filename: str, token: str = Depends(verify_panel_token), mode: str = "antigravity"):
+    return await _account_telemetry(filename, mode)
+
+
+@router.patch("/{filename}/telemetry")
+async def set_account_telemetry(filename: str, request: AccountTelemetryRequest,
+                                token: str = Depends(verify_panel_token), mode: str = "antigravity"):
+    return await _account_telemetry(filename, mode, request.mode)
+
+
+async def _account_telemetry(filename, mode, setting=None):
+    from src.antigravity_telemetry import telemetry_service
+    if validate_mode(mode) != "antigravity":
+        raise HTTPException(status_code=400, detail="遥测仅支持 Antigravity 账号")
+    if not filename.endswith(".json") or os.path.basename(filename) != filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    try:
+        return await (telemetry_service.status(filename) if setting is None else
+                      telemetry_service.configure(filename, setting))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 class AccountConcurrencyRequest(BaseModel):

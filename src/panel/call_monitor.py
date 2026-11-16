@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 import config
 from log import log
@@ -319,6 +319,12 @@ async def call_monitor_realtime(
     else:
         counters = monitor.buffer_counters(since_ts=since_ts)
 
+    getter = getattr(storage._backend, "list_telemetry_events", None)
+    events = await getter([row.get("timing_id") for row in paged["records"]]) if getter else []
+    for row in paged["records"]:
+        matching = [event for event in events if event["timing_id"] == row.get("timing_id")
+                    and event["filename"] == row.get("credential_name")]
+        row["telemetry"] = {"count": len(matching), "outcomes": list(dict.fromkeys(event["outcome"] for event in matching))}
     await _attach_api_key_names(paged["records"], storage._backend)
     await _attach_account_emails(paged["records"], storage._backend)
     await _attach_warmup_status(paged["records"], storage._backend)
@@ -344,6 +350,18 @@ async def call_monitor_realtime(
         },
         "records": paged["records"],
     }
+
+
+@router.get("/telemetry")
+async def call_monitor_telemetry(
+    timing_id: str = Query(min_length=1, max_length=128),
+    credential_name: str = Query(min_length=1, max_length=255),
+    _token: str = Depends(verify_panel_token),
+):
+    storage = await get_storage_adapter()
+    events = await storage.list_telemetry_events([timing_id])
+    return {"events": [event for event in events if event["filename"] == credential_name],
+            "retention_days": 7, "max_events": 10000}
 
 
 @router.get("/content")

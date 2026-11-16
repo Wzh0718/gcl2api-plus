@@ -123,3 +123,73 @@
         align-self: flex-end;
     }
 }
+
+/* Per-request telemetry history, shared by desktop and mobile panels. */
+.cm-telemetry-link {
+    border: 0;
+    background: transparent;
+    color: #2563eb;
+    padding: 4px 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    white-space: nowrap;
+}
+dialog.cm-telemetry-dialog { box-sizing: border-box; width: min(840px, 94vw); max-height: 85vh; overflow: auto; padding: 20px; }
+.cm-telemetry-event { border-top: 1px solid #e2e8f0; padding: 12px 0; }
+.cm-telemetry-event h4 { margin: 0 0 8px; }
+.cm-telemetry-event p { font-size: 13px; color: #475569; }
+.cm-telemetry-json {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: #f8fafc;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 12px;
+    max-height: 40vh;
+    overflow: auto;
+}
+
+/* Telemetry uses the panel's quiet blue/gray visual language. */
+dialog.telemetry-settings-dialog,
+dialog.cm-telemetry-dialog {
+    font-family: inherit;
+    color: #172b4d;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    box-shadow: 0 16px 48px rgba(23, 43, 77, .16);
+}
+dialog.telemetry-settings-dialog { width: min(560px, 94vw); max-height: 90vh; overflow: auto; box-sizing: border-box; }
+.telemetry-account { margin: 8px 0 18px; color: #64748b; font-size: 13px; overflow-wrap: anywhere; }
+.telemetry-help { margin: 8px 0 18px; color: #64748b; font-size: 13px; line-height: 1.7; }
+.telemetry-notice { display: grid; gap: 6px; margin: 16px 0; padding: 14px; background: #f5f8fc; border: 1px solid #e6edf5; border-radius: 8px; font-size: 12px; line-height: 1.7; color: #64748b; }
+.telemetry-notice strong { font-weight: 600; color: #475569; }
+.telemetry-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px; margin: 0; padding: 16px; border: 1px solid #e6edf5; border-radius: 8px; background: #fafbfd; }
+.telemetry-facts > div { min-width: 0; }
+.telemetry-facts dt { margin-bottom: 5px; font-size: 11px; color: #64748b; }
+.telemetry-facts dd { margin: 0; font-size: 13px; color: #172b4d; line-height: 1.6; overflow-wrap: anywhere; }
+.telemetry-fact-wide { grid-column: 1 / -1; }
+.cm-telemetry-event { margin: 12px 0; padding: 18px; border: 1px solid #e2e8f0; border-radius: 10px; }
+.cm-telemetry-event h4 { color: #172b4d; font-size: 15px; }
+.cm-telemetry-event > p { margin: 6px 0 16px; font-size: 12px; color: #64748b; }
+.cm-telemetry-event details { border-top: 1px solid #edf1f6; margin-top: 14px; padding-top: 14px; }
+.cm-telemetry-event summary { font-size: 12px; color: #475569; cursor: pointer; }
+.cm-telemetry-event details .telemetry-facts { margin-top: 12px; }
+.cm-telemetry-link { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; font: inherit; font-size: 11px; line-height: 1.5; border-radius: 6px; text-decoration: none; background: #eff6ff; color: #2563eb; }
+.cm-telemetry-link::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
+.cm-telemetry-link:hover { filter: brightness(.96); }
+.cm-telemetry-link:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.cm-telemetry-link.telemetry-error { background: #fff1f2; color: #be123c; }
+.cm-telemetry-link.telemetry-muted { background: #f1f5f9; color: #64748b; }
+.cm-telemetry-dialog .proxy-dialog-actions button,
+.telemetry-settings-dialog .proxy-dialog-actions button { padding: 8px 14px; font: inherit; font-size: 12px; border: 1px solid #d7e0eb; background: #fff; color: #475569; border-radius: 7px; cursor: pointer; }
+.telemetry-settings-dialog .proxy-dialog-actions button[type="submit"] { background: #2563eb; border-color: #2563eb; color: #fff; }
+.telemetry-settings-dialog .proxy-dialog-field select { width: 100%; margin-top: 8px; padding: 10px 12px; border: 1px solid #d7e0eb; border-radius: 7px; background: #fff; color: #172b4d; font: inherit; font-size: 13px; }
+.telemetry-settings-dialog .proxy-dialog-field { display: block; font-size: 12px; }
+@media (max-width: 480px) {
+    dialog.cm-telemetry-dialog { padding: 16px; }
+    .telemetry-settings-dialog .proxy-policy-form { padding: 18px; }
+    .cm-telemetry-event { padding: 12px; }
+    .telemetry-facts { gap: 12px; padding: 12px; }
+}

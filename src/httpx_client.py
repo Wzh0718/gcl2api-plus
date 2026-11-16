@@ -20,6 +20,7 @@ from src.agy_native_transport import agy_native_transport, antigravity_profile_f
 from src.shadowsocks import shadowsocks_proxy_context
 from src.request_timing import add_timing_hook
 from src.request_capture import capture_post, capture_stream, active_attempt, observe_stream_headers
+from src.antigravity_telemetry import observe_post, observe_stream
 
 
 def get_decoded_response_headers(headers: Any) -> Dict[str, str]:
@@ -109,6 +110,7 @@ async def get_async(
 
 
 @capture_post
+@observe_post
 async def post_async(
     url: str,
     data: Any = None,
@@ -160,6 +162,7 @@ async def _idle_watch(iterator, idle_timeout: float, url: str):
 
 
 @capture_stream
+@observe_stream
 async def stream_post_async(
     url: str,
     body: Dict[str, Any],

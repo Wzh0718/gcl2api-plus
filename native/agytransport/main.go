@@ -54,7 +54,7 @@ func proxyFunc(raw string) (func(*http.Request) (*url.URL, error), error) {
 }
 
 func (p *transportPool) transport(profile, proxyURL string) (*http.Transport, error) {
-	if profile != "oauth" && profile != "cloudcode" {
+	if profile != "oauth" && profile != "cloudcode" && profile != "telemetry" {
 		return nil, fmt.Errorf("invalid profile")
 	}
 	proxy, err := proxyFunc(proxyURL)
@@ -75,7 +75,7 @@ func (p *transportPool) transport(profile, proxyURL string) (*http.Transport, er
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = proxy
-	if profile == "oauth" {
+	if profile == "oauth" || profile == "telemetry" {
 		transport.ForceAttemptHTTP2 = true
 	} else {
 		transport.ForceAttemptHTTP2 = false
@@ -182,7 +182,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upstream.Header.Del("Accept")
 	upstream.Header.Del("Accept-Encoding")
 	upstream.Header.Del("Content-Length")
-	if profile == "oauth" {
+	if profile == "oauth" || profile == "telemetry" {
 		upstream.Header.Del("User-Agent")
 	}
 
@@ -231,7 +231,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	socketPath := flag.String("socket", "", "Unix socket path")
-	allowed := flag.String("allowed-hosts", "oauth2.googleapis.com,www.googleapis.com,daily-cloudcode-pa.googleapis.com,cloudcode-pa.googleapis.com,generativelanguage.googleapis.com", "comma-separated target hosts")
+	allowed := flag.String("allowed-hosts", "play.googleapis.com,oauth2.googleapis.com,www.googleapis.com,daily-cloudcode-pa.googleapis.com,cloudcode-pa.googleapis.com,generativelanguage.googleapis.com", "comma-separated target hosts")
 	allowHTTP := flag.Bool("allow-http", false, "allow plaintext upstream URLs for local tests")
 	flag.Parse()
 	if *socketPath == "" {
