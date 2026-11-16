@@ -6,8 +6,49 @@ warmup 只在登录/检验/健康检查等低频路径触发，且任何失败�
 """
 
 from unittest.mock import AsyncMock, patch
+import asyncio
 
 import pytest
+
+
+@pytest.mark.asyncio
+async def test_optional_environment_requests_share_budget_and_are_cancelled(monkeypatch):
+    from src import google_oauth_api
+
+    entered, cancelled = [], []
+    async def stalled(url, **kwargs):
+        entered.append(url)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(url)
+
+    monkeypatch.setattr(google_oauth_api, "post_async", stalled)
+    monkeypatch.setattr(google_oauth_api, "ENVIRONMENT_WARMUP_TIMEOUT", 0.02)
+    await asyncio.wait_for(google_oauth_api.warm_antigravity_environment(
+        "https://example.test", {}, "project", proxy_url=None), timeout=1)
+    assert len(entered) == 2
+    assert set(cancelled) == set(entered)
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_has_explicit_timeout_and_safe_timing(monkeypatch):
+    from src import google_oauth_api
+    from src import auth_timing
+
+    response = type("Response", (), {
+        "raise_for_status": lambda self: None,
+        "json": lambda self: {"access_token": "private-token"},
+    })()
+    post = AsyncMock(return_value=response)
+    logs = []
+    monkeypatch.setattr(google_oauth_api, "post_async", post)
+    monkeypatch.setattr(google_oauth_api, "get_oauth_proxy_url", AsyncMock(return_value="https://example.test"))
+    monkeypatch.setattr(auth_timing.log, "info", logs.append)
+    await google_oauth_api.Flow("client", "secret", []).exchange_code("private-code")
+    assert post.call_args.kwargs["timeout"] == 30.0
+    assert any("stage=exchange_code" in line and "duration_ms=" in line for line in logs)
+    assert all("private-" not in line and "secret" not in line for line in logs)
 
 
 @pytest.mark.asyncio

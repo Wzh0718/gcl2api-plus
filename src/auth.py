@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 import uuid
+from src.auth_timing import auth_stage
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Optional
@@ -522,7 +523,7 @@ async def asyncio_complete_auth_flow(
     """异步完成认证流程，支持自动检测项目ID"""
     try:
         log.info(
-            f"asyncio_complete_auth_flow开始执行: project_id={project_id}, user_session={user_session}"
+            f"asyncio_complete_auth_flow开始执行: project_id={project_id}"
         )
 
         # 查找对应的认证流程
@@ -773,7 +774,7 @@ async def complete_auth_flow_from_callback_url(
 ) -> Dict[str, Any]:
     """从回调URL直接完成认证流程，无需启动本地服务器"""
     try:
-        log.info(f"开始从回调URL完成认证: {callback_url}")
+        log.info("开始从回调URL完成认证")
 
         # 解析回调URL
         parsed_url = urlparse(callback_url)
@@ -997,6 +998,7 @@ async def add_antigravity_account_by_refresh_token(
         return {"success": False, "error": str(e)}
 
 
+@auth_stage
 async def save_credentials(creds: Credentials, project_id: str, mode: str = "geminicli", subscription_tier: str = None, oauth_client_key: str = None) -> str:
     """通过统一存储系统保存凭证"""
     # 生成文件名（使用project_id和时间戳）

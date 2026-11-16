@@ -23,7 +23,10 @@ from src.httpx_client import get_async, post_async
 from src.oauth_clients import get_candidates, list_clients
 from src.oauth_error_evidence import record_refresh_failure
 from src.operational_audit import emit as audit, reference
+from src.auth_timing import auth_stage
 import uuid
+
+ENVIRONMENT_WARMUP_TIMEOUT = 5.0
 
 
 class ProjectEligibilityError(ValueError):
@@ -67,6 +70,7 @@ class TokenError(Exception):
         self.evidence_id = evidence_id
 
 
+@auth_stage
 async def refresh_access_token_with_clients(
     refresh_token: str,
     proxy_url: Any = ...,
@@ -370,6 +374,7 @@ class Flow:
         params.update(kwargs)
         return f"{self.auth_endpoint}?{urlencode(params)}"
 
+    @auth_stage
     async def exchange_code(self, code: str) -> Credentials:
         """用授权码换取token"""
         data = {
@@ -383,8 +388,11 @@ class Flow:
         try:
             oauth_base_url = await get_oauth_proxy_url()
             token_url = f"{oauth_base_url.rstrip('/')}/token"
-            response = await post_async(
-                token_url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+            response = await asyncio.wait_for(
+                post_async(token_url, data=data,
+                           headers={"Content-Type": "application/x-www-form-urlencoded"},
+                           timeout=30.0),
+                timeout=30.0,
             )
             response.raise_for_status()
 
@@ -407,6 +415,8 @@ class Flow:
 
             return self.credentials
 
+        except asyncio.TimeoutError as e:
+            raise TokenError("授权换取令牌超时（30 秒），请重新授权后重试") from e
         except Exception as e:
             error_msg = f"获取token失败: {str(e)}"
             log.error(error_msg)
@@ -496,6 +506,7 @@ class ServiceAccount:
 
 
 # 工具函数
+@auth_stage
 async def get_user_info(
     credentials: Credentials, *, antigravity: bool = False
 ) -> Optional[Dict[str, Any]]:
@@ -705,6 +716,7 @@ async def select_default_project(projects: List[Dict[str, Any]]) -> Optional[str
     return project_id
 
 
+@auth_stage
 async def fetch_project_id_and_tier(
     access_token: str,
     user_agent: str,
@@ -795,6 +807,7 @@ async def fetch_project_id_and_tier(
         return None, subscription_tier
 
 
+@auth_stage
 async def warm_antigravity_environment(
     api_base_url: str,
     headers: dict,
@@ -810,16 +823,13 @@ async def warm_antigravity_environment(
     """
     if not project_id:
         return
-    for path, body in (
-        ("/v1internal:fetchUserInfo", {"project": project_id}),
-        ("/v1internal:listExperiments", {"project": project_id, "metadata": {"updateChannel": "stable"}}),
-    ):
+    async def send(path, body):
         try:
             await post_async(
                 f"{api_base_url.rstrip('/')}{path}",
                 json=body,
                 headers=headers,
-                timeout=15.0,
+                timeout=ENVIRONMENT_WARMUP_TIMEOUT,
                 proxy_url=proxy_url, transport="antigravity",
             )
         except Exception as e:
@@ -827,6 +837,18 @@ async def warm_antigravity_environment(
                 f"[warm_antigravity_environment] {path} 补环境调用失败（忽略）: "
                 f"{type(e).__name__}: {e}"
             )
+
+    # Independent optional requests share one wall-clock budget. Await/cancel
+    # both here so no account work survives the caller's cancellation.
+    try:
+        await asyncio.wait_for(asyncio.gather(
+            send("/v1internal:fetchUserInfo", {"project": project_id}),
+            send("/v1internal:listExperiments", {
+                "project": project_id, "metadata": {"updateChannel": "stable"}
+            }),
+        ), timeout=ENVIRONMENT_WARMUP_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.info("[AUTH_TIMING] environment enrichment exceeded 5s; continuing")
 
 
 def _map_tier(
