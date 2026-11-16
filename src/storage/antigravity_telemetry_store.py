@@ -58,10 +58,11 @@ class AntigravityTelemetryStore:
                 SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS
                     (SELECT 1 FROM antigravity_credentials WHERE id=? AND filename=?)
                 ON CONFLICT(event_id) DO UPDATE SET outcome=excluded.outcome,
-                    http_status=excluded.http_status, attempts=excluded.attempts, updated_at=excluded.updated_at""",
+                    http_status=excluded.http_status, attempts=excluded.attempts, updated_at=excluded.updated_at,
+                    event_json=excluded.event_json""",
                 (event["event_id"], snapshot.timing_id, snapshot.account_id, snapshot.filename,
                  snapshot.mode, outcome, status, attempts, json.dumps(event), json.dumps(binding),
-                 now, now, snapshot.account_id, snapshot.filename))
+                 event.get("_delivery", {}).get("enqueued_at", now), now, snapshot.account_id, snapshot.filename))
             await db.execute("DELETE FROM antigravity_telemetry_events WHERE created_at < ?", (now - 7 * 86400,))
             await db.execute("""DELETE FROM antigravity_telemetry_events WHERE event_id IN
                 (SELECT event_id FROM antigravity_telemetry_events ORDER BY created_at DESC LIMIT -1 OFFSET 10000)""")
@@ -114,13 +115,25 @@ class AntigravityTelemetryStore:
         account["environment"] = json.loads(account.pop("environment_json") or "{}")
         return account
 
+    async def save_telemetry_identity(self, expected, email):
+        """Bind userinfo only to the unchanged credential that supplied it."""
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("SELECT credential_data FROM antigravity_credentials WHERE id=? AND filename=? AND disabled=0 AND COALESCE(user_email,'')=''",
+                                  (expected["account_id"], expected["filename"])) as cursor:
+                row = await cursor.fetchone()
+            if row and json.loads(row[0]) == expected["credential_data"]:
+                await db.execute("UPDATE antigravity_credentials SET user_email=? WHERE id=?", (email, expected["account_id"]))
+            await db.commit()
+
     async def configure_account_telemetry(self, filename, expected, mode, environment):
         self._ensure_initialized()
         if mode not in {"off", "preview", "send"}:
             raise ValueError("遥测模式必须是 off、preview 或 send")
         subject = subject_ref(expected)
         if mode != "off" and (not subject or expected["disabled"]):
-            raise ValueError("请先获取账号邮箱并启用账号，再配置遥测")
+            raise ValueError("账号身份尚未就绪或账号已停用，暂不能配置遥测")
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT id,user_email,disabled,credential_data FROM antigravity_credentials WHERE filename=?",
@@ -130,9 +143,11 @@ class AntigravityTelemetryStore:
                     row[1] != expected["user_email"] or row[2] != expected["disabled"] or
                     json.loads(row[3]) != expected["credential_data"]):
                 raise ValueError("账号授权已变化，请重新加载后保存")
-            async with db.execute("SELECT subject_ref,installation_id,environment_json FROM antigravity_telemetry_profiles WHERE account_id=?",
+            async with db.execute("SELECT subject_ref,installation_id,environment_json,policy_revision FROM antigravity_telemetry_profiles WHERE account_id=?",
                                   (row[0],)) as cursor:
                 old = await cursor.fetchone()
+            if (old[3] if old else None) != expected.get("policy_revision"):
+                raise ValueError("遥测设置已变化，请重新加载")
             if mode == "off" and not old:
                 await db.commit()
                 return

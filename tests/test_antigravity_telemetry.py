@@ -30,6 +30,9 @@ async def telemetry(tmp_path, monkeypatch):
         sent.append((snapshot, body))
         return 200
     service._send = send
+    async def no_refresh(*args, **kwargs):
+        pass
+    service._refresh_credentials = no_refresh
     try:
         yield db, service, sent
     finally:
@@ -92,17 +95,15 @@ async def test_payload_cannot_cross_account_auth_route_or_session(telemetry):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["off", "reauthorize", "delete", "network"])
+@pytest.mark.parametrize("change", ["off", "identity", "delete", "network"])
 async def test_queued_event_is_discarded_after_owner_or_environment_changes(telemetry, change):
     db, service, sent = telemetry
     await service.configure("a.json", "send")
     attempt = await begin(service)
     if change == "off":
         await service.configure("a.json", "off")
-    elif change == "reauthorize":
-        data = await db.get_credential("a.json", "antigravity")
-        data["access_token"] = "replacement-token"
-        await db.store_credential("a.json", data, "antigravity")
+    elif change == "identity":
+        await db.update_credential_state("a.json", {"user_email": "changed@example.test"}, "antigravity")
     elif change == "delete":
         await db.delete_credential("a.json", "antigravity")
     else:
@@ -191,8 +192,8 @@ async def test_retry_failure_does_not_block_another_account(telemetry):
         attempt = await begin(service, name)
         attempt.finish(200)
     await service.drain()
-    assert calls.count('a.json') == 2 and calls.count('b.json') == 1
-    assert (await service.status('a.json'))['last_outcome'] == 'send_failed'
+    assert calls.count('a.json') == 3 and calls.count('b.json') == 1
+    assert (await service.status('a.json'))['last_outcome'] == 'server_failed'
     assert (await service.status('b.json'))['last_outcome'] == 'sent'
     before = await service.status('b.json')
     await service.configure('a.json', 'off')
@@ -416,5 +417,188 @@ async def test_group_telemetry_rejects_unavailable_binding_without_rebinding(tel
     attempt.finish(200)
     await service.drain()
     assert not sent
-    assert (await service.status('a.json'))['last_outcome'] == 'discarded_binding_changed'
+    assert (await service.status('a.json'))['last_outcome'] == 'discarded_route_unavailable'
     assert (await db.get_credential_network('a.json'))['bound_proxy_node_id'] == network['bound_proxy_node_id']
+
+@pytest.mark.asyncio
+async def test_new_request_automatically_updates_its_account_route(telemetry):
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    b = await service.configure('b.json', 'send')
+    await db.update_credential_network('a.json', 'custom', 'http://changed:8080')
+    body, headers, _ = request()
+    attempt = await service.begin('https://example.test/v1internal:generateContent',
+                                  body, headers, 'http://changed:8080', 'antigravity')
+    assert attempt is not None
+    assert (await service.status('a.json'))['environment_matches']
+    assert await service.status('b.json') == b
+    attempt.finish(200)
+    await service.drain()
+    assert sent[0][0].proxy_url == 'http://changed:8080'
+
+
+@pytest.mark.asyncio
+async def test_long_generation_does_not_expire_freshly_finished_event(telemetry):
+    from dataclasses import replace
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    attempt = await begin(service)
+    attempt.snapshot = replace(attempt.snapshot, created_at=attempt.snapshot.created_at-3600)
+    attempt.finish(200)
+    await service.drain()
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_burst_is_batched_without_dropping_events(telemetry):
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    attempts = [await begin(service) for _ in range(64)]
+    for attempt in attempts:
+        attempt.finish(200)
+    await service.drain()
+    import sqlite3
+    with sqlite3.connect(db._db_path) as conn:
+        outcomes = conn.execute('SELECT outcome,COUNT(*) FROM antigravity_telemetry_events GROUP BY outcome').fetchall()
+    assert outcomes == [('sent', 64)]
+    assert len(sent) <= 8
+    for attempt in attempts:
+        assert sum(attempt.extra['event_id'].encode() in body for _, body in sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_uses_renewed_token_for_same_owner(telemetry):
+    db, service, _ = telemetry
+    await service.configure('a.json', 'send')
+    tokens = []
+    async def sender(snapshot, body):
+        tokens.append(snapshot.access_token)
+        if len(tokens) == 1:
+            credential = await db.get_credential('a.json', 'antigravity')
+            credential['access_token'] = 'renewed-token'
+            await db.store_credential('a.json', credential, 'antigravity')
+            return 401
+        return 200
+    service._send = sender
+    attempt = await begin(service)
+    attempt.finish(200)
+    await service.drain()
+    assert tokens == ['a-token', 'renewed-token']
+    assert (await service.status('a.json'))['last_outcome'] == 'sent'
+
+
+@pytest.mark.asyncio
+async def test_auto_update_cannot_overwrite_concurrent_off(telemetry):
+    db, service, _ = telemetry
+    await service.configure('a.json', 'send')
+    stale = await db.get_telemetry_account('a.json')
+    await service.configure('a.json', 'off')
+    with pytest.raises(ValueError):
+        await db.configure_account_telemetry('a.json', stale, 'send', stale['environment'])
+    assert (await service.status('a.json'))['mode'] == 'off'
+
+@pytest.mark.asyncio
+async def test_expiry_and_overflow_have_specific_recorded_outcomes(telemetry, monkeypatch):
+    import sqlite3
+    from src import antigravity_telemetry as module
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    monkeypatch.setattr(module, 'QUEUE_LIMIT', 1)
+    first, second = await begin(service), await begin(service)
+    first.finish(200)
+    second.finish(200)
+    monkeypatch.setattr(module, 'MAX_EVENT_AGE', -1)
+    await service.drain()
+    with sqlite3.connect(db._db_path) as conn:
+        outcomes = {r[0] for r in conn.execute('SELECT outcome FROM antigravity_telemetry_events')}
+    assert outcomes == {'discarded_queue_full', 'discarded_expired'}
+    assert not sent
+
+
+@pytest.mark.asyncio
+async def test_backoff_respects_retry_after_and_delivery_metadata_stays_local(telemetry, monkeypatch):
+    from src import antigravity_telemetry as module
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    pauses, bodies = [], []
+    async def pause(delay):
+        pauses.append(delay)
+    async def sender(snapshot, body):
+        bodies.append(body)
+        return (429, 7) if len(bodies) == 1 else 200
+    monkeypatch.setattr(module.asyncio, 'sleep', pause)
+    service._send = sender
+    attempt = await begin(service)
+    attempt.finish(200)
+    await service.drain()
+    assert pauses == [7]
+    assert len(bodies) == 2
+    assert all(b'_delivery' not in b and b'enqueued_at' not in b for b in bodies)
+    assert (await service.status('a.json'))['last_outcome'] == 'sent'
+
+
+@pytest.mark.asyncio
+async def test_failed_batch_does_not_block_other_account_and_preview_never_sends(telemetry):
+    db, service, _ = telemetry
+    await service.configure('a.json', 'send')
+    await service.configure('b.json', 'preview')
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def sender(snapshot, body):
+        assert snapshot.filename == 'a.json'
+        entered.set()
+        await release.wait()
+        return 200
+    service._send = sender
+    a, b = await begin(service), await begin(service, 'b')
+    a.finish(200)
+    b.finish(200)
+    preview_worker = service.workers[b.snapshot.account_id]
+    await asyncio.wait_for(entered.wait(), 1)
+    await asyncio.wait_for(preview_worker, 1)
+    assert (await service.status('b.json'))['last_outcome'] == 'preview'
+    release.set()
+    await service.drain()
+
+@pytest.mark.asyncio
+async def test_missing_email_is_loaded_automatically_and_cached(telemetry, monkeypatch):
+    db, service, _ = telemetry
+    await db.update_credential_state('a.json', {'user_email': ''}, 'antigravity')
+    calls = []
+    async def lookup(account, proxy):
+        calls.append((account['filename'], proxy))
+        return 'a@example.test'
+    monkeypatch.setattr(service, '_lookup_email', lookup)
+    result = await service.configure('a.json', 'send')
+    assert result['identity_ready'] and result['mode'] == 'send'
+    await service.status('a.json')
+    assert calls == [('a.json', 'http://a-proxy:8080')]
+    assert (await db.get_telemetry_account('b.json'))['mode'] is None
+
+@pytest.mark.asyncio
+async def test_email_lookup_cannot_overwrite_reauthorization(telemetry, monkeypatch):
+    db, service, _ = telemetry
+    await db.update_credential_state('a.json', {'user_email': ''}, 'antigravity')
+    async def lookup(account, proxy):
+        data = dict(account['credential_data'], access_token='new-owner')
+        await db.store_credential('a.json', data, 'antigravity')
+        return 'old-owner@example.test'
+    monkeypatch.setattr(service, '_lookup_email', lookup)
+    with pytest.raises(ValueError, match='自动获取'):
+        await service.configure('a.json', 'send')
+    assert not (await db.get_telemetry_account('a.json'))['user_email']
+
+@pytest.mark.asyncio
+async def test_failed_email_lookup_is_coalesced_and_cooled_down(telemetry, monkeypatch):
+    db, service, _ = telemetry
+    await db.update_credential_state('a.json', {'user_email': ''}, 'antigravity')
+    calls = []
+    async def lookup(account, proxy):
+        calls.append(1)
+        await asyncio.sleep(0.01)
+        return None
+    monkeypatch.setattr(service, '_lookup_email', lookup)
+    results = await asyncio.gather(*(service.status('a.json') for _ in range(8)))
+    assert len(calls) == 1
+    assert all(not r['identity_ready'] for r in results)
+    await service.status('a.json')
+    assert len(calls) == 1

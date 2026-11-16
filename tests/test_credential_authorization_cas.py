@@ -208,3 +208,27 @@ async def test_legacy_row_without_revision_upgrades_on_first_conditional_write(a
     assert await db.compare_and_swap_credential('test.json', expected, credential('new', fresh=True), 'antigravity')
     assert (await db.get_credential('test.json', 'antigravity'))[REVISION_KEY]
     assert not await db.compare_and_swap_credential('test.json', expected, legacy, 'antigravity')
+
+@pytest.mark.asyncio
+async def test_rejected_token_refresh_is_singleflight_and_reuses_new_authorization(account, monkeypatch):
+    db, manager, _ = account
+    data = credential('rejected', fresh=True)
+    await db.store_credential('test.json', data, 'antigravity')
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def refresh(self):
+        calls.append(self.access_token)
+        entered.set()
+        await release.wait()
+        self.access_token = 'recovered'
+        self.expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    monkeypatch.setattr(Credentials, 'refresh', refresh)
+    first = asyncio.create_task(manager._refresh_token(data, 'test.json', 'antigravity', rejected_access_token='rejected'))
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(manager._refresh_token(data, 'test.json', 'antigravity', rejected_access_token='rejected'))
+    release.set()
+    results = await asyncio.gather(first, second)
+    assert calls == ['rejected']
+    assert all(r['access_token'] == 'recovered' for r in results)
+    newer = await manager._refresh_token(data, 'test.json', 'antigravity', rejected_access_token='rejected')
+    assert newer['access_token'] == 'recovered' and calls == ['rejected']

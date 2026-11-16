@@ -6,11 +6,12 @@ startup, tools, hooks, or conversation trajectories that the gateway did not run
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlsplit
@@ -20,9 +21,12 @@ from src.storage.antigravity_telemetry_store import subject_ref
 from src.storage_adapter import get_storage_adapter
 
 ENDPOINT = "https://play.googleapis.com/log"
-QUEUE_LIMIT = 16
+QUEUE_LIMIT = 256
+BATCH_LIMIT = 16
+RETRY_LIMIT = 3
+DROP_HISTORY_LIMIT = 256
 WORKER_LIMIT = 128
-MAX_EVENT_AGE = 60
+MAX_EVENT_AGE = 300
 
 
 def _varint(value):
@@ -45,19 +49,25 @@ def _bytes(number, value):
 
 def encode_log_request(snapshot, extra):
     """Recovered field numbers from Hub 2.31.2, log_source=2747 (JETSKI)."""
-    metadata = _bytes(1, "gateway_generation_finished")
-    for key, value in sorted(extra.items()):
-        metadata += _bytes(2, _bytes(1, key) + _bytes(2, str(value)))
-    version = re.search(r"antigravity/hub/([^ ]+)", snapshot.user_agent)
-    os_type = re.search(r"os_type=([^; )]+)", snapshot.user_agent)
-    arch = re.search(r"arch=([^; )]+)", snapshot.user_agent)
-    extension = (_bytes(6, metadata) + _bytes(16, "antigravity") +
-                 _bytes(17, version.group(1) if version else "unknown") +
-                 _bytes(18, os_type.group(1) if os_type else "unknown") +
-                 _bytes(19, arch.group(1) if arch else "unknown") +
-                 _number(24, 1) + _bytes(27, "hub"))
-    event = _number(1, int(time.time() * 1000)) + _bytes(6, extension)
-    return _number(2, 2747) + _bytes(3, event) + _number(4, int(time.time() * 1000))
+    events = extra if isinstance(extra, list) else [extra]
+    encoded = b""
+    for item in events:
+        metadata = _bytes(1, "gateway_generation_finished")
+        for key, value in sorted(item.items()):
+            if key.startswith("_"):  # local delivery diagnostics never leave the gateway
+                continue
+            metadata += _bytes(2, _bytes(1, key) + _bytes(2, str(value)))
+        version = re.search(r"antigravity/hub/([^ ]+)", snapshot.user_agent)
+        os_type = re.search(r"os_type=([^; )]+)", snapshot.user_agent)
+        arch = re.search(r"arch=([^; )]+)", snapshot.user_agent)
+        extension = (_bytes(6, metadata) + _bytes(16, "antigravity") +
+                     _bytes(17, version.group(1) if version else "unknown") +
+                     _bytes(18, os_type.group(1) if os_type else "unknown") +
+                     _bytes(19, arch.group(1) if arch else "unknown") +
+                     _number(24, 1) + _bytes(27, "hub"))
+        event_time = item.get("_delivery", {}).get("enqueued_at", time.time())
+        encoded += _bytes(3, _number(1, int(event_time * 1000)) + _bytes(6, extension))
+    return _number(2, 2747) + encoded + _number(4, int(time.time() * 1000))
 
 
 def _digest(value):
@@ -167,6 +177,10 @@ class TelemetryService:
         self.workers = {}
         self.queues = {}
         self.closed = False
+        self.history_tasks = set()
+        self.recovery_after = {}
+        self.identity_tasks = {}
+        self.identity_after = {}
 
     async def _environment(self, adapter, account):
         from config import get_proxy_config, get_antigravity_native_transport_enabled_sync
@@ -191,16 +205,81 @@ class TelemetryService:
                        "native_transport": get_antigravity_native_transport_enabled_sync()}
         return environment, proxy
 
+    async def _lookup_email(self, account, proxy):
+        from config import get_googleapis_proxy_url
+        from src.httpx_client import get_async
+        token = account["credential_data"].get("access_token") or account["credential_data"].get("token")
+        response = await get_async(
+            f"{(await get_googleapis_proxy_url()).rstrip('/')}/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {token}"}, proxy_url=proxy,
+            transport="antigravity", timeout=5)
+        response.raise_for_status()
+        email = response.json().get("email")
+        return email.strip().lower() if isinstance(email, str) and "@" in email else None
+
+    async def _ensure_identity(self, adapter, account):
+        # Existing identity is never replaced by an automatic lookup.
+        if subject_ref(account) or account["disabled"] or self.closed:
+            return account
+        key = account["account_id"]
+        task = self.identity_tasks.get(key)
+        if task is None:
+            if self.identity_after.get(key, 0) > time.monotonic():
+                return account
+            if len(self.identity_tasks) >= WORKER_LIMIT:
+                return account
+            if key not in self.identity_after and len(self.identity_after) >= WORKER_LIMIT:
+                self.identity_after.pop(min(self.identity_after, key=self.identity_after.get))
+            self.identity_after[key] = time.monotonic() + 60
+
+            async def lookup():
+                try:
+                    async with asyncio.timeout(5):
+                        current = await adapter.get_telemetry_account(account["filename"])
+                        if not current or current["account_id"] != key or current["disabled"]:
+                            return
+                        if subject_ref(current):
+                            return
+                        expiry = datetime.fromisoformat(current["credential_data"]["expiry"].replace("Z", "+00:00"))
+                        if expiry.tzinfo is None:
+                            expiry = expiry.replace(tzinfo=timezone.utc)
+                        if expiry <= datetime.now(timezone.utc):
+                            await self._refresh_credentials(adapter, current)
+                            current = await adapter.get_telemetry_account(account["filename"])
+                            if not current or current["account_id"] != key or current["disabled"]:
+                                return
+                        _, proxy = await self._environment(adapter, current)
+                        email = await self._lookup_email(current, proxy)
+                        if email:
+                            await adapter.save_telemetry_identity(current, email)
+                except Exception as exc:
+                    log.warning(f"[TELEMETRY] identity_lookup_failed: account={key} type={type(exc).__name__}")
+                finally:
+                    self.identity_tasks.pop(key, None)
+
+            task = asyncio.create_task(lookup())
+            self.identity_tasks[key] = task
+        await asyncio.shield(task)
+        current = await adapter.get_telemetry_account(account["filename"])
+        if not current or current["account_id"] != key:
+            raise ValueError("账号已变化，请重新加载")
+        return current
+
     async def status(self, filename):
         adapter = await self.adapter_provider()
         account = await adapter.get_telemetry_account(filename)
         if not account:
             raise LookupError("凭证文件不存在")
+        account = await self._ensure_identity(adapter, account)
         valid = bool(account["subject_ref"] and account["subject_ref"] == subject_ref(account))
         environment_matches = False
         if valid:
             try:
                 current, _ = await self._environment(adapter, account)
+                if not account["disabled"] and account["mode"] in {"preview", "send"}:
+                    repaired = await self._sync_environment(adapter, account, current)
+                    if repaired is not None:
+                        account = repaired
                 environment_matches = current == account["environment"]
             except ValueError:
                 pass
@@ -208,15 +287,22 @@ class TelemetryService:
                 "installation_id": account["installation_id"] if valid else None,
                 "environment_matches": environment_matches,
                 "identity_ready": bool(subject_ref(account)),
+                "identity_retry_seconds": max(0, round(self.identity_after.get(account["account_id"], 0) - time.monotonic())) if not subject_ref(account) else 0,
                 "last_outcome": account["last_outcome"] if valid else "",
                 "last_http_status": account["last_http_status"] if valid else None,
-                "last_event_at": account["last_event_at"] if valid else None}
+                "last_event_at": account["last_event_at"] if valid else None,
+                "queue_depth": self.queues[account["account_id"]].qsize() if account["account_id"] in self.queues else 0,
+                "queue_capacity": QUEUE_LIMIT, "batch_limit": BATCH_LIMIT}
 
     async def configure(self, filename, mode):
         adapter = await self.adapter_provider()
         account = await adapter.get_telemetry_account(filename)
         if not account:
             raise LookupError("凭证文件不存在")
+        if mode != "off":
+            account = await self._ensure_identity(adapter, account)
+            if not subject_ref(account):
+                raise ValueError("账号邮箱自动获取暂未成功，系统将在冷却后自动重试；请检查账号授权和出口")
         environment = account["environment"] if mode == "off" else (await self._environment(adapter, account))[0]
         await adapter.configure_account_telemetry(filename, account, mode, environment)
         return await self.status(filename)
@@ -243,8 +329,11 @@ class TelemetryService:
             environment, expected_proxy = await self._environment(adapter, account)
             from config import get_proxy_config
             actual_proxy = (await get_proxy_config() or None) if proxy_url is ... else proxy_url
-            if (actual_proxy != expected_proxy or environment != account["environment"] or
+            if (actual_proxy != expected_proxy or
                     _header(headers, "User-Agent") != environment["user_agent"]):
+                return None
+            account = await self._sync_environment(adapter, account, environment)
+            if account is None:
                 return None
             inner = payload.get("request") or {}
             if payload.get("requestType") == "agent":
@@ -265,92 +354,217 @@ class TelemetryService:
             log.warning(f"[TELEMETRY] prepare_failed: {type(exc).__name__}")
             return None
 
+    async def _sync_environment(self, adapter, account, environment):
+        if environment == account["environment"]:
+            return account
+        # CAS on both account authorization and policy prevents resurrection of
+        # a disabled policy while requests race a manual settings change.
+        try:
+            await adapter.configure_account_telemetry(
+                account["filename"], account, account["mode"], environment)
+        except ValueError:
+            pass  # another request may already have repaired this environment
+        current = await adapter.get_telemetry_account(account["filename"])
+        if (not current or current["account_id"] != account["account_id"] or
+                current["disabled"] or current["mode"] != account["mode"] or
+                current["subject_ref"] != account["subject_ref"] or
+                subject_ref(current) != account["subject_ref"] or
+                current["environment"] != environment):
+            return None
+        return current
+
     def enqueue(self, snapshot, event):
+        # Age starts when generation finishes, not when inference starts.
+        snapshot = replace(snapshot, created_at=time.monotonic())
+        event["_delivery"] = {"enqueued_at": time.time(), "send_ms": 0}
         key = snapshot.account_id
         queue = self.queues.get(key)
         if self.closed or (queue is None and len(self.workers) >= WORKER_LIMIT):
+            self._drop(snapshot, event, "discarded_shutdown" if self.closed else "discarded_worker_limit")
             return
         if queue is None:
             queue = self.queues[key] = asyncio.Queue(QUEUE_LIMIT)
         try:
             queue.put_nowait((snapshot, event))
         except asyncio.QueueFull:
-            log.warning("[TELEMETRY] account_queue_full")
+            self._drop(snapshot, event, "discarded_queue_full")
             return
         if key not in self.workers:
-            # Empty context prevents retaining ingress bodies/API key context in workers.
             from contextvars import Context
             self.workers[key] = asyncio.create_task(self._work(key), context=Context())
 
-    async def _still_bound(self, adapter, snapshot):
+    def _drop(self, snapshot, event, reason):
+        log.warning(f"[TELEMETRY] {reason}: account={snapshot.filename}")
+        # Keep overload diagnostics bounded as well as the delivery queues.
+        if len(self.history_tasks) >= DROP_HISTORY_LIMIT:
+            return
+        async def record():
+            try:
+                adapter = await self.adapter_provider()
+                await self._record_event(adapter, snapshot, event, reason)
+                await adapter.record_telemetry_outcome(snapshot.account_id, snapshot.policy_revision, reason)
+            except Exception as exc:
+                log.warning(f"[TELEMETRY] drop_history_failed: {type(exc).__name__}")
+        from contextvars import Context
+        task = asyncio.create_task(record(), context=Context())
+        self.history_tasks.add(task)
+        task.add_done_callback(self.history_tasks.discard)
+
+    async def _refresh_credentials(self, adapter, account, rejected_token=None):
+        from src.credential_manager import credential_manager
+        if rejected_token:
+            key, now = account["account_id"], time.monotonic()
+            if self.recovery_after.get(key, 0) > now:
+                return
+            if key not in self.recovery_after and len(self.recovery_after) >= WORKER_LIMIT:
+                self.recovery_after.pop(min(self.recovery_after, key=self.recovery_after.get))
+            self.recovery_after[key] = now + 60
+        # Reuse the manager's account-specific single-flight refresh/lease/CAS.
+        # Telemetry never chooses a substitute account.
+        await credential_manager._refresh_token(
+            account["credential_data"], account["filename"], mode="antigravity",
+            rejected_access_token=rejected_token)
+
+    async def _delivery_snapshot(self, adapter, snapshot, *, recover=True):
         if time.monotonic() - snapshot.created_at > MAX_EVENT_AGE:
-            return False
+            return None, "discarded_expired"
         account = await adapter.get_telemetry_account(snapshot.filename)
-        if (not account or account["disabled"] or account["account_id"] != snapshot.account_id or
-                account["policy_revision"] != snapshot.policy_revision or account["mode"] != snapshot.mode or
-                subject_ref(account) != snapshot.subject or account["installation_id"] != snapshot.installation_id or
-                (account["credential_data"].get("access_token") or account["credential_data"].get("token")) != snapshot.access_token):
-            return False
+        if not account or account["account_id"] != snapshot.account_id:
+            return None, "discarded_account_deleted"
+        if account["disabled"]:
+            return None, "discarded_account_disabled"
+        if subject_ref(account) != snapshot.subject or account["subject_ref"] != snapshot.subject:
+            return None, "discarded_identity_changed"
+        if account["policy_revision"] != snapshot.policy_revision or account["mode"] != snapshot.mode:
+            return None, "discarded_policy_changed"
+        try:
+            environment, proxy = await self._environment(adapter, account)
+        except ValueError:
+            return None, "discarded_route_unavailable"
+        if _digest(environment) != snapshot.environment or proxy != snapshot.proxy_url:
+            await self._sync_environment(adapter, account, environment)
+            return None, "discarded_environment_changed"
         expiry = datetime.fromisoformat(account["credential_data"]["expiry"].replace("Z", "+00:00"))
         if expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=timezone.utc)
         if expiry <= datetime.now(timezone.utc):
-            return False
-        try:
-            environment, proxy = await self._environment(adapter, account)
-        except ValueError:
-            return False
-        return _digest(environment) == snapshot.environment and proxy == snapshot.proxy_url
+            if recover:
+                await self._refresh_credentials(adapter, account)
+                return await self._delivery_snapshot(adapter, snapshot, recover=False)
+            return None, "authentication_expired"
+        token = account["credential_data"].get("access_token") or account["credential_data"].get("token")
+        if not token:
+            return None, "authentication_unavailable"
+        return replace(snapshot, access_token=token), None
+
+    async def _still_bound(self, adapter, snapshot):
+        current, _ = await self._delivery_snapshot(adapter, snapshot, recover=False)
+        return current is not None
+
+    async def _finish_delivery(self, adapter, items, outcome, status=None, attempts=0):
+        for snapshot, event in items:
+            event["_delivery"]["total_ms"] = round((time.monotonic()-snapshot.created_at)*1000)
+            await self._record_event(adapter, snapshot, event, outcome, status, attempts)
+        if items:
+            snapshot = items[-1][0]
+            await adapter.record_telemetry_outcome(snapshot.account_id, snapshot.policy_revision, outcome, status)
+
+    async def _deliver(self, adapter, items):
+        status, outcome = None, "send_failed"
+        for attempt in range(RETRY_LIMIT):
+            ready = []
+            for snapshot, event in items:
+                current, reason = await self._delivery_snapshot(adapter, snapshot)
+                if reason:
+                    await self._finish_delivery(adapter, [(snapshot, event)], reason, status, attempt)
+                else:
+                    ready.append((current, event))
+            items = ready
+            if not items:
+                return
+            for snapshot, event in items:
+                event["_delivery"]["batch_size"] = len(items)
+                await self._record_event(adapter, snapshot, event, "sending", status, attempt+1)
+            started = time.monotonic()
+            retry_after = None
+            try:
+                # Every item was grouped by account, policy and environment;
+                # use the latest token from that same account for the whole batch.
+                result = await asyncio.wait_for(
+                    self._send(items[-1][0], encode_log_request(items[-1][0], [event for _, event in items])),
+                    timeout=6)
+                status, retry_after = result if isinstance(result, tuple) else (result, None)
+                outcome = ("sent" if status == 200 else "rate_limited" if status == 429 else
+                           "authentication_failed" if status == 401 else "http_rejected" if status < 500 else "server_failed")
+            except asyncio.TimeoutError:
+                status, outcome = None, "send_timeout"
+            except Exception:
+                status, outcome = None, "transport_failed"
+            duration = round((time.monotonic()-started)*1000)
+            for _, event in items:
+                event["_delivery"]["send_ms"] += duration
+            if status == 200 or (status is not None and status < 500 and status not in (401, 408, 429)):
+                break
+            if attempt+1 < RETRY_LIMIT:
+                if status == 401 and attempt == 0:
+                    account = await adapter.get_telemetry_account(items[-1][0].filename)
+                    if (account and not account["disabled"] and account["account_id"] == items[-1][0].account_id
+                            and subject_ref(account) == items[-1][0].subject
+                            and account["mode"] == items[-1][0].mode
+                            and account["policy_revision"] == items[-1][0].policy_revision):
+                        await self._refresh_credentials(adapter, account, items[-1][0].access_token)
+                delay = retry_after if retry_after is not None else 2**attempt
+                # Respect Retry-After rather than retrying earlier to meet our TTL.
+                if any(time.monotonic()-snapshot.created_at+delay > MAX_EVENT_AGE for snapshot, _ in items):
+                    break
+                for snapshot, event in items:
+                    await self._record_event(adapter, snapshot, event, "retrying", status, attempt+1)
+                await asyncio.sleep(max(0, delay))
+        await self._finish_delivery(adapter, items, outcome, status, attempt+1)
 
     async def _work(self, key):
         queue = self.queues[key]
+        pending = []
+        adapter = None
         try:
+            adapter = await self.adapter_provider()
             while not queue.empty():
-                snapshot, event = queue.get_nowait()
-                adapter = None
-                try:
-                    adapter = await self.adapter_provider()
+                pending = [queue.get_nowait() for _ in range(min(queue.qsize(), BATCH_LIMIT))]
+                groups = {}
+                for snapshot, event in pending:
+                    event["_delivery"]["queue_ms"] = round((time.monotonic()-snapshot.created_at)*1000)
                     await self._record_event(adapter, snapshot, event, "queued")
-                    if not await self._still_bound(adapter, snapshot):
-                        await self._record_event(adapter, snapshot, event, "discarded_binding_changed")
-                        await adapter.record_telemetry_outcome(key, snapshot.policy_revision, "discarded_binding_changed")
-                        continue
-                    if snapshot.mode == "preview":
+                    current, reason = await self._delivery_snapshot(adapter, snapshot)
+                    if reason:
+                        await self._finish_delivery(adapter, [(snapshot, event)], reason)
+                    elif snapshot.mode == "preview":
                         from src.storage.request_capture_store import CaptureStore
                         root = os.path.join(os.getenv("CREDENTIALS_DIR", "./creds"), "telemetry-preview", str(key))
                         saved = CaptureStore(root).write("attempts", {"created_at": time.time(), **event},
                             {"enabled": True, "max_bytes": 2 * 1024**2, "retention_hours": 24},
                             min_free_bytes=64 * 1024**2, max_entry_bytes=8192)
-                        await adapter.record_telemetry_outcome(key, snapshot.policy_revision, "preview" if saved else "preview_write_failed")
-                        await self._record_event(adapter, snapshot, event, "preview" if saved else "preview_write_failed")
-                        continue
-                    status = None
-                    tries = 0
-                    outcome = "send_failed"
-                    for attempt in range(2):
-                        if not await self._still_bound(adapter, snapshot):
-                            outcome = "discarded_binding_changed"
-                            break
-                        tries += 1
-                        await self._record_event(adapter, snapshot, event, "sending", status, tries)
-                        try:
-                            status = await self._send(snapshot, encode_log_request(snapshot, event))
-                        except Exception:
-                            status = None
-                        if status is not None and (status < 500 and status != 429):
-                            outcome = "sent" if status == 200 else "send_failed"
-                            break
-                        if attempt == 0:
-                            await asyncio.sleep(1)
-                    await adapter.record_telemetry_outcome(key, snapshot.policy_revision,
-                        outcome, status)
-                    await self._record_event(adapter, snapshot, event, outcome, status, tries)
-                except Exception as exc:
-                    if adapter is not None:
-                        await self._record_event(adapter, snapshot, event, "processing_failed")
-                    log.warning(f"[TELEMETRY] delivery_failed: {type(exc).__name__}")
-                finally:
+                        await self._finish_delivery(adapter, [(snapshot, event)], "preview" if saved else "preview_write_failed")
+                    else:
+                        group = (current.account_id, current.policy_revision, current.environment, current.access_token)
+                        groups.setdefault(group, []).append((current, event))
+                for items in groups.values():
+                    await self._deliver(adapter, items)
+                for _ in pending:
                     queue.task_done()
+                pending = []
+        except asyncio.CancelledError:
+            if adapter:
+                unfinished = pending + [queue.get_nowait() for _ in range(queue.qsize())]
+                # Don't overwrite final records from earlier groups in this batch.
+                for snapshot, event in unfinished:
+                    if "total_ms" not in event["_delivery"]:
+                        await self._finish_delivery(adapter, [(snapshot, event)], "discarded_shutdown")
+            raise
+        except Exception as exc:
+            log.warning(f"[TELEMETRY] delivery_failed: account={key} type={type(exc).__name__}")
+            for snapshot, event in pending + [queue.get_nowait() for _ in range(queue.qsize())]:
+                if adapter and "total_ms" not in event["_delivery"]:
+                    await self._finish_delivery(adapter, [(snapshot, event)], "processing_failed")
         finally:
             self.workers.pop(key, None)
             self.queues.pop(key, None)
@@ -368,20 +582,36 @@ class TelemetryService:
             "Authorization": "Bearer " + snapshot.access_token,
             "Content-Type": "application/octet-stream", "User-Agent": "Go-http-client/2.0"},
             proxy_url=snapshot.proxy_url, transport="antigravity", timeout=5)
-        return response.status_code
+        retry_after = None
+        value = response.headers.get("Retry-After")
+        if value:
+            try:
+                retry_after = max(0, float(value))
+                if not math.isfinite(retry_after):
+                    retry_after = None
+            except ValueError:
+                from email.utils import parsedate_to_datetime
+                try:
+                    retry_after = max(0, parsedate_to_datetime(value).timestamp()-time.time())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        return response.status_code, retry_after
 
     async def drain(self):
-        while self.workers:
-            await asyncio.gather(*list(self.workers.values()), return_exceptions=True)
+        while self.workers or self.history_tasks:
+            await asyncio.gather(*list(self.workers.values()), *list(self.history_tasks), return_exceptions=True)
 
     async def close(self):
         self.closed = True
+        for task in list(self.identity_tasks.values()):
+            task.cancel()
+        await asyncio.gather(*list(self.identity_tasks.values()), return_exceptions=True)
         try:
             await asyncio.wait_for(self.drain(), timeout=6)
         except asyncio.TimeoutError:
-            for task in list(self.workers.values()):
+            for task in [*self.workers.values(), *self.history_tasks]:
                 task.cancel()
-            await asyncio.gather(*list(self.workers.values()), return_exceptions=True)
+            await asyncio.gather(*list(self.workers.values()), *list(self.history_tasks), return_exceptions=True)
 
 
 telemetry_service = TelemetryService()

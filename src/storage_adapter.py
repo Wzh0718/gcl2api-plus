@@ -161,6 +161,10 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.list_telemetry_events(timing_ids)
 
+    async def save_telemetry_identity(self, expected, email):
+        self._ensure_initialized()
+        return await self._backend.save_telemetry_identity(expected, email)
+
     async def configure_account_telemetry(self, filename, expected, mode, environment):
         self._ensure_initialized()
         return await self._backend.configure_account_telemetry(filename, expected, mode, environment)

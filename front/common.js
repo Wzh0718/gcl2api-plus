@@ -1411,30 +1411,36 @@ async function openAccountTelemetryDialog(filename) {
     const errorLabel = dialog.querySelector('[data-error]');
     const statusLabel = dialog.querySelector('[data-status]');
     const endpoint = `./creds/${encodeURIComponent(filename)}/telemetry?mode=antigravity`;
-    const display = data => {
-        form.elements.mode.value = data.mode;
+    let identityRetryTimer;
+    const display = (data, preserveMode = false) => {
+        if (!preserveMode) form.elements.mode.value = data.mode;
+        clearTimeout(identityRetryTimer);
+        if (!data.identity_ready && dialog.open) {
+            identityRetryTimer = setTimeout(() => load(true), Math.max(1, data.identity_retry_seconds || 60) * 1000);
+        }
         statusLabel.innerHTML = _telemetryFacts([
-            ['账号身份', data.identity_ready ? '已获取' : '请先获取邮箱'],
-            ['环境绑定', data.environment_matches ? '一致' : '未绑定或已变化'],
+            ['账号身份', data.identity_ready ? '已获取 · 自动缓存' : `自动获取暂未成功 · ${data.identity_retry_seconds || 60} 秒后重试`],
+            ['环境绑定', data.environment_matches ? '一致 · 自动同步' : '等待可用账号出口'],
+            ['等待发送', `${data.queue_depth ?? 0} / ${data.queue_capacity ?? 256} 条`],
             ['最近处理', `${CM_TELEMETRY_LABELS[data.last_outcome] || '暂无事件'}${data.last_http_status ? ` · HTTP ${data.last_http_status}` : ''}`],
             ['处理时间', data.last_event_at ? new Date(data.last_event_at * 1000).toLocaleString() : '—'],
             ['安装标识', data.installation_id || '保存后建立', true]
         ]);
     };
-    const load = async () => {
+    const load = async (preserveMode = false) => {
         try {
             errorLabel.textContent = '';
             const response = await fetch(endpoint, { headers: getAuthHeaders() });
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || '加载失败');
-            display(data);
+            display(data, preserveMode);
             form.elements.mode.disabled = false;
             save.disabled = false;
         } catch (error) { errorLabel.textContent = error.message; }
     };
     dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
-    dialog.querySelector('[data-refresh]').addEventListener('click', load);
-    dialog.addEventListener('close', () => dialog.remove());
+    dialog.querySelector('[data-refresh]').addEventListener('click', () => load());
+    dialog.addEventListener('close', () => { clearTimeout(identityRetryTimer); dialog.remove(); });
     form.addEventListener('submit', async event => {
         event.preventDefault();
         save.disabled = true;
@@ -3708,7 +3714,15 @@ function _telemetryFacts(entries) {
 
 const CM_TELEMETRY_LABELS = {
     queued: '排队中', sending: '发送中', preview: '本地预览', sent: 'HTTP 成功',
-    send_failed: '发送失败', discarded_binding_changed: '绑定变化，已丢弃',
+    send_failed: '发送失败', discarded_binding_changed: '旧版记录：校验未通过',
+    retrying: '等待重试', rate_limited: '上游限流，重试未成功', server_failed: '上游异常，重试未成功',
+    send_timeout: '发送超时', transport_failed: '连接失败', http_rejected: '上游拒绝',
+    authentication_failed: '认证失败', authentication_expired: '令牌过期，刷新未成功', authentication_unavailable: '缺少令牌',
+    discarded_expired: '排队超过 5 分钟', discarded_account_deleted: '账号已删除',
+    discarded_account_disabled: '账号已停用', discarded_identity_changed: '账号身份已变化',
+    discarded_policy_changed: '遥测设置已更新', discarded_environment_changed: '旧环境事件，已丢弃',
+    discarded_route_unavailable: '账号出口不可用', discarded_queue_full: '账号队列已满',
+    discarded_worker_limit: '发送账号数达到上限', discarded_shutdown: '服务关闭，未发送',
     preview_write_failed: '预览写入失败', processing_failed: '处理失败'
 };
 
@@ -3717,7 +3731,7 @@ function _cmTelemetryCell(row, index) {
     const info = row.telemetry || {};
     const labels = (info.outcomes || []).map(value => CM_TELEMETRY_LABELS[value] || '未知状态');
     const label = info.count ? labels.join(' / ') : '未记录';
-    const tone = (info.outcomes || []).some(value => ['send_failed', 'preview_write_failed', 'processing_failed'].includes(value)) ? 'error' : info.count ? 'active' : 'muted';
+    const tone = (info.outcomes || []).some(value => ['send_failed', 'preview_write_failed', 'processing_failed', 'rate_limited', 'server_failed', 'send_timeout', 'transport_failed', 'http_rejected', 'authentication_failed', 'authentication_expired', 'authentication_unavailable', 'discarded_queue_full'].includes(value)) ? 'error' : info.count ? 'active' : 'muted';
     return `<button type="button" class="cm-telemetry-link telemetry-${tone}" onclick="showCallMonitorTelemetry(${index})" aria-label="查看遥测：${_cmEscape(label)}">${_cmEscape(label)}${info.count > 1 ? ` · ${info.count} 条` : ''}</button>`;
 }
 
@@ -3770,7 +3784,11 @@ async function showCallMonitorTelemetry(index) {
                 const facts = document.createElement('div');
                 facts.innerHTML = _telemetryFacts([
                     ['模型', item.event.model_id || '—'],
-                    ['耗时', `${item.event.duration_ms ?? '—'} ms`],
+                    ['模型请求耗时', `${item.event.duration_ms ?? '—'} ms`],
+                    ['排队耗时', `${item.event._delivery?.queue_ms ?? '—'} ms`],
+                    ['发送累计耗时', `${item.event._delivery?.send_ms ?? '—'} ms`],
+                    ['遥测总耗时', `${item.event._delivery?.total_ms ?? '—'} ms`],
+                    ['本批事件数', item.event._delivery?.batch_size ?? '—'],
                     ['输入 / 输出用量', `${item.event.promptTokenCount ?? '—'} / ${item.event.candidatesTokenCount ?? '—'}`],
                     ['请求结果', ({ completed: '已完成', incomplete: '未完成', cancelled: '已取消', network_error: '网络错误', http_error: '请求失败' })[item.event.outcome] || '未知']
                 ]);

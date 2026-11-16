@@ -943,7 +943,8 @@ class CredentialManager:
         return None
 
     async def _refresh_token(
-        self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli"
+        self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli", *,
+        rejected_access_token: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Share one refresh per account within this manager/event loop.
 
@@ -955,7 +956,8 @@ class CredentialManager:
         task = self._refresh_tasks.get(key)
         joined = task is not None
         if task is None:
-            task = asyncio.create_task(self._refresh_token_once(dict(credential_data), filename, mode),
+            options = {"rejected_access_token": rejected_access_token} if rejected_access_token else {}
+            task = asyncio.create_task(self._refresh_token_once(dict(credential_data), filename, mode, **options),
                                        name="oauth-refresh:" + uuid.uuid4().hex)
             self._refresh_tasks[key] = task
 
@@ -974,7 +976,7 @@ class CredentialManager:
         result = await asyncio.shield(task)
         return dict(result) if result is not None else None
 
-    async def _refresh_token_once(self, credential_data, filename, mode="geminicli"):
+    async def _refresh_token_once(self, credential_data, filename, mode="geminicli", *, rejected_access_token=None):
         name = asyncio.current_task().get_name()
         event_id = name.removeprefix("oauth-refresh:") if name.startswith("oauth-refresh:") else uuid.uuid4().hex
         token = refresh_context.set({"refresh_event_id": event_id,
@@ -984,14 +986,15 @@ class CredentialManager:
         audit("refresh_started", revision_ref=reference(credential_data.get("_credential_revision")),
               **expiry_state(credential_data))
         try:
-            result = await self._refresh_token_coordinated(credential_data, filename, mode)
+            options = {"rejected_access_token": rejected_access_token} if rejected_access_token else {}
+            result = await self._refresh_token_coordinated(credential_data, filename, mode, **options)
             outcome = "credential_available" if result is not None else "no_result"
             return result
         finally:
             audit("refresh_finished", outcome=outcome, duration_ms=round((time.monotonic()-started)*1000))
             refresh_context.reset(token)
 
-    async def _refresh_token_coordinated(self, credential_data, filename, mode="geminicli"):
+    async def _refresh_token_coordinated(self, credential_data, filename, mode="geminicli", *, rejected_access_token=None):
         """Cross-process single flight. Coordination failure never falls back to OAuth."""
         await self._ensure_initialized()
         owner = uuid.uuid4().hex
@@ -1008,7 +1011,8 @@ class CredentialManager:
                 if current is None:
                     audit("refresh_skipped", reason="credential_deleted")
                     return None
-                if not await self._should_refresh_token(current, mode=mode):
+                if ((current.get("access_token") or current.get("token")) != rejected_access_token
+                        and not await self._should_refresh_token(current, mode=mode)):
                     audit("refresh_reused", revision_ref=reference(current.get("_credential_revision")))
                     return current
                 status = await self._storage_adapter.acquire_refresh_lease(filename, owner, mode, ttl=REFRESH_LEASE_TTL)
@@ -1040,8 +1044,9 @@ class CredentialManager:
             # Bound each attempt. A blocked/lost heartbeat stops the operation;
             # the atomic lease check in CAS remains the final write fence.
             heartbeat = asyncio.create_task(renew())
+            options = {"rejected_access_token": rejected_access_token} if rejected_access_token else {}
             work = asyncio.create_task(self._refresh_token_owned(
-                current, filename, mode, lease_owner=owner
+                current, filename, mode, lease_owner=owner, **options
             ))
             done, _ = await asyncio.wait((work, heartbeat), timeout=REFRESH_OPERATION_TIMEOUT, return_when=asyncio.FIRST_COMPLETED)
             if heartbeat in done:
@@ -1073,7 +1078,8 @@ class CredentialManager:
                     log.warning(f"刷新租约释放失败，将自动过期: {filename} (mode={mode})")
 
     async def _refresh_token_owned(
-        self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli", *, lease_owner: str
+        self, credential_data: Dict[str, Any], filename: str, mode: str = "geminicli", *, lease_owner: str,
+        rejected_access_token: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """刷新token并更新存储"""
         await self._ensure_initialized()
@@ -1086,7 +1092,8 @@ class CredentialManager:
                 return None  # do not recreate an account deleted during selection
             expected = dict(current)
             credential_data = dict(current)
-            if not await self._should_refresh_token(credential_data, mode=mode):
+            if ((credential_data.get("access_token") or credential_data.get("token")) != rejected_access_token
+                    and not await self._should_refresh_token(credential_data, mode=mode)):
                 return credential_data
             creds = Credentials.from_dict(credential_data)
             if mode == "antigravity":
