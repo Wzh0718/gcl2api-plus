@@ -173,6 +173,14 @@ class TelemetryService:
         from src.proxy_groups import proxy_argument_from_network
         from src.utils import get_antigravity_user_agent
         network = await adapter.get_credential_network(account["filename"], mode="antigravity")
+        if network.get("proxy_mode") == "group":
+            # Read the existing sticky binding. Resolving here could rotate it and
+            # invalidate the environment of an in-flight inference request.
+            if not network.get("bound_proxy_node_id") or not network.get("bound_proxy_url"):
+                raise ValueError("账号尚未绑定代理组节点，请先检测账号出口")
+            if not network.get("bound_proxy_available"):
+                raise ValueError("账号绑定的代理节点不可用（停用、过期或冷却中），请先检查账号出口")
+            network = {**network, "proxy_url": network["bound_proxy_url"]}
         proxy = proxy_argument_from_network(network)
         if proxy is ...:
             proxy = await get_proxy_config() or None
@@ -288,7 +296,10 @@ class TelemetryService:
             expiry = expiry.replace(tzinfo=timezone.utc)
         if expiry <= datetime.now(timezone.utc):
             return False
-        environment, proxy = await self._environment(adapter, account)
+        try:
+            environment, proxy = await self._environment(adapter, account)
+        except ValueError:
+            return False
         return _digest(environment) == snapshot.environment and proxy == snapshot.proxy_url
 
     async def _work(self, key):

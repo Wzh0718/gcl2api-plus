@@ -354,3 +354,67 @@ async def test_history_retention_and_history_failure_do_not_break_delivery(telem
     next_attempt.finish(200)
     await service.drain()
     assert len(sent) == 2
+
+@pytest.mark.asyncio
+async def test_group_telemetry_uses_existing_bound_route_without_selecting(telemetry, monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.panel import creds
+    from src import antigravity_telemetry as module
+    db, service, sent = telemetry
+    group = await db.create_proxy_group(name='sticky-telemetry', exclusive_assignment=True)
+    await db.import_proxy_group_nodes(group['id'], [
+        {'name': 'a', 'proxy_url': 'http://a-proxy:8080'},
+        {'name': 'spare', 'proxy_url': 'http://spare-proxy:8080'},
+    ])
+    await db.update_credential_network('a.json', 'group', proxy_group_id=group['id'])
+    bound = await db.resolve_credential_network('a.json')
+    stored = await db.get_credential_network('a.json')
+    assert stored['proxy_url'] is None and stored['bound_proxy_url'] == bound['proxy_url']
+    monkeypatch.setattr(db, 'resolve_credential_network', AsyncMock(side_effect=AssertionError('must not rebind')))
+    monkeypatch.setattr(module, 'telemetry_service', service)
+    profile = await creds._account_telemetry('a.json', 'antigravity', 'send')
+    assert profile['mode'] == 'send' and profile['environment_matches']
+    body, headers, _ = request()
+    attempt = await service.begin('https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent',
+                                  body, headers, bound['proxy_url'], 'antigravity')
+    assert attempt is not None and attempt.snapshot.proxy_url == bound['proxy_url']
+    attempt.finish(200)
+    await service.drain()
+    assert len(sent) == 1 and sent[0][0].proxy_url == bound['proxy_url']
+    assert (await db.get_credential_network('a.json'))['bound_proxy_node_id'] == bound['bound_proxy_node_id']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unavailable', ['unbound', 'disabled', 'expired', 'cooling'])
+async def test_group_telemetry_rejects_unavailable_binding_without_rebinding(telemetry, unavailable):
+    import aiosqlite
+    import time
+    db, service, sent = telemetry
+    group = await db.create_proxy_group(name='unavailable-telemetry')
+    await db.import_proxy_group_nodes(group['id'], [
+        {'name': 'bound', 'proxy_url': 'http://a-proxy:8080'},
+        {'name': 'spare', 'proxy_url': 'http://spare-proxy:8080'},
+    ])
+    await db.update_credential_network('a.json', 'group', proxy_group_id=group['id'])
+    if unavailable == 'unbound':
+        with pytest.raises(ValueError, match='绑定'):
+            await service.configure('a.json', 'send')
+        assert (await db.get_credential_network('a.json'))['bound_proxy_node_id'] is None
+        return
+    network = await db.resolve_credential_network('a.json')
+    await service.configure('a.json', 'send')
+    attempt = await begin(service)
+    async with aiosqlite.connect(db._db_path) as connection:
+        updates = {'disabled': ('enabled', 0), 'expired': ('expires_at', time.time()-1),
+                   'cooling': ('cooldown_until', time.time()+3600)}
+        column, value = updates[unavailable]
+        await connection.execute(f'UPDATE proxy_group_nodes SET {column}=? WHERE id=?',
+                                 (value, network['bound_proxy_node_id']))
+        await connection.commit()
+    with pytest.raises(ValueError, match='不可用'):
+        await service.configure('a.json', 'send')
+    attempt.finish(200)
+    await service.drain()
+    assert not sent
+    assert (await service.status('a.json'))['last_outcome'] == 'discarded_binding_changed'
+    assert (await db.get_credential_network('a.json'))['bound_proxy_node_id'] == network['bound_proxy_node_id']

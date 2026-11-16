@@ -1522,7 +1522,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
                           a.bound_proxy_node_id, n.name, n.proxy_url,
-                          COALESCE(g.exclusive_assignment, 0)
+                          COALESCE(g.exclusive_assignment, 0),
+                          COALESCE(n.enabled = 1 AND n.group_id = a.proxy_group_id
+                            AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
+                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), 0)
                    FROM antigravity_credentials a
                    LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                    LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
@@ -1545,6 +1548,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "bound_proxy_node_name": row[4],
             "bound_proxy_url": row[5],
             "exclusive_assignment": bool(row[6]),
+            "bound_proxy_available": bool(row[7]),
         }
 
     async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
