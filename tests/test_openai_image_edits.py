@@ -110,7 +110,8 @@ async def test_images_edits_sends_prompt_and_uploaded_image(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
+        assert request_model == BASE_MODEL
         calls.append((body, api_key_id))
         return gemini_image_response()
 
@@ -158,7 +159,7 @@ async def test_images_edits_accepts_multiple_images_and_data_url(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response()
 
@@ -187,7 +188,7 @@ async def test_images_edits_supports_n_by_making_single_candidate_calls(monkeypa
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response(f"edited-{len(calls)}".encode())
 
@@ -217,7 +218,7 @@ async def test_images_edits_accepts_any_protocol_model_name(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response()
 
@@ -268,7 +269,7 @@ async def test_images_edits_rejects_webp_output_and_compression_with_openai_erro
 async def test_images_edits_stream_emits_completed_events(monkeypatch):
     from src.api import antigravity
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         return gemini_image_response()
 
     monkeypatch.setattr(antigravity, "non_stream_request", fake_non_stream_request)

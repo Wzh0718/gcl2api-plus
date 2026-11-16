@@ -1112,8 +1112,11 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
         )
         return antigravity.ImageUpstreamResult(response, "prod", ())
 
+    billing_records = []
+
     class FakeRecorder:
         async def record(self, **kwargs):
+            billing_records.append(kwargs)
             return True
 
     alert = AsyncMock(return_value=True)
@@ -1150,9 +1153,11 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
                 "contents": [{"role": "user", "parts": [{"text": "draw"}]}],
                 "generationConfig": {"responseModalities": ["IMAGE"]},
             },
-        }
+        },
+        request_model="client-image-alias",
     )
 
+    assert billing_records[0]['request_model'] == 'client-image-alias'
     assert response.status_code == 200
     assert manager.selections == [set(), {"ultra.json"}]
     assert [call["json_body"]["model"] for call in upstream_calls] == [

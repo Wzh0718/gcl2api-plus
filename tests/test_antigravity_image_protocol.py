@@ -284,7 +284,7 @@ async def test_path_style_key_suffix_routes_to_antigravity_image_handler(monkeyp
     async def fake_get_api_password():
         return "compat-test-key"
 
-    async def fake_non_stream_request(*, body, api_key_id):
+    async def fake_non_stream_request(*, body, api_key_id, request_model=None):
         captured["body"] = body
         captured["api_key_id"] = api_key_id
         return JSONResponse(content={"response": {"candidates": []}})

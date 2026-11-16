@@ -998,6 +998,7 @@ async def _stream_request_inner(
     headers: Optional[Dict[str, str]] = None,
     api_key_id: str = "env",
     lease_tracker=None,
+    request_model: Optional[str] = None,
 ):
     """
     流式请求函数
@@ -1011,7 +1012,7 @@ async def _stream_request_inner(
         Response对象（错误时）或 bytes流/str流（成功时）
     """
     model_name = body.get("model", "")
-    original_model = model_name  # 客户端原始请求模型；降级链切换后用于记录对比
+    original_model = request_model or model_name  # Preserve the pre-normalization client model.
     inner_request = body.get("request", body)
     image_request = is_antigravity_image_request(model_name, inner_request)
     from src.request_timing import mark_stage
@@ -1625,6 +1626,7 @@ async def stream_request(
         headers=headers,
         api_key_id=api_key_id,
         lease_tracker=lease_tracker,
+        request_model=request_model,
     )
     try:
         async for item in inner:
@@ -1644,6 +1646,7 @@ async def _non_stream_image_request_inner(
     headers: Optional[Dict[str, str]],
     api_key_id: str,
     lease_tracker: _ImageCredentialLeaseTracker,
+    request_model: Optional[str] = None,
 ) -> Response:
     """Image-specific account scheduling and dynamic model resolution."""
     requested_model = body.get("model", "")
@@ -1687,7 +1690,7 @@ async def _non_stream_image_request_inner(
                 status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=extract_model_version(response_payload),
-                request_model=requested_model,
+                request_model=request_model or requested_model,
                 upstream_request=final_payload,
             )
         except Exception as exc:
@@ -1928,11 +1931,12 @@ async def _non_stream_image_request(
     body: Dict[str, Any],
     headers: Optional[Dict[str, str]],
     api_key_id: str,
+    request_model: Optional[str] = None,
 ) -> Response:
     lease_tracker = _ImageCredentialLeaseTracker()
     try:
         return await _non_stream_image_request_inner(
-            body, headers, api_key_id, lease_tracker
+            body, headers, api_key_id, lease_tracker, request_model=request_model
         )
     finally:
         # Covers success, errors, timeouts, task cancellation and client disconnects.
@@ -1971,10 +1975,10 @@ async def non_stream_request(
         Response对象
     """
     model_name = body.get("model", "")
-    original_model = model_name  # 客户端原始请求模型；降级链切换后用于记录对比
+    original_model = request_model or model_name  # Preserve the pre-normalization client model.
     inner_request = body.get("request", body)
     if is_antigravity_image_request(model_name, inner_request):
-        return await _non_stream_image_request(body, headers, api_key_id)
+        return await _non_stream_image_request(body, headers, api_key_id, request_model=original_model)
 
     # 检查是否启用流式收集模式
     if await get_antigravity_stream2nostream():
@@ -1982,7 +1986,8 @@ async def non_stream_request(
 
         # 调用stream_request获取流
         stream = stream_request(
-            body=body, native=False, headers=headers, api_key_id=api_key_id
+            body=body, native=False, headers=headers, api_key_id=api_key_id,
+            request_model=original_model,
         )
 
         # 收集流式响应

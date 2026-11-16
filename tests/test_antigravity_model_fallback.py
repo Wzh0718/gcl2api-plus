@@ -772,3 +772,49 @@ async def test_non_stream_removes_encoding_headers_from_decoded_upstream_body(mo
         downstream = await client.post("/antigravity/v1beta/models/model:generateContent")
     assert downstream.status_code == status_code
     assert downstream.json() == json.loads(response_body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['non_stream', 'stream', 'stream2nostream'])
+@pytest.mark.parametrize('fallback', [False, True])
+async def test_client_model_survives_normalization_and_fallback(monkeypatch, mode, fallback):
+    from src.router.antigravity.openai import chat_completions
+    from src.models import OpenAIChatCompletionRequest
+
+    _patch_common(monkeypatch, ['gemini-3-flash-agent', 'gemini-3.1-flash-lite'] if fallback else [])
+    records, sent_models = [], []
+    async def credential(**kwargs):
+        if fallback and kwargs['model_name'] == 'gemini-3-flash-agent':
+            return None
+        return ('cred.json', {'access_token': 'test', 'project_id': 'project'})
+    monkeypatch.setattr(agy.credential_manager, 'get_valid_credential', credential)
+    class Recorder:
+        async def record(self, **kwargs):
+            records.append(kwargs)
+    monkeypatch.setattr(agy, 'get_billing_recorder', lambda: _awaitable(Recorder()))
+    payload = {'response': {'candidates': [{'content': {'role': 'model', 'parts': [{'text': 'ok'}]}, 'finishReason': 'STOP'}], 'modelVersion': 'physical-model', 'usageMetadata': {'promptTokenCount': 1, 'candidatesTokenCount': 1}}}
+    async def post(**kwargs):
+        sent_models.append(kwargs['json']['model'])
+        assert 'request_model' not in kwargs['json']
+        return _FakeResponse(200, json.dumps(payload).encode())
+    async def stream(**kwargs):
+        sent_models.append(kwargs['body']['model'])
+        assert 'request_model' not in kwargs['body']
+        yield 'data: ' + json.dumps(payload) + '\n\n'
+    monkeypatch.setattr(agy, 'post_async', post)
+    monkeypatch.setattr(agy, 'stream_post_async', stream)
+    monkeypatch.setattr(agy, 'get_antigravity_stream2nostream', lambda: _awaitable(mode == 'stream2nostream'))
+    response = await chat_completions(OpenAIChatCompletionRequest(
+        model='gemini-3-flash-preview', stream=mode == 'stream',
+        messages=[{'role': 'user', 'content': 'hello'}]),
+        principal=SimpleNamespace(api_key_id='env'))
+    if mode == 'stream':
+        async for _ in response.body_iterator:
+            pass
+    assert response.status_code == 200
+    execution_model = 'gemini-3.1-flash-lite' if fallback else 'gemini-3-flash-agent'
+    assert sent_models == [execution_model]
+    assert len(records) == 1
+    assert records[0]['request_model'] == 'gemini-3-flash-preview'
+    assert records[0]['model'] == execution_model
+    assert records[0]['upstream_model'] == 'physical-model'

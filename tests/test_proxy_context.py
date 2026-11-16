@@ -151,7 +151,8 @@ async def test_antigravity_image_non_stream_bypasses_stream_collection(monkeypat
 
     captured = {}
 
-    async def fake_image_request(body, headers, api_key_id):
+    async def fake_image_request(body, headers, api_key_id, request_model=None):
+        assert request_model == body["model"]
         captured["body"] = body
         captured["headers"] = headers
         captured["api_key_id"] = api_key_id

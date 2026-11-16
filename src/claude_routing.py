@@ -118,7 +118,5 @@ def bind_claude_stream(function):
 
 
 def claude_routing_options(request_model: str, execution_model: str) -> dict:
-    """Retain Claude intent when a legacy alias normalizes to a non-Claude model."""
-    if 'claude' in request_model.lower() and 'claude' not in execution_model.lower():
-        return {'request_model': request_model}
-    return {}
+    """Preserve the client model before normalization for routing and audit."""
+    return {'request_model': request_model}

@@ -198,6 +198,7 @@ async def _request_openai_images(
     background: str = "auto",
     output_format: str = None,
     stream: bool = False,
+    request_model: str = None,
 ):
     """Run one upstream Antigravity image request per output image."""
     from src.api.antigravity import non_stream_request
@@ -236,6 +237,7 @@ async def _request_openai_images(
         upstream_response = await non_stream_request(
             body=api_request,
             api_key_id=api_key_id,
+            request_model=request_model or real_model,
         )
         status_code = getattr(upstream_response, "status_code", 200)
         raw_body = getattr(upstream_response, "body", b"")
@@ -319,6 +321,7 @@ async def image_generations(
             openai_request.size,
             openai_request.n,
             principal.api_key_id,
+            request_model=openai_request.model,
             quality=openai_request.quality,
             background=openai_request.background,
             output_format=openai_request.output_format,
@@ -436,6 +439,7 @@ async def image_edits(
             size,
             n,
             principal.api_key_id,
+            request_model=model,
             quality=str(form.get("quality") or "auto"),
             background=str(form.get("background") or "auto"),
             output_format=form.get("output_format"),

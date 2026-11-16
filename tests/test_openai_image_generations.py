@@ -59,7 +59,7 @@ async def test_images_generations_uses_openai_shape_and_official_base_model(monk
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append((body, api_key_id))
         return gemini_image_response()
 
@@ -103,7 +103,8 @@ async def test_images_generations_accepts_any_protocol_model_name(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
+        assert request_model == "dall-e-3"
         calls.append(body)
         return gemini_image_response()
 
@@ -128,7 +129,7 @@ async def test_images_generations_supports_n_by_making_single_candidate_calls(mo
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response(f"image-{len(calls)}".encode())
 
@@ -162,7 +163,7 @@ async def test_images_generations_auto_size_leaves_backend_default(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response()
 
@@ -218,7 +219,7 @@ async def test_images_generations_rejects_output_compression_with_openai_error_s
 async def test_images_generations_stream_emits_completed_events(monkeypatch):
     from src.api import antigravity
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         return gemini_image_response()
 
     monkeypatch.setattr(antigravity, "non_stream_request", fake_non_stream_request)
@@ -297,7 +298,7 @@ async def test_images_generations_accepts_spec_enums_as_noop(monkeypatch):
 
     calls = []
 
-    async def fake_non_stream_request(body, api_key_id):
+    async def fake_non_stream_request(body, api_key_id, request_model=None):
         calls.append(body)
         return gemini_image_response()
 
