@@ -3626,52 +3626,67 @@ function _cmRequestFeatureCell(row, index) {
 }
 
 async function showCallMonitorContent(index) {
+    const previous = document.getElementById('cmRequestContentDialog');
+    previous?.close();
+    previous?.remove();
+    const record = callMonitorState.lastData?.records?.[index];
+    const dialog = document.createElement('dialog');
+    dialog.id = 'cmRequestContentDialog';
+    dialog.className = 'proxy-policy-dialog cm-telemetry-dialog';
+    dialog.style.width = 'min(1000px, 92vw)';
+    dialog.setAttribute('aria-labelledby', 'cmRequestContentTitle');
+    dialog.innerHTML = `<div class="proxy-dialog-head"><h3 id="cmRequestContentTitle">请求详情</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p data-request class="telemetry-account"></p>
+        <div data-content aria-live="polite"><p>正在加载请求详情…</p></div>
+        <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">关闭</button></div>`;
+    const content = dialog.querySelector('[data-content]');
+    const controller = new AbortController();
+    dialog.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => dialog.close()));
+    dialog.addEventListener('close', () => { controller.abort(); dialog.remove(); }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
     if (callMonitorState.mask) {
-        showStatus('请先关闭脱敏，再查看请求原文', 'info');
+        content.textContent = '当前已开启脱敏。请先关闭列表上方的“脱敏”，再查看请求原文。';
         return;
     }
-    const record = callMonitorState.lastData?.records?.[index];
-    if (!record) return;
+    if (!record?.request_id) {
+        content.textContent = '这条记录没有可用的请求标识，请刷新列表后重试。';
+        return;
+    }
+    dialog.querySelector('[data-request]').textContent = record.request_id;
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
         const response = await fetch(`./call-monitor/content?request_id=${encodeURIComponent(record.request_id)}`, {
-            headers: getAuthHeaders(), cache: 'no-store'
+            headers: getAuthHeaders(), cache: 'no-store', signal: controller.signal
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || '加载失败');
-        if (callMonitorState.mask) return;
-        document.getElementById('cmRequestContentDialog')?.remove();
-        const dialog = document.createElement('dialog');
-        dialog.id = 'cmRequestContentDialog';
-        dialog.style.cssText = 'width:min(1000px,92vw);max-height:85vh;overflow:auto;border:1px solid #cbd5e1;border-radius:12px;padding:24px;';
-        const heading = document.createElement('h3');
-        heading.id = 'cmRequestContentTitle';
-        dialog.setAttribute('aria-labelledby', heading.id);
-        heading.textContent = `请求详情 · ${record.request_id}`;
-        dialog.append(heading);
-        const close = document.createElement('button');
-        close.textContent = '关闭';
-        close.onclick = () => dialog.close();
-        dialog.append(close);
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        if (!dialog.isConnected) return;
+        if (callMonitorState.mask) {
+            dialog.close();
+            return;
+        }
+        content.replaceChildren();
         if (data.capture_id) {
             const notice = document.createElement('p');
             notice.textContent = `采集 ID：${data.capture_id}。${data.capture_state === 'available' ? '正文可能包含截断或省略标记。' : '正文未保存、已过期或因容量上限被淘汰，可导出剩余特征和尝试记录。'}`;
-            dialog.append(notice);
+            content.append(notice);
             const download = document.createElement('button');
             download.type = 'button';
             download.textContent = '导出全部尝试与异常证据';
             download.onclick = () => downloadCaptureEvidence({ request_id: data.capture_id }, download);
-            dialog.append(download);
+            content.append(download);
         }
         const stages = data.request_details || {};
         for (const [stage, label] of [['client', '客户端原始请求'], ['upstream', '实际发送至上游']]) {
             const title = document.createElement('h4');
             title.textContent = label;
-            dialog.append(title);
+            content.append(title);
             const snapshot = stages[stage];
             if (!snapshot) {
                 const empty = document.createElement('p');
                 empty.textContent = '未采集该阶段内容';
-                dialog.append(empty);
+                content.append(empty);
                 continue;
             }
             for (const part of ['system', 'messages', 'tools', 'parameters']) {
@@ -3684,15 +3699,16 @@ async function showCallMonitorContent(index) {
                 pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;padding:12px;max-height:45vh;overflow:auto;';
                 pre.textContent = JSON.stringify(snapshot[part], null, 2);
                 section.append(summary, pre);
-                dialog.append(section);
+                content.append(section);
             }
         }
-        // Keep the dialog outside the polling table so auto-refresh does not close it.
-        document.body.append(dialog);
-        dialog.addEventListener('close', () => dialog.remove(), { once: true });
-        dialog.showModal();
     } catch (error) {
-        showStatus(`请求详情加载失败: ${error.message}`, 'error');
+        if (!dialog.isConnected) return;
+        content.textContent = error.name === 'AbortError'
+            ? '请求详情加载超时，请关闭窗口后重试。'
+            : `请求详情加载失败：${error.message}`;
+    } finally {
+        clearTimeout(timeout);
     }
 }
 
