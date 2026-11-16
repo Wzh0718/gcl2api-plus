@@ -1,0 +1,894 @@
+{
+  "LogRequest": [
+    {
+      "name": "request_time_ms",
+      "number": 4,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "request_uptime_ms",
+      "number": 8,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "client_info",
+      "number": 1,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ClientInfo"
+    },
+    {
+      "name": "log_source",
+      "number": 2,
+      "type": 14,
+      "type_name": ".wireless_android_play_playlog.LogSourceEnum.LogSource"
+    },
+    {
+      "name": "log_source_name",
+      "number": 6,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "zwieback_cookie",
+      "number": 7,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "log_event",
+      "number": 3,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.LogEvent"
+    },
+    {
+      "name": "serialized_log_events",
+      "number": 5,
+      "type": 12,
+      "type_name": ""
+    },
+    {
+      "name": "log_event_dropped_count",
+      "number": 14,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "qos_tier",
+      "number": 9,
+      "type": 14,
+      "type_name": ".wireless_android_play_playlog.QosTierConfiguration.QosTier"
+    },
+    {
+      "name": "scheduler",
+      "number": 10,
+      "type": 14,
+      "type_name": ".wireless_android_play_playlog.LogRequest.SchedulerType"
+    },
+    {
+      "name": "device_status",
+      "number": 11,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.DeviceStatus"
+    },
+    {
+      "name": "external_timestamp",
+      "number": 12,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ExternalTimestamp"
+    },
+    {
+      "name": "collect_for_debug",
+      "number": 13,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.CollectForDebug"
+    },
+    {
+      "name": "app_mobilespec_id",
+      "number": 16,
+      "type": 13,
+      "type_name": ""
+    },
+    {
+      "name": "compliance_data",
+      "number": 18,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ComplianceData"
+    }
+  ],
+  "LogEvent": [
+    {
+      "name": "event_time_ms",
+      "number": 1,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "event_uptime_ms",
+      "number": 17,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "boot_count",
+      "number": 22,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "sequence_position",
+      "number": 21,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "tag",
+      "number": 2,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "event_code",
+      "number": 11,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "component_id",
+      "number": 26,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "event_flow_id",
+      "number": 12,
+      "type": 3,
+      "type_name": ""
+    },
+    {
+      "name": "is_user_initiated",
+      "number": 10,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "value",
+      "number": 3,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.LogEventKeyValues"
+    },
+    {
+      "name": "store",
+      "number": 4,
+      "type": 12,
+      "type_name": ""
+    },
+    {
+      "name": "app_usage_1p",
+      "number": 9,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.AppUsage1pLogEvent"
+    },
+    {
+      "name": "source_extension",
+      "number": 6,
+      "type": 12,
+      "type_name": ""
+    },
+    {
+      "name": "source_extension_js",
+      "number": 8,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "source_extension_json",
+      "number": 13,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "source_extension_json_proto3",
+      "number": 29,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "exp",
+      "number": 7,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ActiveExperiments"
+    },
+    {
+      "name": "test_id",
+      "number": 14,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "timezone_offset_seconds",
+      "number": 15,
+      "type": 18,
+      "type_name": ""
+    },
+    {
+      "name": "experiment_ids",
+      "number": 16,
+      "type": 11,
+      "type_name": ".experiments.heterodyne.ExperimentIds"
+    },
+    {
+      "name": "client_ve",
+      "number": 18,
+      "type": 12,
+      "type_name": ""
+    },
+    {
+      "name": "client_ve_js",
+      "number": 24,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "internal_event",
+      "number": 19,
+      "type": 14,
+      "type_name": ".wireless_android_play_playlog.LogEvent.InternalEvent"
+    },
+    {
+      "name": "test_code",
+      "number": 20,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "generic_dimensions",
+      "number": 27,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "network_connection_info",
+      "number": 23,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.NetworkConnectionInfo"
+    },
+    {
+      "name": "in_direct_boot_mode",
+      "number": 25,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "zwieback_cookie_override",
+      "number": 28,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "module_applied_sampling_rate",
+      "number": 30,
+      "type": 1,
+      "type_name": ""
+    },
+    {
+      "name": "client_applied_sampling_rate",
+      "number": 32,
+      "type": 1,
+      "type_name": ""
+    },
+    {
+      "name": "remote_config_metadata",
+      "number": 35,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ClearcutLoggerRemoteConfigMetadata"
+    },
+    {
+      "name": "compliance_data",
+      "number": 33,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.ComplianceData"
+    },
+    {
+      "name": "use_session_zwieback",
+      "number": 34,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "aggregation_metadata",
+      "number": 36,
+      "type": 11,
+      "type_name": ".wireless_android_play_playlog.AggregationMetadata"
+    }
+  ],
+  "ClientInfo": [
+    {
+      "name": "client_type",
+      "number": 1,
+      "type": 5,
+      "type_name": ""
+    }
+  ],
+  "JetskiTelemetryExtension": [
+    {
+      "name": "ide_name",
+      "number": 16,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "ide_version",
+      "number": 17,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "outer_app_version",
+      "number": 31,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "os",
+      "number": 18,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "arch",
+      "number": 19,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "user_tier_id",
+      "number": 22,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "user_tags",
+      "number": 23,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "is_redacted",
+      "number": 24,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "region_code",
+      "number": 25,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "product_name",
+      "number": 27,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "host_identifier",
+      "number": 34,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "enabled_labs_features",
+      "number": 35,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "experiment_config",
+      "number": 36,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ExperimentConfig"
+    },
+    {
+      "name": "cortex_execution_metadata",
+      "number": 2,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CortexExecutionMetadata"
+    },
+    {
+      "name": "cortex_generator_metadata",
+      "number": 3,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CortexGeneratorMetadata"
+    },
+    {
+      "name": "command_usage_metadata",
+      "number": 4,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CommandUsageMetadata"
+    },
+    {
+      "name": "completions_metadata",
+      "number": 5,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CompletionsMetadata"
+    },
+    {
+      "name": "analytics_event_metadata",
+      "number": 6,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.AnalyticsEventMetadata"
+    },
+    {
+      "name": "feedback_metadata",
+      "number": 7,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.FeedbackMetadata"
+    },
+    {
+      "name": "read_url_content_metadata",
+      "number": 8,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.proto.ReadUrlContentMetadata"
+    },
+    {
+      "name": "trajectory_segment_analytics_metadata",
+      "number": 9,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.TrajectorySegmentAnalyticsMetadata"
+    },
+    {
+      "name": "trajectory_segment_events_metadata",
+      "number": 10,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.TrajectorySegmentEventsMetadata"
+    },
+    {
+      "name": "cortex_trajectory",
+      "number": 11,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CortexTrajectory"
+    },
+    {
+      "name": "cortex_trajectory_step",
+      "number": 12,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CortexTrajectoryStep"
+    },
+    {
+      "name": "state_initialization_data",
+      "number": 13,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.StateInitializationData"
+    },
+    {
+      "name": "cortex_metrics",
+      "number": 14,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.CortexMetrics"
+    },
+    {
+      "name": "error_trace_metadata",
+      "number": 15,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.ErrorTraceMetadata"
+    },
+    {
+      "name": "observability_data",
+      "number": 26,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.ObservabilityData"
+    },
+    {
+      "name": "battle_mode_metadata",
+      "number": 28,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.BattleModeMetadata"
+    },
+    {
+      "name": "rpc_metadata",
+      "number": 29,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.RpcMetadata"
+    },
+    {
+      "name": "monitor_signal",
+      "number": 30,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.MonitorSignal"
+    },
+    {
+      "name": "input_completion",
+      "number": 32,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.InputCompletion"
+    },
+    {
+      "name": "input_completion_feedback",
+      "number": 33,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.InputCompletionFeedback"
+    },
+    {
+      "name": "remote_control_event",
+      "number": 37,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.RemoteControlEvent"
+    },
+    {
+      "name": "hook_execution",
+      "number": 38,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.HookExecution"
+    },
+    {
+      "name": "remote_agent_event",
+      "number": 39,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.RemoteAgentEvent"
+    },
+    {
+      "name": "remote_agent_vm_event",
+      "number": 40,
+      "type": 11,
+      "type_name": ".devtools.jetski.telemetry.extensions.RemoteAgentVmEvent"
+    },
+    {
+      "name": "hashed_gaia_id",
+      "number": 20,
+      "type": 4,
+      "type_name": ""
+    }
+  ],
+  "CortexGeneratorMetadata": [
+    {
+      "name": "trajectory_id",
+      "number": 1,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "cascade_id",
+      "number": 2,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "generator_metadata",
+      "number": 3,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.CortexStepGeneratorMetadata"
+    },
+    {
+      "name": "metadata_index",
+      "number": 4,
+      "type": 13,
+      "type_name": ""
+    },
+    {
+      "name": "last_common_index",
+      "number": 5,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "is_full",
+      "number": 6,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "execution_id",
+      "number": 11,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "plan_model",
+      "number": 12,
+      "type": 9,
+      "type_name": ""
+    }
+  ],
+  "CortexStepGeneratorMetadata": [
+    {
+      "name": "step_indices",
+      "number": 2,
+      "type": 13,
+      "type_name": ""
+    },
+    {
+      "name": "chat_model",
+      "number": 1,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.ChatModelMetadata"
+    },
+    {
+      "name": "injected",
+      "number": 7,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.InjectedResponseMetadata"
+    },
+    {
+      "name": "planner_config",
+      "number": 3,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.CascadePlannerConfig"
+    },
+    {
+      "name": "execution_id",
+      "number": 4,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "error",
+      "number": 5,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "mendel_experiment_ids",
+      "number": 8,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "prompt_debug_str",
+      "number": 9,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "has_ever_used_non_google_model",
+      "number": 10,
+      "type": 8,
+      "type_name": ""
+    },
+    {
+      "name": "sensitivity_level",
+      "number": 11,
+      "type": 14,
+      "type_name": ".exa.cortex_pb.SensitivityLevel"
+    }
+  ],
+  "ChatModelMetadata": [
+    {
+      "name": "system_prompt",
+      "number": 1,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "message_prompts",
+      "number": 2,
+      "type": 11,
+      "type_name": ".exa.chat_pb.ChatMessagePrompt"
+    },
+    {
+      "name": "message_metadata",
+      "number": 10,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.MessagePromptMetadata"
+    },
+    {
+      "name": "model",
+      "number": 3,
+      "type": 14,
+      "type_name": ".exa.codeium_common_pb.Model"
+    },
+    {
+      "name": "usage",
+      "number": 4,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModelUsageStats"
+    },
+    {
+      "name": "model_cost",
+      "number": 5,
+      "type": 2,
+      "type_name": ""
+    },
+    {
+      "name": "tool_choice",
+      "number": 7,
+      "type": 11,
+      "type_name": ".exa.chat_pb.ChatToolChoice"
+    },
+    {
+      "name": "tools",
+      "number": 8,
+      "type": 11,
+      "type_name": ".exa.chat_pb.ChatToolDefinition"
+    },
+    {
+      "name": "chat_start_metadata",
+      "number": 9,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.ChatStartMetadata"
+    },
+    {
+      "name": "time_to_first_token",
+      "number": 11,
+      "type": 11,
+      "type_name": ".google.protobuf.Duration"
+    },
+    {
+      "name": "streaming_duration",
+      "number": 12,
+      "type": 11,
+      "type_name": ".google.protobuf.Duration"
+    },
+    {
+      "name": "credit_cost",
+      "number": 13,
+      "type": 5,
+      "type_name": ""
+    },
+    {
+      "name": "retries",
+      "number": 14,
+      "type": 13,
+      "type_name": ""
+    },
+    {
+      "name": "completion_config",
+      "number": 15,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.CompletionConfiguration"
+    },
+    {
+      "name": "prompt_sections",
+      "number": 16,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.PromptSection"
+    },
+    {
+      "name": "retry_infos",
+      "number": 17,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.RetryInfo"
+    },
+    {
+      "name": "consumed_credits",
+      "number": 18,
+      "type": 11,
+      "type_name": ".google.internal.cloud.code.v1internal.Credits"
+    },
+    {
+      "name": "response_model",
+      "number": 19,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "response_model_full",
+      "number": 22,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "custom_metadata",
+      "number": 20,
+      "type": 11,
+      "type_name": ".exa.cortex_pb.ChatModelMetadata.CustomMetadataEntry"
+    },
+    {
+      "name": "model_display_name",
+      "number": 21,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "last_cache_index",
+      "number": 6,
+      "type": 13,
+      "type_name": ""
+    }
+  ],
+  "ModelUsageStats": [
+    {
+      "name": "model",
+      "number": 1,
+      "type": 14,
+      "type_name": ".exa.codeium_common_pb.Model"
+    },
+    {
+      "name": "input_tokens",
+      "number": 2,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "output_tokens",
+      "number": 3,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "thinking_output_tokens",
+      "number": 9,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "response_output_tokens",
+      "number": 10,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "cache_write_tokens",
+      "number": 4,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "cache_read_tokens",
+      "number": 5,
+      "type": 4,
+      "type_name": ""
+    },
+    {
+      "name": "api_provider",
+      "number": 6,
+      "type": 14,
+      "type_name": ".exa.codeium_common_pb.APIProvider"
+    },
+    {
+      "name": "message_id",
+      "number": 7,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "response_header",
+      "number": 8,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModelUsageStats.ResponseHeaderEntry"
+    },
+    {
+      "name": "response_id",
+      "number": 11,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "provider_assigned_message_id",
+      "number": 12,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "service_tier",
+      "number": 13,
+      "type": 9,
+      "type_name": ""
+    },
+    {
+      "name": "prompt_tokens_details",
+      "number": 14,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModalityTokenCount"
+    },
+    {
+      "name": "cache_tokens_details",
+      "number": 15,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModalityTokenCount"
+    },
+    {
+      "name": "candidates_tokens_details",
+      "number": 16,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModalityTokenCount"
+    },
+    {
+      "name": "tool_use_prompt_tokens_details",
+      "number": 17,
+      "type": 11,
+      "type_name": ".exa.codeium_common_pb.ModalityTokenCount"
+    }
+  ]
+}

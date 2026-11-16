@@ -3812,12 +3812,22 @@ async function showCallMonitorTelemetry(index) {
                 binding.append(bindingTitle, bindingContent);
                 const details = document.createElement('details');
                 const title = document.createElement('summary');
-                title.textContent = '查看事件字段 · 不含对话正文';
+                title.textContent = item.event._wire ? '查看发送字段 · Hub 协议' : '查看历史事件字段';
                 const fields = document.createElement('pre');
                 fields.className = 'cm-telemetry-json';
-                fields.textContent = JSON.stringify({ event_name: 'gateway_generation_finished', ...item.event }, null, 2);
+                fields.textContent = JSON.stringify(item.event._wire || item.event, null, 2);
                 details.append(title, fields);
+                const diagnostics = document.createElement('details');
+                const diagnosticsTitle = document.createElement('summary');
+                diagnosticsTitle.textContent = '本地诊断 · 不发送';
+                const diagnosticsFields = document.createElement('pre');
+                diagnosticsFields.className = 'cm-telemetry-json';
+                diagnosticsFields.textContent = JSON.stringify({ event_id: item.event_id,
+                    http_status: item.event.http_status, outcome: item.event.outcome,
+                    duration_ms: item.event.duration_ms, delivery: item.event._delivery }, null, 2);
+                diagnostics.append(diagnosticsTitle, diagnosticsFields);
                 section.append(heading, summary, facts, binding, details);
+                if (item.event._wire) section.append(diagnostics);
                 content.append(section);
             }
             const retention = document.createElement('p');
