@@ -3620,19 +3620,9 @@ function _cmRenderGrouped(rows, view) {
 
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
-    if (features.capture_id) return `<span>请求证据已关联（有保留期限）</span>
-        <button type="button" onclick="showCallMonitorContent(${index})">查看正文与重试证据</button>`;
-    const feature = features.client || features.upstream;
-    if (!feature) return '<span>未采集（历史记录）</span>';
-    const digest = _cmEscape(feature.sha256 || '');
-    const parts = ['system', 'messages', 'tools'].map(part => {
-        const hash = _cmEscape(feature.parts?.[part]?.sha256 || '');
-        return hash ? `<code title="${part} SHA-256: ${hash}">${part[0].toUpperCase()}: ${hash.slice(0, 8)}</code>` : '';
-    }).filter(Boolean).join(' · ');
-    return `<div title="SHA-256: ${digest}"><code>${digest.slice(0, 12)}</code></div>
-        <div>${parts}</div>
-        <div>${feature.message_count || 0} 条消息 · ${feature.tool_count || 0} 个工具</div>
-        <button type="button" onclick="showCallMonitorContent(${index})">查看 system / messages / tools</button>`;
+    const available = features.capture_id || features.client || features.upstream;
+    if (!available) return '<span class="cm-muted">未采集</span>';
+    return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">查看详情</button>`;
 }
 
 async function showCallMonitorContent(index) {
@@ -3856,7 +3846,7 @@ function _cmRenderRealtime(records) {
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>遥测</th><th>请求特征 / 详情</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>遥测</th><th>请求详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
