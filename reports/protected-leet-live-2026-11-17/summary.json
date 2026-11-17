@@ -1,0 +1,126 @@
+{
+  "model": "gemini-2.5-flash-lite",
+  "account_ref": "4f9395909cda",
+  "total_generation_requests": 84,
+  "final_requests": 16,
+  "final_start_singapore": "2026-11-17T15:45:45.834470+08:00",
+  "final_end_singapore": "2026-11-17T15:46:30.988577+08:00",
+  "final_token_refreshed": false,
+  "all_rounds_usage": {
+    "promptTokenCount": 25714,
+    "candidatesTokenCount": 1548,
+    "totalTokenCount": 27262
+  },
+  "stages": {
+    "initial": {
+      "requests": 20,
+      "http_200": 20,
+      "usage": {
+        "promptTokenCount": 4684,
+        "candidatesTokenCount": 462,
+        "totalTokenCount": 5146
+      },
+      "failed_automatic_checks": [
+        {
+          "case": "literal_fidelity",
+          "variant": "full_system",
+          "output": "{\"t00l\":\"r34d_f1l3\",\"p4th\":\"/h0m3/vs3r/pr0j3ct/c0nf1g.js0n\",\"m0d3\":\"4vt0\"}"
+        },
+        {
+          "case": "tool_and_path",
+          "variant": "full_system",
+          "output": ""
+        },
+        {
+          "case": "negation_and_operation",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19"
+        }
+      ],
+      "outputs_with_adapter_tags": []
+    },
+    "decoder-only": {
+      "requests": 16,
+      "http_200": 16,
+      "usage": {
+        "promptTokenCount": 5427,
+        "candidatesTokenCount": 279,
+        "totalTokenCount": 5706
+      },
+      "failed_automatic_checks": [
+        {
+          "case": "negation_and_operation",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19"
+        },
+        {
+          "case": "negation_and_operation_repeat_1",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19"
+        },
+        {
+          "case": "negation_and_operation_repeat_2",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19"
+        }
+      ],
+      "outputs_with_adapter_tags": []
+    },
+    "tagged-contract": {
+      "requests": 16,
+      "http_200": 16,
+      "usage": {
+        "promptTokenCount": 5321,
+        "candidatesTokenCount": 288,
+        "totalTokenCount": 5609
+      },
+      "failed_automatic_checks": [
+        {
+          "case": "negation_and_operation_repeat_1",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19\n\n<gcli_literal>Return only the integer.</gcli_literal>\n\n19"
+        },
+        {
+          "case": "negation_and_operation_repeat_2",
+          "variant": "protected_system",
+          "output": "31 - 12 = 19"
+        }
+      ],
+      "outputs_with_adapter_tags": [
+        {
+          "case": "negation_and_operation_repeat_1",
+          "variant": "protected_system"
+        }
+      ]
+    },
+    "plain-contract": {
+      "requests": 16,
+      "http_200": 16,
+      "usage": {
+        "promptTokenCount": 5231,
+        "candidatesTokenCount": 264,
+        "totalTokenCount": 5495
+      },
+      "failed_automatic_checks": [],
+      "outputs_with_adapter_tags": [
+        {
+          "case": "natural_language",
+          "variant": "protected_system"
+        }
+      ]
+    },
+    "final": {
+      "requests": 16,
+      "http_200": 16,
+      "usage": {
+        "promptTokenCount": 5051,
+        "candidatesTokenCount": 255,
+        "totalTokenCount": 5306
+      },
+      "failed_automatic_checks": [],
+      "outputs_with_adapter_tags": []
+    }
+  },
+  "manual_review": "Final natural-language answers both correctly explain 12 > 9 in one Chinese sentence and contain no adapter markup.",
+  "limitations": "One account, one model, synthetic prompts; no 429 baseline or delayed 403 observation."
+}

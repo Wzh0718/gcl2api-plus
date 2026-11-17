@@ -1,0 +1,16 @@
+{
+  "generation_requests": 12,
+  "statuses": {
+    "200": 12
+  },
+  "model": "gemini-2.5-flash-lite",
+  "account_ref": "4f9395909cda",
+  "start_singapore": "2026-11-17T15:15:05.633709+08:00",
+  "end_singapore": "2026-11-17T15:15:38.776439+08:00",
+  "usage": {
+    "promptTokenCount": 1451,
+    "candidatesTokenCount": 328,
+    "totalTokenCount": 1779
+  },
+  "scope": "one account, one model, one sample per case and variant"
+}

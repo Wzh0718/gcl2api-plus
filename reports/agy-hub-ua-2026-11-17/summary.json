@@ -1,0 +1,71 @@
+{
+  "checked_at_utc": "2026-11-17T09:01:13.916389+00:00",
+  "release_source": "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases",
+  "latest_listed_version": "2.32.2",
+  "execution_id": "4665802025205760",
+  "download_url": "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.2-4665802025205760/unsigned/language_server-linux-x64",
+  "size": 239952296,
+  "sha256": "ad10256e5a4e2e6d8b4e40680b708793681ee723969bdf807aecfbfd05874e0c",
+  "build_cl": "1022991777",
+  "build_at_utc": "2026-11-16T20:12:48Z",
+  "runtime": {
+    "isolation": "docker --network none; synthetic token; local stub returns HTTP 401; no Google requests",
+    "launch_args": [
+      "/sandbox/hub-2.32.2",
+      "--standalone",
+      "--override_ide_name",
+      "antigravity",
+      "--subclient_type",
+      "hub",
+      "--override_ide_version",
+      "2.32.2",
+      "--override_user_agent_name",
+      "antigravity",
+      "--http_server_port",
+      "18942",
+      "--csrf_token",
+      "offline-ua-test",
+      "--app_data_dir",
+      "hub-test",
+      "--api_server_url",
+      "http://127.0.0.1:18941",
+      "--cloud_code_endpoint",
+      "http://127.0.0.1:18941"
+    ],
+    "requests": [
+      {
+        "path": "/v1internal:loadCodeAssist",
+        "ua": "antigravity/hub/2.32.2 (aidev_client; os_type=linux; arch=amd64; cl=1022991777)",
+        "method": "POST"
+      }
+    ],
+    "hub_exit_code": 0
+  },
+  "previous_sample": {
+    "version": "2.31.2",
+    "cl": "1019359392",
+    "sha256": "dd9737d3744d9f78e3a13be8ce0c7be8ca3f2cbcdaf702842305401dd31511d9"
+  },
+  "static_comparison": {
+    "function": "codeassistclient.userAgent",
+    "latest_address": "0x7b6f2c0",
+    "previous_address": "0x74ca500",
+    "function_size_both": 2976,
+    "format_strings_unchanged": [
+      "aidev_client",
+      "os_type=%s",
+      "arch=%s",
+      "cl=%d",
+      "auth_method=%s",
+      "purpose=%s",
+      "%s/%s/%s (%s)",
+      "%s/%s (%s)"
+    ]
+  },
+  "limits": [
+    "Only loadCodeAssist was captured dynamically in this run",
+    "No Google authentication or generation acceptance test",
+    "No current OAuth or telemetry wire capture",
+    "No production configuration changes"
+  ]
+}

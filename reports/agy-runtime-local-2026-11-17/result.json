@@ -1,0 +1,28 @@
+{
+  "passed": true,
+  "network": "local stub only; no HTTP requests",
+  "accounts": 3,
+  "recorded_events": 4,
+  "scopes": 3,
+  "successful_events": 3,
+  "upload_attempts": 3,
+  "preview_uploads": 0,
+  "captured_batches": [
+    {
+      "filename": "beta.json",
+      "bytes": 148,
+      "status": 503
+    },
+    {
+      "filename": "alpha.json",
+      "bytes": 282,
+      "status": 200
+    },
+    {
+      "filename": "beta.json",
+      "bytes": 148,
+      "status": 200
+    }
+  ],
+  "private_data_absent": true
+}

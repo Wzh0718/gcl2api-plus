@@ -1,0 +1,33 @@
+{
+  "isolation": "docker --network none; synthetic token; local stub returns HTTP 401; no Google requests",
+  "launch_args": [
+    "/sandbox/hub-2.32.2",
+    "--standalone",
+    "--override_ide_name",
+    "antigravity",
+    "--subclient_type",
+    "hub",
+    "--override_ide_version",
+    "2.32.2",
+    "--override_user_agent_name",
+    "antigravity",
+    "--http_server_port",
+    "18942",
+    "--csrf_token",
+    "offline-ua-test",
+    "--app_data_dir",
+    "hub-test",
+    "--api_server_url",
+    "http://127.0.0.1:18941",
+    "--cloud_code_endpoint",
+    "http://127.0.0.1:18941"
+  ],
+  "requests": [
+    {
+      "path": "/v1internal:loadCodeAssist",
+      "ua": "antigravity/hub/2.32.2 (aidev_client; os_type=linux; arch=amd64; cl=1022991777)",
+      "method": "POST"
+    }
+  ],
+  "hub_exit_code": 0
+}

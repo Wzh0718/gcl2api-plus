@@ -1,0 +1,1032 @@
+[
+  {
+    "case": "natural_language",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "C0mp4r3 th3 tw0 nvmb3rs 1n th3 vs3r m3ss4g3. 3xpl41n 1n Ch1n3s3 wh1ch nvmb3r 1s l4rg3r 4nd why. K33p th3 4nsw3r t0 0n3 s3nt3nc3."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Compare 12 and 9."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Compare the two numbers in the user message. Explain in Chinese which number is larger and why. Keep the answer to one sentence."
+  },
+  {
+    "case": "natural_language",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "C0mp4r3 th3 tw0 nvmb3rs 1n th3 vs3r m3ss4g3. 3xpl41n 1n Ch1n3s3 wh1ch nvmb3r 1s l4rg3r 4nd why. K33p th3 4nsw3r t0 0n3 s3nt3nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Compare 12 and 9."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Compare the two numbers in the user message. Explain in Chinese which number is larger and why. Keep the answer to one sentence."
+  },
+  {
+    "case": "literal_fidelity",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "Return exactly this JSON object, without markdown or extra text: {\"tool\":\"read_file\",\"path\":\"/home/user/project/config.json\",\"mode\":\"auto\"}"
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Return the configured object."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Return exactly this JSON object, without markdown or extra text: {\"tool\":\"read_file\",\"path\":\"/home/user/project/config.json\",\"mode\":\"auto\"}"
+  },
+  {
+    "case": "literal_fidelity",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Return exactly this JSON object, without markdown or extra text: {\"tool\":\"read_file\",\"path\":\"/home/user/project/config.json\",\"mode\":\"auto\"}"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Return the configured object."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Return exactly this JSON object, without markdown or extra text: {\"tool\":\"read_file\",\"path\":\"/home/user/project/config.json\",\"mode\":\"auto\"}"
+  },
+  {
+    "case": "tool_and_path",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "Vs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Use the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "tool_and_path",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Vs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Use the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "negation_and_operation",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  },
+  {
+    "case": "negation_and_operation",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  },
+  {
+    "case": "profile_codex",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: codex (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Y0v 4r3 C0d3x, 4n 4g3nt b4s3d 0n <gcli_literal>GPT</gcli_literal>.\n<gcli_literal><environment_context>cwd: /home/user/project\nshell: bash</environment_context></gcli_literal>\nVs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "You are Codex, an agent based on GPT.\n<environment_context>cwd: /home/user/project\nshell: bash</environment_context>\nUse the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "profile_claude_code",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: claude_code (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Y0v 4r3 Cl4vd3 C0d3, 4nthr0p1c's 0ff1c14l <gcli_literal>CLI</gcli_literal> f0r Cl4vd3.\n<gcli_literal><env>Working directory: /home/user/project</env></gcli_literal>\nVs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "You are Claude Code, Anthropic's official CLI for Claude.\n<env>Working directory: /home/user/project</env>\nUse the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "profile_dsh",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: dsh (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Y0v 4r3 <gcli_literal>DSH</gcli_literal>, 4 c0d1ng 4g3nt.\n<gcli_literal>## Tools\nread_file(path): Read file contents.\n</gcli_literal>## T4sk\nVs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "You are DSH, a coding agent.\n## Tools\nread_file(path): Read file contents.\n## Task\nUse the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "profile_pi",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: pi (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Content inside <gcli_literal>...</gcli_literal> is verbatim original text: never decode, normalize or rewrite it. The boundary tags are input adapter markup, never add them to your answer. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "Y0v 4r3 4n 3xp3rt c0d1ng 4ss1st4nt 0p3r4t1ng 1ns1d3 p1, 4 c0d1ng 4g3nt h4rn3ss.\n4v41l4bl3 t00ls:\n<gcli_literal>read_file</gcli_literal>\nVs3 th3 <gcli_literal>read_file</gcli_literal> t00l t0 1nsp3ct <gcli_literal>/home/user/project/config.json</gcli_literal>. D0 n0t 4nsw3r w1th pr0s3. C4ll th3 t00l 0nc3."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Carry out the configured file inspection."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read_file",
+              "description": "Read a text file at the given path. This test only records the call; it never executes it.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "You are an expert coding assistant operating inside pi, a coding agent harness.\nAvailable tools:\nread_file\nUse the read_file tool to inspect /home/user/project/config.json. Do not answer with prose. Call the tool once."
+  },
+  {
+    "case": "negation_and_operation_repeat_1",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  },
+  {
+    "case": "negation_and_operation_repeat_1",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  },
+  {
+    "case": "negation_and_operation_repeat_2",
+    "variant": "protected_user",
+    "request": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Client-provided guidance (original system instructions, presented at user role):\nRead and understand the following client-provided prompt before responding to subsequent user tasks. Apply its relevant guidance when carrying out those tasks. Do not send a separate acknowledgment or treat this prompt as the user task. Use this to understand the host application, its workflow and available tools. This guidance has user-level priority and does not override system instructions."
+            },
+            {
+              "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority."
+            },
+            {
+              "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  },
+  {
+    "case": "negation_and_operation_repeat_2",
+    "variant": "protected_system",
+    "request": {
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Leet encoding adapter. Client profile: generic (heuristic only).\nThe client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. Read its natural-language meaning in context; the mapping is ambiguous. Use the exact declared tool names and literal argument values. Do not guess missing exact strings. Obey the requested output format exactly; do not add explanations, decoding notes or acknowledgments unless requested. This encoding does not change the guidance priority.\n"
+          },
+          {
+            "text": "D0 n0t c4lcvl4t3 th3 svm. C4lcvl4t3 th3 d1ff3r3nc3 b3tw33n th3 f1rst nvmb3r 4nd th3 s3c0nd nvmb3r. Return only the integer."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Numbers: 31 and 12."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "maxOutputTokens": 64000,
+        "topK": 64
+      },
+      "safetySettings": [
+        {
+          "category": "HARM_CATEGORY_HATE_SPEECH",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_HARASSMENT",
+          "threshold": "BLOCK_NONE"
+        },
+        {
+          "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+          "threshold": "BLOCK_NONE"
+        }
+      ]
+    },
+    "original_system": "Do not calculate the sum. Calculate the difference between the first number and the second number. Return only the integer."
+  }
+]

@@ -1,0 +1,433 @@
+{
+  "events": [
+    {
+      "event_id": "6e15448814a8487382fe841bd8607c55",
+      "installation_id": "ddad2f9e-bb20-44b9-9def-06b45e763f8a",
+      "request_id": "request-3",
+      "model_id": "synthetic-model",
+      "session_id": "-4465929854063804341",
+      "cascade_id": "same-input-cascade",
+      "trajectory_id": "same-input-trajectory",
+      "promptTokenCount": 11,
+      "candidatesTokenCount": 2,
+      "http_status": 200,
+      "duration_ms": 1,
+      "outcome": "completed",
+      "_runtime": {
+        "binding": {
+          "account_id": 3,
+          "subject_ref": "c855889daa9a4b95ad5dc5b7b7e0040cec5f8a05a8eebc2133c3af222f037aaa",
+          "installation_id": "ddad2f9e-bb20-44b9-9def-06b45e763f8a",
+          "environment_ref": "8e4effd05880ea5628114583ee9d6ad5a69adeaf666e8803dcdcdf6c3de9bab5",
+          "policy_revision": "4d191dd5fe4f411e89f01c7ce157e8f4",
+          "mode": "preview",
+          "binding_ref": "6e7b73e0c252e0f70041337ec3b91aac2e39d8fed053019005cbd6db5d6aabfa"
+        },
+        "request": {
+          "request_id": "request-3",
+          "session_id": "-4465929854063804341",
+          "cascade_id": "same-input-cascade",
+          "trajectory_id": "same-input-trajectory"
+        },
+        "request_ref": "1f3f59f29de0610fcac40f9c82fa64c247c42699dd721e46af406437b13ffd9c",
+        "started_at_ms": 1794878950032,
+        "finished_at_ms": 1794878950033,
+        "first_response_chunk_ms": 0,
+        "terminal_observed": true
+      },
+      "_delivery": {
+        "enqueued_at": 1794878950.0330632,
+        "send_ms": 0,
+        "queue_ms": 0,
+        "outcome": "preview",
+        "total_ms": 6
+      },
+      "_wire": {
+        "source_extension": {
+          "cortex_generator_metadata": {
+            "generator_metadata": {
+              "chat_model": {
+                "usage": {
+                  "input_tokens": 11,
+                  "response_output_tokens": 2,
+                  "output_tokens": 2
+                }
+              }
+            },
+            "trajectory_id": "same-input-trajectory",
+            "cascade_id": "same-input-cascade",
+            "plan_model": "synthetic-model"
+          },
+          "ide_name": "antigravity",
+          "is_redacted": 1,
+          "product_name": "hub",
+          "ide_version": "2.31.0",
+          "os": "linux",
+          "arch": "amd64"
+        },
+        "event_time_ms": 1794878950033
+      }
+    },
+    {
+      "event_id": "743db19028bc4abe8718c430a7bacc34",
+      "installation_id": "e31c34ff-9ebc-4583-a6d2-69fa85790617",
+      "request_id": "request-2",
+      "model_id": "synthetic-model",
+      "session_id": "-4352543444998731271",
+      "cascade_id": "same-input-cascade",
+      "trajectory_id": "same-input-trajectory",
+      "promptTokenCount": 11,
+      "candidatesTokenCount": 2,
+      "http_status": 200,
+      "duration_ms": 2,
+      "outcome": "completed",
+      "_runtime": {
+        "binding": {
+          "account_id": 2,
+          "subject_ref": "44ef76bcf3022cd8f4d5103f3cd0d3be77258f0cca89de83aa1ece16d392345a",
+          "installation_id": "e31c34ff-9ebc-4583-a6d2-69fa85790617",
+          "environment_ref": "cb64b0379953d2e8f6fd2e242a190d7e2d2fdd8f4425947a1a71cd7ef2a94785",
+          "policy_revision": "618e5bc2b2f44d569c682b32a2663609",
+          "mode": "send",
+          "binding_ref": "8ce2527612c8679c595f428a01b5f91b5c5770278be931cb767ad25900514483"
+        },
+        "request": {
+          "request_id": "request-2",
+          "session_id": "-4352543444998731271",
+          "cascade_id": "same-input-cascade",
+          "trajectory_id": "same-input-trajectory"
+        },
+        "request_ref": "2dc16459c8af1579f581b0ab286e6496fef8047b9f845178c60358abfd296302",
+        "started_at_ms": 1794878950031,
+        "finished_at_ms": 1794878950033,
+        "first_response_chunk_ms": 0,
+        "terminal_observed": true
+      },
+      "_delivery": {
+        "enqueued_at": 1794878950.0330215,
+        "send_ms": 0,
+        "queue_ms": 0,
+        "batch_size": 1,
+        "uploads": [
+          {
+            "upload_id": "32c4de5160004e0b8aa880392b3967ce",
+            "attempt": 1,
+            "started_at_ms": 1794878950044,
+            "events_attempted": 1,
+            "events_uploaded": 0,
+            "request_content_bytes": 148,
+            "http_status": 503,
+            "finished_at_ms": 1794878950044,
+            "duration_ms": 0,
+            "outcome": "server_failed"
+          },
+          {
+            "upload_id": "9982275c5a7245c3bd38c1c73cfb80f8",
+            "attempt": 2,
+            "started_at_ms": 1794878950049,
+            "events_attempted": 1,
+            "events_uploaded": 1,
+            "request_content_bytes": 148,
+            "http_status": 200,
+            "finished_at_ms": 1794878950049,
+            "duration_ms": 0,
+            "outcome": "sent"
+          }
+        ],
+        "outcome": "sent",
+        "total_ms": 16
+      },
+      "_wire": {
+        "source_extension": {
+          "cortex_generator_metadata": {
+            "generator_metadata": {
+              "chat_model": {
+                "usage": {
+                  "input_tokens": 11,
+                  "response_output_tokens": 2,
+                  "output_tokens": 2
+                }
+              }
+            },
+            "trajectory_id": "same-input-trajectory",
+            "cascade_id": "same-input-cascade",
+            "plan_model": "synthetic-model"
+          },
+          "ide_name": "antigravity",
+          "is_redacted": 1,
+          "product_name": "hub",
+          "ide_version": "2.31.0",
+          "os": "linux",
+          "arch": "amd64"
+        },
+        "event_time_ms": 1794878950033
+      }
+    },
+    {
+      "event_id": "68dc8114e9834980b2570dc63670389a",
+      "installation_id": "8a6499cf-1b4d-4d9c-a022-180633d4248f",
+      "request_id": "request-1",
+      "model_id": "synthetic-model",
+      "session_id": "-844386290362917375",
+      "cascade_id": "same-input-cascade",
+      "trajectory_id": "same-input-trajectory",
+      "promptTokenCount": 11,
+      "candidatesTokenCount": 2,
+      "http_status": 200,
+      "duration_ms": 3,
+      "outcome": "completed",
+      "_runtime": {
+        "binding": {
+          "account_id": 1,
+          "subject_ref": "3258638147d90dfb3cc9a232de1d674d3fd5f76cf2dd75d9247bb96990c1bb59",
+          "installation_id": "8a6499cf-1b4d-4d9c-a022-180633d4248f",
+          "environment_ref": "6c0f85415d56cacac720674c8d44cadab338834947017fef4a4f54c281643063",
+          "policy_revision": "06f20b60ac5746e69def8d5aae78788c",
+          "mode": "send",
+          "binding_ref": "d66719730a5d6af50d397ecafd7ec888575079b3028a0c91008a78359b6f8b66"
+        },
+        "request": {
+          "request_id": "request-1",
+          "session_id": "-844386290362917375",
+          "cascade_id": "same-input-cascade",
+          "trajectory_id": "same-input-trajectory"
+        },
+        "request_ref": "f2c3e0d99b4f60099ad1e980aea33f10129e62c0e867916776c3056ddebd3f2b",
+        "started_at_ms": 1794878950029,
+        "finished_at_ms": 1794878950032,
+        "first_response_chunk_ms": 0,
+        "terminal_observed": true
+      },
+      "_delivery": {
+        "enqueued_at": 1794878950.0329769,
+        "send_ms": 0,
+        "queue_ms": 3,
+        "batch_size": 2,
+        "uploads": [
+          {
+            "upload_id": "2ed23290d6e042f59c52e263b73b0160",
+            "attempt": 1,
+            "started_at_ms": 1794878950048,
+            "events_attempted": 2,
+            "events_uploaded": 2,
+            "request_content_bytes": 282,
+            "http_status": 200,
+            "finished_at_ms": 1794878950048,
+            "duration_ms": 0,
+            "outcome": "sent"
+          }
+        ],
+        "outcome": "sent",
+        "total_ms": 17
+      },
+      "_wire": {
+        "source_extension": {
+          "cortex_generator_metadata": {
+            "generator_metadata": {
+              "chat_model": {
+                "usage": {
+                  "input_tokens": 11,
+                  "response_output_tokens": 2,
+                  "output_tokens": 2
+                }
+              }
+            },
+            "trajectory_id": "same-input-trajectory",
+            "cascade_id": "same-input-cascade",
+            "plan_model": "synthetic-model"
+          },
+          "ide_name": "antigravity",
+          "is_redacted": 1,
+          "product_name": "hub",
+          "ide_version": "2.31.0",
+          "os": "linux",
+          "arch": "amd64"
+        },
+        "event_time_ms": 1794878950032
+      }
+    },
+    {
+      "event_id": "7bb12007eb8f44e4a189f277f9fae4b8",
+      "installation_id": "8a6499cf-1b4d-4d9c-a022-180633d4248f",
+      "request_id": "request-0",
+      "model_id": "synthetic-model",
+      "session_id": "-844386290362917375",
+      "cascade_id": "same-input-cascade",
+      "trajectory_id": "same-input-trajectory",
+      "promptTokenCount": 11,
+      "candidatesTokenCount": 2,
+      "http_status": 200,
+      "duration_ms": 5,
+      "outcome": "completed",
+      "_runtime": {
+        "binding": {
+          "account_id": 1,
+          "subject_ref": "3258638147d90dfb3cc9a232de1d674d3fd5f76cf2dd75d9247bb96990c1bb59",
+          "installation_id": "8a6499cf-1b4d-4d9c-a022-180633d4248f",
+          "environment_ref": "6c0f85415d56cacac720674c8d44cadab338834947017fef4a4f54c281643063",
+          "policy_revision": "06f20b60ac5746e69def8d5aae78788c",
+          "mode": "send",
+          "binding_ref": "d66719730a5d6af50d397ecafd7ec888575079b3028a0c91008a78359b6f8b66"
+        },
+        "request": {
+          "request_id": "request-0",
+          "session_id": "-844386290362917375",
+          "cascade_id": "same-input-cascade",
+          "trajectory_id": "same-input-trajectory"
+        },
+        "request_ref": "726fcdc8156235b513af3745bb54979bd3dd5de06a442bb935b27f8c82054407",
+        "started_at_ms": 1794878950027,
+        "finished_at_ms": 1794878950032,
+        "first_response_chunk_ms": 0,
+        "terminal_observed": true
+      },
+      "_delivery": {
+        "enqueued_at": 1794878950.032551,
+        "send_ms": 0,
+        "queue_ms": 1,
+        "batch_size": 2,
+        "uploads": [
+          {
+            "upload_id": "2ed23290d6e042f59c52e263b73b0160",
+            "attempt": 1,
+            "started_at_ms": 1794878950048,
+            "events_attempted": 2,
+            "events_uploaded": 2,
+            "request_content_bytes": 282,
+            "http_status": 200,
+            "finished_at_ms": 1794878950048,
+            "duration_ms": 0,
+            "outcome": "sent"
+          }
+        ],
+        "outcome": "sent",
+        "total_ms": 16
+      },
+      "_wire": {
+        "source_extension": {
+          "cortex_generator_metadata": {
+            "generator_metadata": {
+              "chat_model": {
+                "usage": {
+                  "input_tokens": 11,
+                  "response_output_tokens": 2,
+                  "output_tokens": 2
+                }
+              }
+            },
+            "trajectory_id": "same-input-trajectory",
+            "cascade_id": "same-input-cascade",
+            "plan_model": "synthetic-model"
+          },
+          "ide_name": "antigravity",
+          "is_redacted": 1,
+          "product_name": "hub",
+          "ide_version": "2.31.0",
+          "os": "linux",
+          "arch": "amd64"
+        },
+        "event_time_ms": 1794878950032
+      }
+    }
+  ],
+  "statistics": [
+    {
+      "binding": {
+        "account_id": 3,
+        "subject_ref": "c855889daa9a4b95ad5dc5b7b7e0040cec5f8a05a8eebc2133c3af222f037aaa",
+        "installation_id": "ddad2f9e-bb20-44b9-9def-06b45e763f8a",
+        "environment_ref": "8e4effd05880ea5628114583ee9d6ad5a69adeaf666e8803dcdcdf6c3de9bab5",
+        "policy_revision": "4d191dd5fe4f411e89f01c7ce157e8f4",
+        "mode": "preview",
+        "binding_ref": "6e7b73e0c252e0f70041337ec3b91aac2e39d8fed053019005cbd6db5d6aabfa"
+      },
+      "recorded_events": 1,
+      "outcomes": {
+        "preview": 1
+      },
+      "upload_attempts": 0,
+      "events_attempted": 0,
+      "events_uploaded": 0,
+      "request_content_bytes": 0,
+      "uploads": []
+    },
+    {
+      "binding": {
+        "account_id": 2,
+        "subject_ref": "44ef76bcf3022cd8f4d5103f3cd0d3be77258f0cca89de83aa1ece16d392345a",
+        "installation_id": "e31c34ff-9ebc-4583-a6d2-69fa85790617",
+        "environment_ref": "cb64b0379953d2e8f6fd2e242a190d7e2d2fdd8f4425947a1a71cd7ef2a94785",
+        "policy_revision": "618e5bc2b2f44d569c682b32a2663609",
+        "mode": "send",
+        "binding_ref": "8ce2527612c8679c595f428a01b5f91b5c5770278be931cb767ad25900514483"
+      },
+      "recorded_events": 1,
+      "outcomes": {
+        "sent": 1
+      },
+      "upload_attempts": 2,
+      "events_attempted": 2,
+      "events_uploaded": 1,
+      "request_content_bytes": 296,
+      "uploads": [
+        {
+          "upload_id": "32c4de5160004e0b8aa880392b3967ce",
+          "attempt": 1,
+          "started_at_ms": 1794878950044,
+          "events_attempted": 1,
+          "events_uploaded": 0,
+          "request_content_bytes": 148,
+          "http_status": 503,
+          "finished_at_ms": 1794878950044,
+          "duration_ms": 0,
+          "outcome": "server_failed"
+        },
+        {
+          "upload_id": "9982275c5a7245c3bd38c1c73cfb80f8",
+          "attempt": 2,
+          "started_at_ms": 1794878950049,
+          "events_attempted": 1,
+          "events_uploaded": 1,
+          "request_content_bytes": 148,
+          "http_status": 200,
+          "finished_at_ms": 1794878950049,
+          "duration_ms": 0,
+          "outcome": "sent"
+        }
+      ]
+    },
+    {
+      "binding": {
+        "account_id": 1,
+        "subject_ref": "3258638147d90dfb3cc9a232de1d674d3fd5f76cf2dd75d9247bb96990c1bb59",
+        "installation_id": "8a6499cf-1b4d-4d9c-a022-180633d4248f",
+        "environment_ref": "6c0f85415d56cacac720674c8d44cadab338834947017fef4a4f54c281643063",
+        "policy_revision": "06f20b60ac5746e69def8d5aae78788c",
+        "mode": "send",
+        "binding_ref": "d66719730a5d6af50d397ecafd7ec888575079b3028a0c91008a78359b6f8b66"
+      },
+      "recorded_events": 2,
+      "outcomes": {
+        "sent": 2
+      },
+      "upload_attempts": 1,
+      "events_attempted": 2,
+      "events_uploaded": 2,
+      "request_content_bytes": 282,
+      "uploads": [
+        {
+          "upload_id": "2ed23290d6e042f59c52e263b73b0160",
+          "attempt": 1,
+          "started_at_ms": 1794878950048,
+          "events_attempted": 2,
+          "events_uploaded": 2,
+          "request_content_bytes": 282,
+          "http_status": 200,
+          "finished_at_ms": 1794878950048,
+          "duration_ms": 0,
+          "outcome": "sent"
+        }
+      ]
+    }
+  ]
+}
