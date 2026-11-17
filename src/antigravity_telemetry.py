@@ -1,6 +1,6 @@
 """Opt-in account telemetry from real gateway attempts, without conversation bodies.
 
-Uses only the observed Jetski analytics envelope. It does not synthesize official
+Uses the observed Hub Jetski generation schema. It does not synthesize official
 startup, tools, hooks, or conversation trajectories that the gateway did not run.
 """
 import asyncio
@@ -8,7 +8,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -42,45 +41,16 @@ def send_enabled() -> bool:
     return os.getenv("ANTIGRAVITY_TELEMETRY_ALLOW_SEND", "").strip() == "1"
 
 
-def _varint(value):
-    result = bytearray()
-    while value > 127:
-        result.append((value & 127) | 128)
-        value >>= 7
-    result.append(value)
-    return bytes(result)
-
-
-def _number(number, value):
-    return _varint(number << 3) + _varint(value)
-
-
-def _bytes(number, value):
-    raw = value.encode() if isinstance(value, str) else value
-    return _varint((number << 3) | 2) + _varint(len(raw)) + raw
-
-
 def encode_log_request(snapshot, extra):
-    """Recovered field numbers from Hub 2.31.2, log_source=2747 (JETSKI)."""
+    from src.antigravity_telemetry_schema import hub_generation_event, encode_message
     events = extra if isinstance(extra, list) else [extra]
-    encoded = b""
+    encoded = []
     for item in events:
-        metadata = _bytes(1, "gateway_generation_finished")
-        for key, value in sorted(item.items()):
-            if key.startswith("_"):  # local delivery diagnostics never leave the gateway
-                continue
-            metadata += _bytes(2, _bytes(1, key) + _bytes(2, str(value)))
-        version = re.search(r"antigravity/hub/([^ ]+)", snapshot.user_agent)
-        os_type = re.search(r"os_type=([^; )]+)", snapshot.user_agent)
-        arch = re.search(r"arch=([^; )]+)", snapshot.user_agent)
-        extension = (_bytes(6, metadata) + _bytes(16, "antigravity") +
-                     _bytes(17, version.group(1) if version else "unknown") +
-                     _bytes(18, os_type.group(1) if os_type else "unknown") +
-                     _bytes(19, arch.group(1) if arch else "unknown") +
-                     _number(24, 1) + _bytes(27, "hub"))
-        event_time = item.get("_delivery", {}).get("enqueued_at", time.time())
-        encoded += _bytes(3, _number(1, int(event_time * 1000)) + _bytes(6, extension))
-    return _number(2, 2747) + encoded + _number(4, int(time.time() * 1000))
+        event = hub_generation_event(snapshot, item)
+        event['event_time_ms'] = int(item.get('_delivery', {}).get('enqueued_at', time.time()) * 1000)
+        encoded.append(event)
+    return encode_message('LogRequest', {'client_info': {'client_type': 16}, 'log_source': 2747,
+                          'log_event': encoded, 'request_time_ms': int(time.time() * 1000)})
 
 
 def _digest(value):
@@ -121,7 +91,7 @@ class GenerationAttempt:
         # Construct an allowlist rather than redacting an arbitrary prompt/response.
         inner = payload.get("request", {})
         labels = inner.get("labels", {})
-        self.extra = {"implementation": "gcli2api", "event_id": uuid.uuid4().hex,
+        self.extra = {"event_id": uuid.uuid4().hex,
                       "installation_id": snapshot.installation_id}
         for key, value in {"request_id": payload.get("requestId"), "model_id": payload.get("model"),
                            "session_id": inner.get("sessionId"),
@@ -141,6 +111,10 @@ class GenerationAttempt:
             body = body.get("response", body)
             if not isinstance(body, dict):
                 return
+            for source, target in [('modelVersion', 'response_model'), ('responseId', 'response_id')]:
+                value = body.get(source)
+                if isinstance(value, str) and 0 < len(value) <= 256:
+                    self.extra[target] = value
             for key in ("promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount", "cachedContentTokenCount", "totalTokenCount"):
                 value = (body.get("usageMetadata") or {}).get(key)
                 if type(value) is int and 0 <= value < 2**53:
@@ -397,6 +371,9 @@ class TelemetryService:
         # Age starts when generation finishes, not when inference starts.
         snapshot = replace(snapshot, created_at=time.monotonic())
         event["_delivery"] = {"enqueued_at": time.time(), "send_ms": 0}
+        from src.antigravity_telemetry_schema import hub_generation_event
+        event["_wire"] = hub_generation_event(snapshot, event)
+        event["_wire"]["event_time_ms"] = int(event["_delivery"]["enqueued_at"] * 1000)
         key = snapshot.account_id
         queue = self.queues.get(key)
         if self.closed or (queue is None and len(self.workers) >= WORKER_LIMIT):

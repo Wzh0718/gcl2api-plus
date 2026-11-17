@@ -140,7 +140,8 @@ async def test_concurrent_accounts_keep_authentication_and_events_isolated(telem
         assert snapshot.access_token == name + "-token"
         assert snapshot.proxy_url == f"http://{name}-proxy:8080"
         assert b"PRIVATE" not in body and b"-secret" not in body and b"-token" not in body
-        assert snapshot.installation_id.encode() in body
+        assert b"antigravity" in body and b"hub" in body
+        assert b"gcli2api" not in body
 
 
 @pytest.mark.asyncio
@@ -183,8 +184,10 @@ async def test_stream_observer_parses_lines_and_fragmented_bytes(telemetry, monk
     assert chunks
     await service.drain()
     assert len(sent) == 1
-    assert b'completed' in sent[0][1] and b'promptTokenCount' in sent[0][1]
-    assert b'17' in sent[0][1]
+    from test_antigravity_hub_schema import decode
+    wire = decode('LogRequest', sent[0][1])
+    usage = wire['log_event'][0]['source_extension']['cortex_generator_metadata']['generator_metadata']['chat_model']['usage']
+    assert usage['input_tokens'] == 17
 
 
 @pytest.mark.asyncio
@@ -251,7 +254,8 @@ async def test_post_observer_preserves_response_and_records_only_metadata(teleme
     monkeypatch.setattr(module, 'telemetry_service', service)
     await service.configure('a.json', 'send')
     response = httpx.Response(200, json={
-        'usageMetadata': {'totalTokenCount': 9},
+        'usageMetadata': {'promptTokenCount': 6, 'candidatesTokenCount': 3, 'totalTokenCount': 9},
+        'modelVersion': 'returned-model', 'responseId': 'returned-response',
         'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'text': 'PRIVATE ANSWER'}]}}]})
     @module.observe_post
     async def upstream(url, **kwargs):
@@ -262,7 +266,11 @@ async def test_post_observer_preserves_response_and_records_only_metadata(teleme
                             json=body, headers=headers, proxy_url=proxy, transport='antigravity')
     assert result is response
     await service.drain()
-    assert len(sent) == 1 and b'totalTokenCount' in sent[0][1]
+    assert len(sent) == 1 and b'totalTokenCount' not in sent[0][1]
+    from test_antigravity_hub_schema import decode
+    chat = decode('LogRequest', sent[0][1])['log_event'][0]['source_extension']['cortex_generator_metadata']['generator_metadata']['chat_model']
+    assert chat['response_model'] == 'returned-model'
+    assert chat['usage'] == {'input_tokens': 6, 'response_output_tokens': 3, 'output_tokens': 3, 'response_id': 'returned-response'}
     assert b'PRIVATE' not in sent[0][1]
 
 
@@ -287,7 +295,7 @@ async def test_stream_close_releases_upstream_and_records_cancellation(telemetry
     await stream.aclose()
     assert closed.is_set()
     await service.drain()
-    assert len(sent) == 1 and b'cancelled' in sent[0][1]
+    assert len(sent) == 1 and b'cancelled' not in sent[0][1]
 
 @pytest.mark.asyncio
 async def test_request_history_survives_policy_change_and_links_monitor(telemetry, monkeypatch):
@@ -326,6 +334,8 @@ async def test_request_history_survives_policy_change_and_links_monitor(telemetr
         assert response.status_code == 200
         events = response.json()['events']
         assert len(events) == 1 and events[0]['mode'] == 'send' and events[0]['outcome'] == 'sent'
+        assert events[0]['event']['_wire']['source_extension']['product_name'] == 'hub'
+        assert 'implementation' not in events[0]['event']
         assert events[0]['binding']['route_ref']
         assert events[0]['binding']['installation_id'] == a.snapshot.installation_id
         assert all(secret not in response.text for secret in ('a-token', 'b-token', 'a-secret', 'a-proxy', 'PRIVATE'))
@@ -471,8 +481,8 @@ async def test_burst_is_batched_without_dropping_events(telemetry):
         outcomes = conn.execute('SELECT outcome,COUNT(*) FROM antigravity_telemetry_events GROUP BY outcome').fetchall()
     assert outcomes == [('sent', 64)]
     assert len(sent) <= 8
-    for attempt in attempts:
-        assert sum(attempt.extra['event_id'].encode() in body for _, body in sent) == 1
+    from test_antigravity_hub_schema import decode
+    assert sum(len(decode('LogRequest', body)['log_event']) for _, body in sent) == 64
 
 
 @pytest.mark.asyncio
