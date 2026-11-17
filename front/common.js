@@ -6078,8 +6078,9 @@ function switchConfigTab(category, focus = false) {
         document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
     });
     if (focus) target.focus({ preventScroll: true });
-    // Return to the category navigation even when switching from a long panel.
-    section.scrollIntoView({ block: 'start' });
+    // Each category starts below the persistent toolbar in its own scroll area.
+    const form = document.getElementById('configForm');
+    if (form) form.scrollTop = 0;
 }
 
 function handleConfigTabKeydown(event) {

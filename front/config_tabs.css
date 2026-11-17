@@ -1,12 +1,36 @@
 /* Shared by the desktop and mobile control panels. */
+#configTab.active {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - 24px);
+    overflow: hidden;
+}
+
+#configTab > .config-hero,
+#configTab > .manage-actions,
+.config-toolbar {
+    flex-shrink: 0;
+}
+
+#configSection {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+}
+
 #configForm:not(.hidden) {
     display: block;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 2px;
 }
 
 .config-toolbar {
-    position: sticky;
-    top: 0;
-    z-index: 5;
+    position: relative;
     margin-bottom: 16px;
     padding: 12px 0;
     background: var(--ui-surface, #fff);
@@ -91,6 +115,23 @@
 .config-category-panel > .card {
     min-width: 0;
     margin: 0;
+}
+
+/* 矮窗口中让整个配置区滚动，避免固定说明和工具栏把表单挤到零高度。 */
+@media (max-height: 700px) {
+    #configTab.active {
+        display: block;
+        overflow: auto;
+    }
+
+    #configSection {
+        display: block;
+    }
+
+    #configForm:not(.hidden) {
+        overflow: visible;
+    }
+
 }
 
 .config-category-panel .proxy-group-list {
