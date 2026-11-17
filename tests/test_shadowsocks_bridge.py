@@ -29,16 +29,28 @@ async def test_non_ss_proxy_passes_through():
         assert url is None
 
 
-async def test_shared_bridge_reuses_single_listener():
+async def test_shared_bridge_reuses_single_listener(monkeypatch):
     """同一 ss:// 节点在高并发请求间必须复用同一个本地监听器。
 
     旧实现每个 httpx 客户端各开一个 127.0.0.1 监听器，高并发下 LISTEN fd
     会随在途请求线性增长，低 nofile 环境会打满文件描述符。
     """
+    listeners = []
+    start_server = asyncio.start_server
+
+    async def record_listener(*args, **kwargs):
+        server = await start_server(*args, **kwargs)
+        listeners.append(server)
+        return server
+
+    monkeypatch.setattr(asyncio, "start_server", record_listener)
     urls = await asyncio.gather(
         *(shadowsocks_proxy_context(SS_URL).__aenter__() for _ in range(20))
     )
     assert len(set(urls)) == 1
+    assert len(listeners) == 1
+    shared_listener = listeners[0]
+    assert shared_listener.is_serving()
 
     # 手工创建的桥接实例独立监听，不进入共享缓存
     bridge = ShadowsocksBridge(parse_shadowsocks_url(SS_URL))
@@ -47,8 +59,13 @@ async def test_shared_bridge_reuses_single_listener():
     await bridge.stop()
 
     await close_shared_bridges()
+    assert not shared_listener.is_serving()
 
-    # 关闭缓存后重新建立监听器（旧缓存不残留）
+    # 已释放的端口允许复用；验证监听器生命周期，而不是端口必须变化。
     async with shadowsocks_proxy_context(SS_URL) as fresh_url:
-        assert fresh_url not in urls
+        assert fresh_url.startswith("socks5h://127.0.0.1:")
+        assert len(listeners) == 3  # 旧共享、手动创建、新共享
+        assert listeners[-1] is not shared_listener
+        assert listeners[-1].is_serving()
     await close_shared_bridges()
+    assert not listeners[-1].is_serving()
