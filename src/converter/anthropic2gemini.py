@@ -631,17 +631,12 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         generation_config: 生成配置字典
     """
-    config: Dict[str, Any] = {
-        "topP": 1,
-        "candidateCount": 1,
-        "stopSequences": [
-            "<|user|>",
-            "<|bot|>",
-            "<|context_request|>",
-            "<|endoftext|>",
-            "<|end_of_turn|>",
-        ],
-    }
+    # 只下发调用方真正表达过的意图。
+    # 早期版本在这里恒定注入 candidateCount=1 和 5 个特殊 stopSequences
+    # （<|user|>/<|bot|>/<|endoftext|> 等），它们既非 Gemini 控制符，也不来自
+    # 调用方，导致同一语义的请求在 Anthropic 与 OpenAI 两条入口下产生不同的
+    # 下游形态。现与 OpenAI 入口保持一致：不注入任何调用方未指定的键。
+    config: Dict[str, Any] = {}
 
     temperature = payload.get("temperature", None)
     config["temperature"] = DEFAULT_TEMPERATURE if temperature is None else temperature
@@ -691,10 +686,11 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     stop_sequences = payload.get("stop_sequences")
     if isinstance(stop_sequences, list) and stop_sequences:
-        config["stopSequences"] = config["stopSequences"] + [str(s) for s in stop_sequences]
+        config["stopSequences"] = list(config.get("stopSequences") or []) + [
+            str(s) for s in stop_sequences
+        ]
     elif is_plan_mode:
-        # Plan mode 时清空默认 stop sequences，避免过早停止
-        # 默认的 stop sequences 可能会导致模型在生成计划时过早停止
+        # Plan mode 时显式清空停止符，避免过早停止
         config["stopSequences"] = []
         log.info("[ANTHROPIC2GEMINI] Plan mode: cleared default stop sequences to prevent premature stopping")
     
