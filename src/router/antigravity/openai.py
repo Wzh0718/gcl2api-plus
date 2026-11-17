@@ -492,7 +492,7 @@ async def chat_completions(
 
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.openai2gemini import convert_openai_to_gemini_request
-    gemini_dict = await convert_openai_to_gemini_request(normalized_dict)
+    gemini_dict = await convert_openai_to_gemini_request(normalized_dict, mode='antigravity')
 
     # convert_openai_to_gemini_request 不包含 model 字段，需要手动添加
     gemini_dict["model"] = real_model

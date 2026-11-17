@@ -985,6 +985,44 @@ textarea:disabled,
 }
 
 /* Configuration */
+/* Desktop: the shell owns the height; only the form scrolls, even in short windows. */
+#mainSection > #configTab.active {
+    display: flex;
+    flex-direction: column;
+    align-self: stretch;
+    max-height: none;
+    overflow: hidden;
+}
+
+#mainSection #configSection {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 0;
+}
+
+#mainSection #configForm:not(.hidden) {
+    display: block;
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+}
+
+@media (max-height: 800px) {
+    #configTab > .config-hero {
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+    }
+
+    #configTab .config-hero .proxy-kicker {
+        display: none;
+    }
+
+    #configTab > .manage-actions {
+        margin-bottom: 8px;
+    }
+}
+
 .config-hero {
     display: flex;
     align-items: flex-end;

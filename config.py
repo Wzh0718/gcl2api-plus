@@ -38,8 +38,10 @@ AUTO_BAN_ERROR_CODES = [403]
 # 统一维护环境变量名和配置键名的映射关系
 # 格式: "环境变量名": "配置键名"
 ENV_MAPPINGS = {
+    "ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE": "antigravity_system_obfuscation_mode",
     "ANTIGRAVITY_SYSTEM_PROMPT_ENABLED": "antigravity_system_prompt_enabled",
     "ANTIGRAVITY_SYSTEM_AS_USER_ENABLED": "antigravity_system_as_user_enabled",
+    "ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED": "antigravity_system_vowel_obfuscation_enabled",
     "CODE_ASSIST_ENDPOINT": "code_assist_endpoint",
     "CREDENTIALS_DIR": "credentials_dir",
     "PROXY": "proxy",
@@ -1161,3 +1163,24 @@ async def get_antigravity_system_prompt_enabled() -> bool:
 async def get_antigravity_system_as_user_enabled() -> bool:
     value = await get_config_value('antigravity_system_as_user_enabled', False, env_var='ANTIGRAVITY_SYSTEM_AS_USER_ENABLED')
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
+async def get_antigravity_system_vowel_obfuscation_enabled() -> bool:
+    return await get_antigravity_system_obfuscation_mode() != 'off'
+
+
+async def get_antigravity_system_obfuscation_mode() -> str:
+    """New mode ENV > legacy ENV > stored mode > stored legacy boolean."""
+    value = os.getenv('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE')
+    if value is not None:
+        return value if value in ('off', 'full', 'protected') else 'off'
+    legacy_env = os.getenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED')
+    if legacy_env is not None:
+        return 'full' if legacy_env.lower() in ('true', '1', 'yes', 'on') else 'off'
+    value = await get_config_value('antigravity_system_obfuscation_mode', None)
+    if value is not None:
+        return value if value in ('off', 'full', 'protected') else 'off'
+    value = await get_config_value('antigravity_system_vowel_obfuscation_enabled', False,
+                                   env_var='ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED')
+    enabled = value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+    return 'full' if enabled else 'off'

@@ -112,7 +112,7 @@ async def messages(
 
     # 转换为 Gemini 格式 (使用 converter)
     from src.converter.anthropic2gemini import anthropic_to_gemini_request
-    gemini_dict = await anthropic_to_gemini_request(normalized_dict)
+    gemini_dict = await anthropic_to_gemini_request(normalized_dict, mode='antigravity')
 
     # anthropic_to_gemini_request 不包含 model 字段，需要手动添加
     gemini_dict["model"] = real_model

@@ -6230,6 +6230,15 @@ function populateConfigForm() {
             field.title = field.disabled ? '由环境变量控制' : '';
         }
     }
+    const obfuscationMode = document.getElementById('antigravitySystemObfuscationMode');
+    if (obfuscationMode) {
+        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled ? 'full' : 'off');
+        obfuscationMode.disabled = AppState.envLockedFields.has('antigravity_system_obfuscation_mode') || AppState.envLockedFields.has('antigravity_system_vowel_obfuscation_enabled');
+        obfuscationMode.classList.toggle('env-locked', obfuscationMode.disabled);
+        obfuscationMode.title = obfuscationMode.disabled ? '由环境变量控制' : '';
+        syncSystemObfuscationChoice();
+        resetSystemVowelPreview();
+    }
     const keywordPreset = document.getElementById('sensitiveWordUseDefaultKeywords');
     if (keywordPreset) keywordPreset.checked = c.sensitive_word_use_default_keywords !== false;
 
@@ -6423,6 +6432,7 @@ async function saveConfig() {
             system_prompt_append: document.getElementById('systemPromptAppend')?.value ?? '',
             antigravity_system_prompt_enabled: document.getElementById('antigravitySystemPromptEnabled').checked,
             antigravity_system_as_user_enabled: document.getElementById('antigravitySystemAsUserEnabled').checked,
+            antigravity_system_obfuscation_mode: document.getElementById('antigravitySystemObfuscationMode').value,
             prompt_fusion_enabled: document.getElementById('promptFusionEnabled').checked,
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
             sensitive_word_use_default_keywords: getChecked('sensitiveWordUseDefaultKeywords'),
@@ -7270,5 +7280,92 @@ async function fetchPX6Proxies(importNodes = false) {
         result.textContent = error.message;
     } finally {
         previewButton.disabled = importButton.disabled = false;
+    }
+}
+
+// Explicit preview shares the request transformer; no settings or prompts are saved.
+let systemVowelPreviewRevision = 0;
+function syncSystemObfuscationChoice() {
+    const mode = document.getElementById('antigravitySystemObfuscationMode');
+    if (!mode) return;
+    document.querySelectorAll('[name="systemObfuscationChoice"]').forEach(input => {
+        input.checked = input.value === mode.value;
+        input.disabled = mode.disabled;
+    });
+    const descriptions = {
+        off: '保留客户端原始文本。',
+        full: '替换全部英文元音，代码和路径也会改变。',
+        protected: '保留代码、路径和工具名，附加解码说明。',
+    };
+    const hint = document.getElementById('systemObfuscationHint');
+    if (hint) hint.textContent = descriptions[mode.value] || descriptions.off;
+    const lock = document.getElementById('systemObfuscationLock');
+    if (lock) lock.hidden = !mode.disabled;
+}
+function selectSystemObfuscationMode(value) {
+    const mode = document.getElementById('antigravitySystemObfuscationMode');
+    if (!mode || mode.disabled || !['off', 'full', 'protected'].includes(value)) return;
+    mode.value = value;
+    syncSystemObfuscationChoice();
+    resetSystemVowelPreview();
+}
+function resetSystemVowelPreview() {
+    systemVowelPreviewRevision++;
+    const status = document.getElementById('systemVowelPreviewStatus');
+    if (status) {
+        status.textContent = '仅发送到本服务试算，不保存。';
+        status.dataset.error = 'false';
+    }
+    const result = document.getElementById('systemVowelPreviewResult');
+    if (result) result.hidden = true;
+    for (const id of ['systemVowelPreviewOutput', 'systemVowelDecoderOutput']) {
+        const output = document.getElementById(id);
+        if (output) output.textContent = '';
+    }
+    const decoder = document.getElementById('systemVowelDecoderDetails');
+    if (decoder) { decoder.hidden = true; decoder.open = false; }
+}
+async function updateSystemVowelPreview() {
+    const input = document.getElementById('systemVowelPreviewInput');
+    const output = document.getElementById('systemVowelPreviewOutput');
+    const mode = document.getElementById('antigravitySystemObfuscationMode');
+    const button = document.getElementById('systemVowelPreviewButton');
+    const status = document.getElementById('systemVowelPreviewStatus');
+    const result = document.getElementById('systemVowelPreviewResult');
+    if (!input || !output || !mode || !button || !status || !result) return;
+    resetSystemVowelPreview();
+    const revision = systemVowelPreviewRevision;
+    button.disabled = true;
+    button.textContent = '正在生成…';
+    status.textContent = '正在处理示例文本…';
+    result.setAttribute('aria-busy', 'true');
+    try {
+        const response = await fetch('./config/system-obfuscation/preview', {
+            method: 'POST', headers: {...getAuthHeaders(), 'Content-Type': 'application/json'},
+            body: JSON.stringify({text: input.value, mode: mode.value}),
+        });
+        const data = await readJsonResponse(response, '预览失败');
+        if (revision !== systemVowelPreviewRevision) return;
+        output.textContent = data.client_text ?? data.text ?? '';
+        const profiles = {generic: '通用规则', codex: 'Codex', claude_code: 'Claude Code', dsh: 'DSH', pi: 'Pi'};
+        const profile = document.getElementById('systemVowelPreviewProfile');
+        if (profile) profile.textContent = mode.value === 'protected' ? (profiles[data.profile] || '通用规则') : '';
+        const decoder = document.getElementById('systemVowelDecoderDetails');
+        const decoderOutput = document.getElementById('systemVowelDecoderOutput');
+        if (decoder && decoderOutput) {
+            decoder.hidden = !data.decoder;
+            decoderOutput.textContent = data.decoder || '';
+        }
+        result.hidden = !input.value.trim();
+        status.textContent = input.value.trim() ? '预览已生成，未保存设置。' : '输入为空，未添加额外说明。';
+    } catch (error) {
+        if (revision === systemVowelPreviewRevision) {
+            status.textContent = `预览失败：${error.message}`;
+            status.dataset.error = 'true';
+        }
+    } finally {
+        result.removeAttribute('aria-busy');
+        button.disabled = false;
+        button.textContent = '生成预览';
     }
 }

@@ -1213,7 +1213,7 @@ def _sanitize_openai_roundtrip_signatures(contents: List[Dict[str, Any]]) -> Non
             parts[index] = sanitized_part
 
 
-async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Dict[str, Any]:
+async def convert_openai_to_gemini_request(openai_request: Dict[str, Any], *, mode: str | None = None) -> Dict[str, Any]:
     """
     将 OpenAI 格式请求体转换为 Gemini 格式请求体
 
@@ -1238,7 +1238,7 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any]) -> Di
     capture_request_parameters(openai_request)
 
     # 处理连续的system消息（兼容性模式）
-    openai_request = await merge_system_messages(openai_request)
+    openai_request = await merge_system_messages(openai_request, mode=mode)
 
     contents = []
 

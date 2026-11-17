@@ -11,7 +11,7 @@ def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
     monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False})
     monkeypatch.setenv('SENSITIVE_WORD_REPLACE_ENABLED', 'false')
-    for key in ('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'SYSTEM_PROMPT_APPEND'):
+    for key in ('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED', 'SYSTEM_PROMPT_APPEND'):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -76,7 +76,8 @@ async def test_role_options_preserve_guidance_and_tool_history(inject, as_user):
 
 @pytest.mark.parametrize('mode', ['geminicli', 'vertex'])
 async def test_options_are_antigravity_only(mode):
-    config._config_cache.update(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True)
+    config._config_cache.update(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True,
+                               antigravity_system_vowel_obfuscation_enabled=True)
     req = request()
     result = await normalize_gemini_request(req, mode=mode)
     assert result['systemInstruction'] == req['systemInstruction']
@@ -119,13 +120,19 @@ async def test_panel_save_reload_and_environment_lock(tmp_path, monkeypatch):
     await adapter.initialize()
     monkeypatch.setattr(config_routes, 'get_storage_adapter', AsyncMock(return_value=adapter))
     monkeypatch.setattr(src.storage_adapter, 'get_storage_adapter', AsyncMock(return_value=adapter))
-    flags = dict(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True)
+    flags = dict(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True,
+                 antigravity_system_vowel_obfuscation_enabled=True)
     try:
         await config_routes.save_config(ConfigSaveRequest(config=flags), token='test')
         assert await config.get_antigravity_system_prompt_enabled()
         assert await config.get_antigravity_system_as_user_enabled()
+        assert await config.get_antigravity_system_vowel_obfuscation_enabled()
+        monkeypatch.setenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED', 'false')
+        assert not await config.get_antigravity_system_vowel_obfuscation_enabled()
         saved = json.loads((await config_routes.get_config(token='test')).body)
-        assert all(saved['config'][key] is True for key in flags)
+        assert all(saved['config'][key] is True for key in flags if key != 'antigravity_system_vowel_obfuscation_enabled')
+        assert saved['config']['antigravity_system_vowel_obfuscation_enabled'] is False
+        assert 'antigravity_system_vowel_obfuscation_enabled' in saved['env_locked']
         monkeypatch.setenv('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'false')
         await config_routes.save_config(ConfigSaveRequest(config=flags), token='test')
         assert not await config.get_antigravity_system_prompt_enabled()
@@ -137,7 +144,8 @@ async def test_panel_save_reload_and_environment_lock(tmp_path, monkeypatch):
         await adapter.close()
 
 
-@pytest.mark.parametrize('key', ['antigravity_system_prompt_enabled', 'antigravity_system_as_user_enabled'])
+@pytest.mark.parametrize('key', ['antigravity_system_prompt_enabled', 'antigravity_system_as_user_enabled',
+                                 'antigravity_system_vowel_obfuscation_enabled'])
 async def test_panel_rejects_string_boolean(key):
     from fastapi import HTTPException
     from src.panel.config_routes import save_config
@@ -149,25 +157,86 @@ async def test_panel_rejects_string_boolean(key):
 
 @pytest.mark.parametrize('protocol', ['openai', 'anthropic'])
 @pytest.mark.parametrize('compatibility', [False, True])
-async def test_protocol_conversion_then_injection(protocol, compatibility):
+@pytest.mark.parametrize('obfuscate', [False, True])
+async def test_protocol_conversion_then_injection(protocol, compatibility, obfuscate):
     config._config_cache.update(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True,
-                               compatibility_mode_enabled=compatibility)
+                               compatibility_mode_enabled=compatibility,
+                               antigravity_system_vowel_obfuscation_enabled=obfuscate)
     if protocol == 'openai':
         from src.converter.openai2gemini import convert_openai_to_gemini_request
         converted = await convert_openai_to_gemini_request({'messages': [
             {'role': 'system', 'content': 'Client guidance'},
-            {'role': 'user', 'content': 'Task'}]})
+            {'role': 'user', 'content': 'Task'}]}, mode='antigravity')
     else:
         from src.converter.anthropic2gemini import anthropic_to_gemini_request
         converted = await anthropic_to_gemini_request({'system': 'Client guidance',
-            'messages': [{'role': 'user', 'content': 'Task'}]})
+            'messages': [{'role': 'user', 'content': 'Task'}]}, mode='antigravity')
     converted['model'] = 'gemini-2.5-flash'
     result = await normalize_gemini_request(converted, mode='antigravity')
     system = '\n'.join(p.get('text', '') for p in result['systemInstruction']['parts'])
     assert 'You are Antigravity' in system
     assert 'Client guidance' not in system
     user = '\n'.join(p.get('text', '') for c in result['contents'] if c['role'] == 'user' for p in c['parts'])
-    assert user.count('Client guidance') == 1
+    assert user.count('Cl13nt gv1d4nc3' if obfuscate else 'Client guidance') == 1
     assert 'Task' in user
     import json
     assert set(json.loads(json.dumps(result))) <= {'model', 'systemInstruction', 'contents', 'generationConfig', 'safetySettings', 'tools', 'toolConfig'}
+
+
+@pytest.mark.parametrize('inject', [False, True])
+@pytest.mark.parametrize('as_user', [False, True])
+@pytest.mark.parametrize('obfuscate', [False, True])
+async def test_vowel_options_preserve_history_and_server_prompt(inject, as_user, obfuscate):
+    config._config_cache.update(
+        antigravity_system_prompt_enabled=inject,
+        antigravity_system_as_user_enabled=as_user,
+        antigravity_system_vowel_obfuscation_enabled=obfuscate,
+    )
+    req = request()
+    text = 'aeiou AEIOU 中文 xyz https://example.com'
+    req['systemInstruction']['parts'] = [
+        {'text': text, 'custom': 'aeiou'},
+        {'inlineData': {'mimeType': 'image/png', 'data': 'aeiou'}},
+    ]
+    original = deepcopy(req)
+    result = await normalize_gemini_request(req, mode='antigravity')
+    parts = result['contents'][0]['parts'] if as_user else result['systemInstruction']['parts']
+    expected = '4310v 4310V 中文 xyz https://3x4mpl3.c0m' if obfuscate else text
+    assert {'text': expected, 'custom': 'aeiou'} in parts
+    assert {'inlineData': {'mimeType': 'image/png', 'data': 'aeiou'}} in parts
+    assert result['contents'][int(as_user):] == original['contents']
+    assert req == original
+    if inject:
+        assert 'You are Antigravity' in result['systemInstruction']['parts'][0]['text']
+    again = await normalize_gemini_request(result, mode='antigravity')
+    assert again == result
+
+
+async def test_user_guidance_requires_reading_before_task_and_no_extra_reply():
+    config._config_cache['antigravity_system_as_user_enabled'] = True
+    result = await normalize_gemini_request(request(), mode='antigravity')
+    lead = result['contents'][0]['parts'][0]['text']
+    assert 'Read and understand' in lead
+    assert 'before responding to subsequent user tasks' in lead
+    assert 'Do not send a separate acknowledgment' in lead
+    assert 'user-level priority' in lead
+
+
+@pytest.mark.parametrize('instruction', [None, '', {'parts': []}, {'parts': [{'text': '   '}]}])
+async def test_no_guidance_bridge_for_empty_prompt(instruction):
+    config._config_cache.update(antigravity_system_as_user_enabled=True,
+                               antigravity_system_vowel_obfuscation_enabled=True)
+    req = request()
+    req['systemInstruction'] = instruction
+    result = await normalize_gemini_request(req, mode='antigravity')
+    assert result['contents'] == req['contents']
+
+
+@pytest.mark.parametrize('key', ['systemInstruction', 'system_instructions'])
+async def test_legacy_text_obfuscation_keeps_gateway_prefix(key):
+    config._config_cache.update(antigravity_system_vowel_obfuscation_enabled=True,
+                               system_prompt_append='Gateway policy\n')
+    req = {'model': 'gemini-2.5-flash', key: 'Client guidance', 'contents': []}
+    result = await normalize_gemini_request(req, mode='antigravity')
+    assert result['systemInstruction']['parts'][0]['text'] == 'Gateway policy\nCl13nt gv1d4nc3'
+    assert 'system_instructions' not in result

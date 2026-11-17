@@ -704,7 +704,7 @@ def build_generation_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 # 8. 主要转换函数
 # ============================================================================
 
-async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def anthropic_to_gemini_request(payload: Dict[str, Any], *, mode: str | None = None) -> Dict[str, Any]:
     """
     将 Anthropic 格式请求体转换为 Gemini 格式请求体
 
@@ -723,7 +723,7 @@ async def anthropic_to_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]
         - toolConfig: 工具调用配置 (如果有 tool_choice)
     """
     # 处理连续的system消息（兼容性模式）
-    payload = await merge_system_messages(payload)
+    payload = await merge_system_messages(payload, mode=mode)
 
     # 提取和转换基础信息
     messages = payload.get("messages") or []

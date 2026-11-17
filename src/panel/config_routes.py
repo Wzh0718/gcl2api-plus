@@ -4,7 +4,7 @@
 
 import asyncio
 from typing import Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import math
 import os
@@ -24,6 +24,31 @@ from src.capture_config import CAPTURE_FIELDS, capture_settings, validate_captur
 
 # 创建路由器
 router = APIRouter(prefix="/config", tags=["config"])
+
+
+class SystemObfuscationPreviewRequest(BaseModel):
+    text: str = Field(max_length=20000)
+    mode: Literal['off', 'full', 'protected']
+
+
+@router.post('/system-obfuscation/preview')
+async def preview_system_obfuscation(request: SystemObfuscationPreviewRequest, token: str = Depends(verify_panel_token)):
+    from src.converter.protected_leet import detect_client_profile, protected_system_parts, VOWEL_TRANSLATION
+    profile = detect_client_profile(request.text)
+    text = request.text
+    decoder = ''
+    client_text = text
+    if request.mode == 'full':
+        text = text.translate(VOWEL_TRANSLATION)
+        client_text = text
+    elif request.mode == 'protected':
+        parts = protected_system_parts([{'text': text}], [], profile)
+        text = '\n'.join(part['text'] for part in parts)
+        if len(parts) > 1:
+            decoder = parts[0]['text']
+            client_text = '\n'.join(part['text'] for part in parts[1:])
+    return JSONResponse({'profile': profile, 'text': text, 'client_text': client_text, 'decoder': decoder},
+                        headers={'Cache-Control': 'no-store'})
 
 
 @router.get("/get")
@@ -66,6 +91,8 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["system_prompt_append"] = await config.get_system_prompt_append()
         current_config["antigravity_system_prompt_enabled"] = await config.get_antigravity_system_prompt_enabled()
         current_config["antigravity_system_as_user_enabled"] = await config.get_antigravity_system_as_user_enabled()
+        current_config["antigravity_system_vowel_obfuscation_enabled"] = await config.get_antigravity_system_vowel_obfuscation_enabled()
+        current_config["antigravity_system_obfuscation_mode"] = await config.get_antigravity_system_obfuscation_mode()
 
         current_config["prompt_fusion_enabled"] = await config.get_config_value("prompt_fusion_enabled", False)
         current_config["prompt_fusion_accounts"] = await config.get_config_value("prompt_fusion_accounts", {})
@@ -230,9 +257,19 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             if len(rules_value) > 20000:
                 raise HTTPException(status_code=400, detail="敏感词替换规则过长（最多 20000 字符）")
 
-        for key in ("antigravity_system_prompt_enabled", "antigravity_system_as_user_enabled"):
+        for key in ("antigravity_system_prompt_enabled", "antigravity_system_as_user_enabled",
+                    "antigravity_system_vowel_obfuscation_enabled"):
             if key in new_config and not isinstance(new_config[key], bool):
                 raise HTTPException(status_code=400, detail="AGY 提示词开关必须是布尔值")
+
+        mode_key = 'antigravity_system_obfuscation_mode'
+        legacy_key = 'antigravity_system_vowel_obfuscation_enabled'
+        if mode_key in new_config:
+            if new_config[mode_key] not in ('off', 'full', 'protected'):
+                raise HTTPException(status_code=400, detail="AGY 混淆方案必须是 off、full 或 protected")
+            new_config[legacy_key] = new_config[mode_key] != 'off'
+        elif legacy_key in new_config:
+            new_config[mode_key] = 'full' if new_config[legacy_key] else 'off'
 
         if "system_prompt_append" in new_config:
             value = new_config["system_prompt_append"]

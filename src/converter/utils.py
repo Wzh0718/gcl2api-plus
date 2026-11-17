@@ -57,7 +57,7 @@ def extract_content_and_reasoning(parts: list) -> tuple:
     return content, reasoning_content, images
 
 
-async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
+async def merge_system_messages(request_body: Dict[str, Any], *, mode: str | None = None) -> Dict[str, Any]:
     """
     根据兼容性模式处理 system/developer 指导消息
 
@@ -134,6 +134,15 @@ async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
     from config import get_compatibility_mode_enabled
 
     compatibility_mode = await get_compatibility_mode_enabled()
+    if mode == 'antigravity':
+        from config import (
+            get_antigravity_system_as_user_enabled,
+            get_antigravity_system_vowel_obfuscation_enabled,
+        )
+        # Keep client system text identifiable until AGY's explicit side-load pass.
+        # Otherwise compatibility mode mixes it with ordinary user task text.
+        if await get_antigravity_system_as_user_enabled() or await get_antigravity_system_vowel_obfuscation_enabled():
+            compatibility_mode = False
     
     # 处理 Anthropic 格式的顶层 system 参数
     # Anthropic API 规范: system 是顶层参数，不在 messages 中
@@ -172,8 +181,6 @@ async def merge_system_messages(request_body: Dict[str, Any]) -> Dict[str, Any]:
     messages = request_body.get("messages", [])
     if not messages:
         return request_body
-
-    compatibility_mode = await get_compatibility_mode_enabled()
 
     if compatibility_mode:
         # 兼容性模式开启：将所有system消息转换为user消息

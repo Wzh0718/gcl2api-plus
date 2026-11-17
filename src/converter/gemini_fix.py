@@ -818,13 +818,23 @@ async def normalize_gemini_request(
     result = request.copy()
     model = result.get("model", "")
 
+    client_profile = None
+    if mode == 'antigravity':
+        from config import get_antigravity_system_obfuscation_mode
+        if await get_antigravity_system_obfuscation_mode() == 'protected':
+            from src.converter.protected_leet import detect_client_profile, instruction_text
+            instruction = result.get('systemInstruction')
+            if instruction is None:
+                instruction = result.get('system_instructions')
+            client_profile = detect_client_profile(instruction_text(instruction))
+
     # 敏感词替换（仅 system prompt；对 geminicli / antigravity 双通道生效）
     if mode in ("geminicli", "antigravity"):
         from src.converter.sensitive_words import filter_request_system_instruction
         await filter_request_system_instruction(result, mode=mode)
     if mode == "antigravity":
         from src.converter.antigravity_system_prompt import prepare_antigravity_system_prompt
-        result = await prepare_antigravity_system_prompt(result)
+        result = await prepare_antigravity_system_prompt(result, client_profile=client_profile)
     from src.converter.system_prompt import append_configured_system_prompt
     await append_configured_system_prompt(result)
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象
