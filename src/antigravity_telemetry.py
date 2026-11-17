@@ -28,6 +28,19 @@ DROP_HISTORY_LIMIT = 256
 WORKER_LIMIT = 128
 MAX_EVENT_AGE = 300
 
+# 对外发送已下线：默认只允许本地预览（preview）。
+# 该能力为实验性质、不建议在生产开启；仅当运维显式设置环境变量时才恢复发送。
+SEND_RETIRED_MESSAGE = (
+    "遥测对外发送已下线，当前仅保留本地预览（preview）。"
+    "此能力属实验性质、不建议生产开启；如确需受控实验，"
+    "需由运维设置环境变量 ANTIGRAVITY_TELEMETRY_ALLOW_SEND=1 并重启服务。"
+)
+
+
+def send_enabled() -> bool:
+    """发送开关：每次调用都读环境变量，便于测试与热切换判定。"""
+    return os.getenv("ANTIGRAVITY_TELEMETRY_ALLOW_SEND", "").strip() == "1"
+
 
 def _varint(value):
     result = bytearray()
@@ -286,6 +299,8 @@ class TelemetryService:
         return {"mode": (account["mode"] or "off") if valid else "off",
                 "installation_id": account["installation_id"] if valid else None,
                 "environment_matches": environment_matches,
+                # 面板据此禁用「发送至 Google」并提示已下线。
+                "send_enabled": send_enabled(),
                 "identity_ready": bool(subject_ref(account)),
                 "identity_retry_seconds": max(0, round(self.identity_after.get(account["account_id"], 0) - time.monotonic())) if not subject_ref(account) else 0,
                 "last_outcome": account["last_outcome"] if valid else "",
@@ -299,6 +314,8 @@ class TelemetryService:
         account = await adapter.get_telemetry_account(filename)
         if not account:
             raise LookupError("凭证文件不存在")
+        if mode == "send" and not send_enabled():
+            raise ValueError(SEND_RETIRED_MESSAGE)
         if mode != "off":
             account = await self._ensure_identity(adapter, account)
             if not subject_ref(account):
@@ -320,6 +337,9 @@ class TelemetryService:
             account = await adapter.get_telemetry_account(access_token=token)
             if (not account or account["disabled"] or account["mode"] not in {"preview", "send"} or
                     account["subject_ref"] != subject_ref(account)):
+                return None
+            # 历史遗留的 send 配置不再产生事件，避免任何对外发送。
+            if account["mode"] == "send" and not send_enabled():
                 return None
             expiry = datetime.fromisoformat(account["credential_data"]["expiry"].replace("Z", "+00:00"))
             if expiry.tzinfo is None:
@@ -470,6 +490,10 @@ class TelemetryService:
             await adapter.record_telemetry_outcome(snapshot.account_id, snapshot.policy_revision, outcome, status)
 
     async def _deliver(self, adapter, items):
+        # 兜底：开关关闭时绝不进入网络发送流程。
+        if not send_enabled():
+            await self._finish_delivery(adapter, items, "send_retired")
+            return
         status, outcome = None, "send_failed"
         for attempt in range(RETRY_LIMIT):
             ready = []

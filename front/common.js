@@ -1399,9 +1399,9 @@ async function openAccountTelemetryDialog(filename) {
     dialog.innerHTML = `<form class="proxy-policy-form">
         <div class="proxy-dialog-head"><h3 id="accountTelemetryTitle">账号遥测</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
         <p class="telemetry-account">${escapeHtml(filename)}</p>
-        <label class="proxy-dialog-field"><span>遥测模式</span><select name="mode" disabled><option value="off">关闭</option><option value="preview">仅本地预览</option><option value="send">发送至 Google</option></select></label>
+        <label class="proxy-dialog-field"><span>遥测模式</span><select name="mode" disabled><option value="off">关闭</option><option value="preview">仅本地预览</option><option value="send">发送至 Google（已下线）</option></select></label>
         <p class="telemetry-help">独立绑定此账号的身份与环境，不影响其他账号。</p>
-        <div class="telemetry-notice"><strong>仅记录真实请求元数据</strong><span>包含模型、用量、耗时和会话标识，不含提示词和回答。发送模式使用此账号认证与绑定出口；Google 处理效果尚未验证，不修改账号的数据分享偏好。</span></div>
+        <div class="telemetry-notice"><strong>仅记录真实请求元数据</strong><span>包含模型、用量、耗时和会话标识，不含提示词和回答。对外发送已下线，默认只做本地预览；该能力属实验性质，不建议生产开启。不修改账号的数据分享偏好。</span></div>
         <div data-status class="telemetry-status" aria-live="polite">正在加载…</div>
         <p data-error role="alert" class="proxy-dialog-copy"></p>
         <div class="proxy-dialog-actions"><button type="button" data-refresh class="secondary">刷新状态</button><button type="button" data-close class="secondary">取消</button><button type="submit" disabled>保存</button></div>
@@ -1414,6 +1414,13 @@ async function openAccountTelemetryDialog(filename) {
     let identityRetryTimer;
     const display = (data, preserveMode = false) => {
         if (!preserveMode) form.elements.mode.value = data.mode;
+        const sendOption = form.elements.mode.querySelector('option[value="send"]');
+        if (sendOption) {
+            const allowed = data.send_enabled === true;
+            // 已下线的发送选项不可选；当前账号仍是 send 时保留可见，便于切回预览。
+            sendOption.disabled = !allowed && form.elements.mode.value !== 'send';
+            sendOption.textContent = allowed ? '发送至 Google（实验）' : '发送至 Google（已下线）';
+        }
         clearTimeout(identityRetryTimer);
         if (!data.identity_ready && dialog.open) {
             identityRetryTimer = setTimeout(() => load(true), Math.max(1, data.identity_retry_seconds || 60) * 1000);
@@ -3729,7 +3736,8 @@ const CM_TELEMETRY_LABELS = {
     discarded_policy_changed: '遥测设置已更新', discarded_environment_changed: '旧环境事件，已丢弃',
     discarded_route_unavailable: '账号出口不可用', discarded_queue_full: '账号队列已满',
     discarded_worker_limit: '发送账号数达到上限', discarded_shutdown: '服务关闭，未发送',
-    preview_write_failed: '预览写入失败', processing_failed: '处理失败'
+    preview_write_failed: '预览写入失败', processing_failed: '处理失败',
+    send_retired: '发送已下线（仅保留本地预览）'
 };
 
 function _cmTelemetryCell(row, index) {

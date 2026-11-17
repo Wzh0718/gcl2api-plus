@@ -9,6 +9,15 @@ from src.storage.sqlite_manager import SQLiteManager
 from src.antigravity_telemetry import TelemetryService, encode_log_request
 
 
+@pytest.fixture(autouse=True)
+def _experimental_send_enabled(monkeypatch):
+    """既有用例覆盖发送链路，这里显式开启实验开关。
+
+    默认下线行为由 test_send_mode_is_retired_by_default 单独验证。
+    """
+    monkeypatch.setenv("ANTIGRAVITY_TELEMETRY_ALLOW_SEND", "1")
+
+
 @pytest_asyncio.fixture
 async def telemetry(tmp_path, monkeypatch):
     monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
@@ -602,3 +611,44 @@ async def test_failed_email_lookup_is_coalesced_and_cooled_down(telemetry, monke
     assert all(not r['identity_ready'] for r in results)
     await service.status('a.json')
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_mode_is_retired_by_default(telemetry, monkeypatch):
+    """默认环境下面板与 API 都不能把账号切到对外发送。"""
+    from src.antigravity_telemetry import SEND_RETIRED_MESSAGE
+    db, service, sent = telemetry
+    monkeypatch.delenv('ANTIGRAVITY_TELEMETRY_ALLOW_SEND', raising=False)
+
+    status = await service.status('a.json')
+    assert status['send_enabled'] is False
+
+    with pytest.raises(ValueError, match='已下线'):
+        await service.configure('a.json', 'send')
+    assert (await service.status('a.json'))['mode'] == 'off'
+
+    # 下线只影响发送，本地预览仍然可用。
+    assert (await service.configure('a.json', 'preview'))['mode'] == 'preview'
+    attempt = await begin(service)
+    assert attempt is not None
+    attempt.finish(200)
+    await service.drain()
+    assert sent == []
+    assert SEND_RETIRED_MESSAGE.startswith('遥测对外发送已下线')
+
+
+@pytest.mark.asyncio
+async def test_residual_send_binding_stops_producing_events(telemetry, monkeypatch):
+    """历史遗留的 send 配置在下线后不得再产生可发送事件。"""
+    import aiosqlite
+    db, service, sent = telemetry
+    await service.configure('a.json', 'send')
+    assert (await service.status('a.json'))['mode'] == 'send'
+
+    monkeypatch.delenv('ANTIGRAVITY_TELEMETRY_ALLOW_SEND', raising=False)
+    assert await begin(service) is None
+    await service.drain()
+    assert sent == []
+    async with aiosqlite.connect(db._db_path) as connection:
+        async with connection.execute('SELECT COUNT(*) FROM antigravity_telemetry_events') as cursor:
+            assert (await cursor.fetchone())[0] == 0
