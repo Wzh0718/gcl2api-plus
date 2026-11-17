@@ -105,6 +105,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("updated_at", "REAL DEFAULT (unixepoch())")
         ],
         "proxy_groups": [
+            # 补列时保留历史共享绑定，由一次性迁移检查后再开启独占。
             ("exclusive_assignment", "INTEGER NOT NULL DEFAULT 0")
         ],
         "proxy_group_nodes": [
@@ -165,6 +166,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
                     # 创建表
                     await self._create_tables(db)
+                    await self._migrate_proxy_group_exclusive_default(db)
 
                     # 旧版托管密钥只有不可逆哈希；新增密文字段后，新建密钥可在
                     # 管理面板中安全取回。旧记录保持 NULL 并明确标记不可恢复。
@@ -426,7 +428,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 description TEXT NOT NULL DEFAULT '',
                 strategy TEXT NOT NULL DEFAULT 'round_robin',
                 enabled INTEGER NOT NULL DEFAULT 1,
-                exclusive_assignment INTEGER NOT NULL DEFAULT 0,
+                exclusive_assignment INTEGER NOT NULL DEFAULT 1,
                 cursor INTEGER NOT NULL DEFAULT 0,
                 created_at REAL NOT NULL DEFAULT (unixepoch()),
                 updated_at REAL NOT NULL DEFAULT (unixepoch())
@@ -706,6 +708,43 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         await self._create_telemetry_tables(db)
         log.debug("SQLite tables and indexes created")
+
+    async def _migrate_proxy_group_exclusive_default(self, db: aiosqlite.Connection) -> None:
+        """仅首次升级时收敛历史组，后续保留用户明确选择的共享策略。"""
+        marker = "_migration_proxy_groups_exclusive_default_v1"
+        async with db.execute("SELECT 1 FROM config WHERE key = ?", (marker,)) as cursor:
+            if await cursor.fetchone():
+                return
+
+        # 已有共享绑定的组保持原状，避免迁移直接改变线上出口。
+        cursor = await db.execute("""
+            UPDATE proxy_groups SET exclusive_assignment = 1
+            WHERE exclusive_assignment = 0
+              AND id NOT IN (
+                SELECT proxy_group_id FROM antigravity_credentials
+                WHERE proxy_group_id IS NOT NULL AND bound_proxy_node_id IS NOT NULL
+                GROUP BY proxy_group_id, bound_proxy_node_id
+                HAVING COUNT(*) > 1
+              )
+        """)
+        if cursor.rowcount:
+            log.info(f"[PROXY] 已将 {cursor.rowcount} 个代理组收敛为独占出口（一账号一节点）")
+        async with db.execute("""
+            SELECT DISTINCT g.id, g.name FROM proxy_groups g
+            JOIN antigravity_credentials a ON a.proxy_group_id = g.id
+            WHERE a.bound_proxy_node_id IS NOT NULL
+            GROUP BY g.id, a.bound_proxy_node_id
+            HAVING COUNT(*) > 1
+        """) as cursor:
+            conflicting = await cursor.fetchall()
+        if conflicting:
+            names = ", ".join(f"#{row[0]} {row[1]}" for row in conflicting)
+            log.warning(
+                "[PROXY] 以下代理组仍存在共享节点绑定，未自动切换为独占："
+                f"{names}；请先在面板解除重复绑定"
+            )
+        # 和上面的更新在同一初始化事务提交，失败时不会留下完成标记。
+        await db.execute("INSERT INTO config (key, value) VALUES (?, 'true')", (marker,))
 
     async def _migrate_api_key_secret_ciphertext(
         self, db: aiosqlite.Connection
@@ -1846,7 +1885,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         description: str = "",
         strategy: str = "round_robin",
         enabled: bool = True,
-        exclusive_assignment: bool = False,
+        exclusive_assignment: bool = True,
     ) -> Dict[str, Any]:
         """Create a proxy group and return its public shape."""
         self._ensure_initialized()

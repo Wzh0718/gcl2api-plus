@@ -29,7 +29,8 @@ class ProxyGroupCreateRequest(BaseModel):
     description: str = Field(default="", max_length=500)
     strategy: Literal["round_robin", "random", "failover"] = "round_robin"
     enabled: bool = True
-    exclusive_assignment: bool = False
+    # 默认独占：一账号一节点，避免新组默认允许共享出口。
+    exclusive_assignment: bool = True
 
 
 class ProxyGroupUpdateRequest(BaseModel):
