@@ -94,19 +94,5 @@ async def count_tokens(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
 
-    total_tokens = 0
-    contents = None
-
-    if "generateContentRequest" in request_data:
-        contents = request_data["generateContentRequest"].get("contents", [])
-    elif "contents" in request_data:
-        contents = request_data["contents"]
-
-    if contents:
-        for content in contents:
-            if isinstance(content, dict) and "parts" in content:
-                for part in content["parts"]:
-                    if isinstance(part, dict) and "text" in part:
-                        total_tokens += max(1, len(part["text"]) // 4)
-
-    return JSONResponse(content={"totalTokens": total_tokens})
+    from src.token_estimator import estimate_gemini_input_tokens
+    return JSONResponse(content={"totalTokens": estimate_gemini_input_tokens(request_data)})

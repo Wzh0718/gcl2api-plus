@@ -9,8 +9,9 @@ import gc
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import get_server_host, get_server_port
@@ -18,6 +19,7 @@ from log import log
 
 # Import managers and utilities
 from src.credential_manager import credential_manager
+from src.converter.remote_images import RemoteImageError
 
 # Import all routers
 from src.router.antigravity.openai import router as antigravity_openai_router
@@ -284,6 +286,22 @@ app.add_middleware(
 
 app.add_middleware(RequestContentMiddleware)
 app.add_middleware(RequestTimingMiddleware)
+
+
+@app.exception_handler(RemoteImageError)
+async def invalid_image_url(request: Request, exc: RemoteImageError) -> JSONResponse:
+    path = request.scope["route"].path
+    message = str(exc)
+    if path.endswith("/messages"):
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    elif "/models/" in path:
+        body = {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": message}}
+    else:
+        body = {"error": {
+            "type": "invalid_request_error", "code": "invalid_image_url", "message": message,
+        }}
+    return JSONResponse(status_code=400, content=body)
+
 
 # 挂载路由器
 # GeminiCLI 路由已下线：/v1/models、/v1beta/models 等 OpenAI/Gemini 格式

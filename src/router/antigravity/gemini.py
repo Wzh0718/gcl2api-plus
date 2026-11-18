@@ -455,32 +455,8 @@ async def count_tokens(
         log.error(f"Failed to parse JSON request: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
 
-    # 简单的token计数模拟 - 基于文本长度估算
-    total_tokens = 0
-
-    # 如果有contents字段
-    if "contents" in request_data:
-        for content in request_data["contents"]:
-            if "parts" in content:
-                for part in content["parts"]:
-                    if "text" in part:
-                        # 简单估算：大约4字符=1token
-                        text_length = len(part["text"])
-                        total_tokens += max(1, text_length // 4)
-
-    # 如果有generateContentRequest字段
-    elif "generateContentRequest" in request_data:
-        gen_request = request_data["generateContentRequest"]
-        if "contents" in gen_request:
-            for content in gen_request["contents"]:
-                if "parts" in content:
-                    for part in content["parts"]:
-                        if "text" in part:
-                            text_length = len(part["text"])
-                            total_tokens += max(1, text_length // 4)
-
-    # 返回Gemini格式的响应
-    return JSONResponse(content={"totalTokens": total_tokens})
+    from src.token_estimator import estimate_gemini_input_tokens
+    return JSONResponse(content={"totalTokens": estimate_gemini_input_tokens(request_data)})
 
 # ==================== 测试代码 ====================
 

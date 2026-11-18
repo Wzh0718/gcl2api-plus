@@ -470,7 +470,10 @@ def convert_messages_to_contents(
                         parts.append({"text": str(text)})
                 elif item_type == "image":
                     source = item.get("source", {}) or {}
-                    if source.get("type") == "base64":
+                    if source.get("type") == "url":
+                        from src.converter.remote_images import remote_image_part
+                        parts.append(remote_image_part(source.get("url")))
+                    elif source.get("type") == "base64":
                         parts.append(
                             {
                                 "inlineData": {

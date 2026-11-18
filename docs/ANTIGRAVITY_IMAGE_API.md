@@ -2,7 +2,7 @@
 
 本文面向调用 `gemini-3.1-flash-image` 的服务接入方，记录 gcli2api 的上游调用链、Google 官方参数兼容方式、OpenAI 兼容方式、尺寸映射以及验证边界。
 
-最后更新：2026-08-06。
+最后更新：2026-11-18。
 
 ## 1. 结论
 
@@ -82,6 +82,20 @@ Content-Type: application/json
 
 不要把密钥写进源码或提交到 Git。当前示例环境使用 HTTP 明文地址时，密钥和请求内容没有 TLS 保护；正式外部接入应在前面提供 HTTPS。
 
+### 2.1 各协议的图片 URL 输入
+
+| 通道 | 接口 | 图片 URL 字段 |
+| --- | --- | --- |
+| AGY、Vertex | OpenAI Chat Completions | 用户消息 `content[]` 的 `image_url.url` |
+| AGY | OpenAI Responses | 用户消息 `content[]` 中 `input_image` 的 `image_url` |
+| AGY | OpenAI Images Edits | JSON 使用 `images[].image_url`，multipart 使用 `image` 或 `image[]` |
+| AGY | Anthropic Messages | `image` 块的 `source.type` 设为 `url`，地址放在 `source.url` |
+| AGY、Vertex | Gemini `generateContent`、`streamGenerateContent` | `fileData.fileUri`，并在 `fileData.mimeType` 声明 `image/*` 类型，例如 `image/png` |
+
+各入口使用同一套下载规则，把公网图片转成 Base64 `inlineData` 再发给上游。已有的内联图片、文件上传和 Gemini Files API 引用可继续使用。公网 URL 限 HTTP 80 或 HTTPS 443，每个请求最多下载 8 张、合计 10 MiB，总下载时间上限为 20 秒。下载失败时，各入口按对应协议返回 HTTP 400。
+
+Gemini `countTokens` 和 Anthropic `messages/count_tokens` 对 URL 图片和内联图片使用同一估算值，无需联网下载。
+
 ## 3. 完整上游调用链
 
 ### 3.1 Gemini 原生格式
@@ -117,9 +131,10 @@ Content-Type: application/json
   -> src/router/antigravity/openai.py
   -> convert_openai_to_gemini_request
      - messages 转 contents
-     - image_url 转 inlineData
+     - 图片地址转 fileData，Base64 图片转 inlineData
      - 顶层 size 保留给图片归一化阶段
   -> normalize_gemini_request(mode="antigravity")
+     - 下载公网图片并转为 inlineData
   -> prepare_image_generation_request
      - size 转 aspectRatio + imageSize
   -> 与 Gemini 原生格式共用 Antigravity 上游调用链

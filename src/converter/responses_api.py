@@ -55,10 +55,23 @@ def _message_from_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             role = "system"
         content = item.get("content")
         if isinstance(content, str):
-            text = content
-        else:
-            text = _text_from_content_parts(content)
-        return {"role": role, "content": text}
+            return {"role": role, "content": content}
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "input_image" for part in content
+        ):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "input_image":
+                    image_url = part.get("image_url")
+                    if not isinstance(image_url, str) or not image_url:
+                        raise ValueError("input_image requires an image_url")
+                    parts.append({"type": "image_url", "image_url": {"url": image_url}})
+                else:
+                    text = _text_from_content_parts([part])
+                    if text:
+                        parts.append({"type": "text", "text": text})
+            return {"role": role, "content": parts}
+        return {"role": role, "content": _text_from_content_parts(content)}
     return None
 
 

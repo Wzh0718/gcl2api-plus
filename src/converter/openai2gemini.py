@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pypinyin import Style, lazy_pinyin
 
+from src.converter.remote_images import remote_image_part
 from src.converter.thoughtSignature_fix import (
     decode_tool_id_and_signature,
     is_internal_placeholder_text,
@@ -1461,20 +1462,14 @@ async def convert_openai_to_gemini_request(openai_request: Dict[str, Any], *, mo
                 if part.get("type") == "text":
                     parts.append({"text": part.get("text", "")})
                 elif part.get("type") == "image_url":
-                    image_url = part.get("image_url", {}).get("url")
-                    if image_url:
-                        try:
-                            mime_type, base64_data = image_url.split(";")
-                            _, mime_type = mime_type.split(":")
-                            _, base64_data = base64_data.split(",")
-                            parts.append({
-                                "inlineData": {
-                                    "mimeType": mime_type,
-                                    "data": base64_data,
-                                }
-                            })
-                        except ValueError:
-                            continue
+                    image = part.get("image_url")
+                    image_url = image.get("url") if isinstance(image, dict) else None
+                    if isinstance(image_url, str) and image_url.lower().startswith("data:"):
+                        mime_type, separator, data = image_url[5:].partition(";base64,")
+                        if separator and mime_type and data:
+                            parts.append({"inlineData": {"mimeType": mime_type, "data": data}})
+                    else:
+                        parts.append(remote_image_part(image_url))
             if parts:
                 contents.append({"role": role, "parts": parts})
         elif content:

@@ -837,6 +837,8 @@ async def normalize_gemini_request(
         result = await prepare_antigravity_system_prompt(result, client_profile=client_profile)
     from src.converter.system_prompt import append_configured_system_prompt
     await append_configured_system_prompt(result)
+    from src.converter.remote_images import inline_remote_gemini_images
+    await inline_remote_gemini_images(result)
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象
     tools = result.get("tools")
     system_instruction = result.get("systemInstruction") or result.get("system_instructions")

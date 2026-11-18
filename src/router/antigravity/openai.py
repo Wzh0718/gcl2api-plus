@@ -41,6 +41,10 @@ from src.converter.fake_stream import (
     build_openai_fake_stream_chunks,
     create_openai_heartbeat_chunk,
 )
+from src.converter.remote_images import (
+    HTTP_IMAGE_SCHEMES,
+    download_remote_images,
+)
 
 # 本地模块 - 基础路由工具
 from src.router.hi_check import is_health_check_request, create_health_check_response
@@ -338,7 +342,7 @@ def _parse_image_form_value(value) -> dict:
         raise HTTPException(status_code=400, detail="Image field must not be empty")
     mime_type = "image/png"
     encoded = text
-    if text.startswith("data:"):
+    if text.lower().startswith("data:"):
         header, _, encoded = text.partition(",")
         header_mime = header[5:].split(";")[0].strip()
         if header_mime:
@@ -352,18 +356,27 @@ async def image_edits(
     request: Request,
     principal: ApiKeyPrincipal = Depends(authenticate_antigravity_key),
 ):
-    """Edit images using the OpenAI Images API multipart request/response shape."""
+    """Edit images from OpenAI Images API uploads or URL references."""
     try:
-        content_type = request.headers.get("content-type", "")
-        if not content_type.lower().startswith("multipart/form-data"):
+        content_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+        is_json = content_type == "application/json"
+        if is_json:
+            try:
+                form = await request.json()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Failed to parse JSON request") from None
+            if not isinstance(form, dict):
+                raise HTTPException(status_code=400, detail="Expected a JSON object")
+        elif content_type == "multipart/form-data":
+            try:
+                form = await request.form()
+            except Exception:
+                raise HTTPException(status_code=400, detail="Failed to parse multipart form data")
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="Only multipart/form-data requests are supported",
+                detail="Expected multipart/form-data or application/json",
             )
-        try:
-            form = await request.form()
-        except Exception:
-            raise HTTPException(status_code=400, detail="Failed to parse multipart form data")
 
         model = str(form.get("model") or "").strip()
         if not model:
@@ -373,28 +386,24 @@ async def image_edits(
             raise HTTPException(status_code=400, detail="Field 'prompt' is required")
 
         image_values = []
-        for field_name in ("image", "image[]"):
-            image_values.extend(form.getlist(field_name))
+        if is_json:
+            images = form.get("images")
+            if not isinstance(images, list) or not images:
+                raise HTTPException(status_code=400, detail="Field 'images' must be a non-empty array")
+            for image in images:
+                url = image.get("image_url") if isinstance(image, dict) else None
+                if not isinstance(url, str) or not url.strip().lower().startswith(
+                    (*HTTP_IMAGE_SCHEMES, "data:")
+                ):
+                    raise HTTPException(
+                        status_code=400, detail="Each image must provide an HTTP(S) or data image_url",
+                    )
+                image_values.append(url)
+        else:
+            for field_name in ("image", "image[]"):
+                image_values.extend(form.getlist(field_name))
         if not image_values:
             raise HTTPException(status_code=400, detail="At least one 'image' file is required")
-
-        parts = [{"text": prompt}]
-        for value in image_values:
-            if isinstance(value, UploadFile):
-                data = await value.read()
-                if not data:
-                    raise HTTPException(status_code=400, detail="Uploaded image is empty")
-                mime_type = (value.content_type or "image/png").lower()
-                parts.append(
-                    {
-                        "inlineData": {
-                            "mimeType": mime_type,
-                            "data": base64.b64encode(data).decode(),
-                        }
-                    }
-                )
-            else:
-                parts.append(_parse_image_form_value(value))
 
         if form.get("mask") is not None:
             raise HTTPException(
@@ -413,7 +422,7 @@ async def image_edits(
 
         raw_n = form.get("n")
         try:
-            n = int(raw_n) if raw_n not in (None, "") else 1
+            n = int(str(raw_n)) if raw_n not in (None, "") else 1
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Field 'n' must be an integer")
         if not 1 <= n <= 4:
@@ -421,7 +430,7 @@ async def image_edits(
 
         raw_partial = form.get("partial_images")
         try:
-            partial_images = int(raw_partial) if raw_partial not in (None, "") else 0
+            partial_images = int(str(raw_partial)) if raw_partial not in (None, "") else 0
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="Field 'partial_images' must be an integer")
         # partial_images 按协议接受并校验；当前只发送 completed 事件，不产生 partial 事件
@@ -432,6 +441,35 @@ async def image_edits(
 
         size = str(form.get("size") or "auto")
         real_model = _resolve_openai_image_model(model)
+
+        remote_urls = {
+            index: value.strip()
+            for index, value in enumerate(image_values)
+            if isinstance(value, str) and value.strip().lower().startswith(HTTP_IMAGE_SCHEMES)
+        }
+        remote_images = dict(zip(
+            remote_urls, await download_remote_images(list(remote_urls.values())), strict=True,
+        ))
+
+        parts = [{"text": prompt}]
+        for index, value in enumerate(image_values):
+            if index in remote_images:
+                parts.append({"inlineData": remote_images[index]})
+            elif isinstance(value, UploadFile):
+                data = await value.read()
+                if not data:
+                    raise HTTPException(status_code=400, detail="Uploaded image is empty")
+                mime_type = (value.content_type or "image/png").lower()
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64.b64encode(data).decode(),
+                        }
+                    }
+                )
+            else:
+                parts.append(_parse_image_form_value(value))
 
         return await _request_openai_images(
             parts,

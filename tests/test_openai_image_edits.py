@@ -344,11 +344,11 @@ async def test_images_edits_rejects_mask_and_invalid_enums_with_openai_error_sha
 
 
 @pytest.mark.asyncio
-async def test_images_edits_requires_multipart():
+async def test_images_edits_requires_multipart_or_json():
     scope = {
         "type": "http",
         "method": "POST",
-        "headers": [(b"content-type", b"application/json")],
+        "headers": [(b"content-type", b"text/plain")],
     }
 
     async def receive():

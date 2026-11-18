@@ -33,8 +33,7 @@ def is_health_check_request(request_data: dict, format: str = "openai") -> bool:
         contents = request_data.get("contents", [])
         if len(contents) == 1:
             content = contents[0]
-            if (content.get("role") == "user" and 
-                content.get("parts", [{}])[0].get("text") == "Hi"):
+            if content.get("role") == "user" and content.get("parts") == [{"text": "Hi"}]:
                 return True
     
     elif format == "anthropic":
