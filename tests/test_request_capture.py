@@ -233,8 +233,21 @@ async def test_vertex_logical_retries_keep_recaptcha_private(enabled, monkeypatc
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from src.api import vertex
+    class HeaderMap:
+        def keys(self):
+            return (memoryview(b"x-request-id"),)
+
+        def __getitem__(self, key):
+            if not isinstance(key, str):
+                raise TypeError("header names must be strings")
+            return self.get(key)
+
+        def get(self, key):
+            if key == "x-request-id":
+                return memoryview(b"vertex-trace")
+
     class Response:
-        headers = {"x-request-id": "vertex-trace"}
+        headers = HeaderMap()
         def __init__(self, status):
             self.status = status
         async def text(self):
@@ -256,6 +269,7 @@ async def test_vertex_logical_retries_keep_recaptcha_private(enabled, monkeypatc
     finished = [r for r in rows(enabled, "attempts") if r.get("phase") == "finished"]
     assert {r["status_code"] for r in finished} == {200, 429}
     assert all(r["credential_name"] == "vertex:anonymous" for r in finished)
+    assert all(r["trace_id"] == "vertex-trace" for r in finished)
     assert "secret-recaptcha" not in json.dumps(rows(enabled, "normal"))
 
 

@@ -263,11 +263,20 @@ class CaptureAttempt:
 
     def response(self, status, headers=None, body=b""):
         self.status = status
+        if not self.enabled:
+            return
         # Only allowlisted response identifiers; never capture request headers.
-        headers = {str(k).lower(): str(v) for k, v in dict(headers or {}).items()}
-        self.headers = {k: headers[k][:512] for k in (
+        if isinstance(headers, dict):
+            headers = {str(key).lower(): value for key, value in headers.items()}
+        self.headers = {}
+        for key in (
             "x-cloud-trace-context", "x-request-id", "x-goog-request-id", "traceparent", "retry-after",
-        ) if k in headers}
+        ):
+            value = headers.get(key) if headers is not None else None
+            if isinstance(value, (bytes, memoryview)):
+                value = bytes(value).decode("latin-1")
+            if value is not None:
+                self.headers[key] = str(value)[:512]
         if status and status >= 400:
             limit = capture_settings()["request_capture_error_body_kb"] * 1024
             raw = body.encode() if isinstance(body, str) else body
