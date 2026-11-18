@@ -167,13 +167,18 @@ async def get_config(token: str = Depends(verify_panel_token)):
             if key not in env_locked_keys:
                 current_config[key] = value
 
+        from src.antigravity_usage import CONFIG_KEY as ACCOUNT_USAGE_CONFIG, DEFAULT_USAGE_LIMITS, validate_usage_settings
+        current_config[ACCOUNT_USAGE_CONFIG] = validate_usage_settings(
+            current_config.get(ACCOUNT_USAGE_CONFIG, DEFAULT_USAGE_LIMITS)
+        )
         current_config.update(capture_settings())
         webhook_source = (
             "sqlite" if storage_config.get("dingtalk_webhook_url") is not None else
             "environment" if os.getenv("DINGTALK_WEBHOOK_URL", "").strip() else "unset"
         )
         return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys),
-                                     "webhook_source": webhook_source, "capture_schema": CAPTURE_FIELDS})
+                                     "webhook_source": webhook_source, "capture_schema": CAPTURE_FIELDS,
+                                     "account_usage_defaults": DEFAULT_USAGE_LIMITS})
 
     except Exception as e:
         log.error(f"获取配置失败: {e}")
@@ -201,6 +206,13 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             validate_settings(new_config)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+        from src.antigravity_usage import CONFIG_KEY as ACCOUNT_USAGE_CONFIG, validate_usage_settings
+        if ACCOUNT_USAGE_CONFIG in new_config:
+            try:
+                new_config[ACCOUNT_USAGE_CONFIG] = validate_usage_settings(new_config[ACCOUNT_USAGE_CONFIG])
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
 
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
 

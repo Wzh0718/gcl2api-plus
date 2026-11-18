@@ -104,6 +104,7 @@ async def _generate(source, model, account, credential, api_key_id):
     from src.api.antigravity import wrap_cli_request, build_antigravity_headers, get_effective_proxy_url
     from src.httpx_client import post_async
     from src.antigravity_pacing import acquire_credential_slot, release_credential_slot, pace_credential
+    from src.antigravity_usage import begin_account_usage
     from config import get_antigravity_api_url
     from src.billing import get_billing_recorder, extract_usage_metadata
 
@@ -122,11 +123,15 @@ async def _generate(source, model, account, credential, api_key_id):
     await acquire_credential_slot(account)
     try:
         await pace_credential(account)
+        target_url = f'{await get_antigravity_api_url()}/v1internal:generateContent'
+        usage_attempt = await begin_account_usage(account)
         response = await post_async(
-            url=f'{await get_antigravity_api_url()}/v1internal:generateContent',
+            url=target_url,
             json=payload, headers=build_antigravity_headers(credential.get('access_token') or credential.get('token')),
             proxy_url=get_effective_proxy_url(credential), transport='antigravity', timeout=40,
         )
+        if usage_attempt:
+            await usage_attempt.confirm_response(response)
         response.raise_for_status()
         data = response.json()
         body = data.get('response', data)

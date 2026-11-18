@@ -177,6 +177,7 @@ function createCredsManager(type) {
                                 last_success: item.last_success,
                             },
                             user_email: item.user_email,
+                            account_usage: item.account_usage,
                             model_cooldowns: item.model_cooldowns || {},
                             preview: item.preview,
                             tier: item.tier || null,
@@ -1278,6 +1279,71 @@ function buildCredStatusBadges(credInfo, manager) {
 // =====================================================================
 // 凭证卡片创建（通用）
 // =====================================================================
+function renderAntigravityAccountUsage(snapshot) {
+    if (!snapshot) return '';
+    return `
+        <div class="cred-account-usage">
+            <strong>账号用量</strong>
+            <div class="cred-account-usage-content" aria-live="polite">
+                ${renderAntigravityAccountUsageDetails(snapshot)}
+            </div>
+            <select aria-label="账号用量限制" data-account-usage-mode ${snapshot.mode ? '' : 'disabled'}>
+                <option value="inherit" ${snapshot.mode === 'inherit' ? 'selected' : ''}>继承全局</option>
+                <option value="off" ${snapshot.mode === 'off' ? 'selected' : ''}>单独关闭</option>
+                ${snapshot.mode ? '' : '<option value="" selected>暂不可用</option>'}
+            </select>
+        </div>`;
+}
+
+function renderAntigravityAccountUsageDetails(snapshot) {
+    if (!snapshot.windows) {
+        return {
+            disabled: '全局已关闭',
+            unconfigured: '未设上限',
+        }[snapshot.state] ?? '用量暂不可用';
+    }
+
+    const format = new Intl.NumberFormat('zh-CN');
+    const renderMetric = ({ used, limit }, unit) => {
+        const reached = limit > 0 && used >= limit;
+        const amount = limit > 0 ? `${format.format(used)}/${format.format(limit)}` : format.format(used);
+        return `<span class="${reached ? 'is-at-limit' : ''}">${amount} ${unit}${reached ? ' · 已达限' : ''}</span>`;
+    };
+    const time = new Date(snapshot.as_of * 1000).toLocaleTimeString('zh-CN', { hour12: false });
+    return snapshot.windows.map(window => `
+        <span class="cred-account-usage-window" title="实发请求与已确认生成 Token（已用/上限） · 更新于 ${time}">
+            <span>近 ${window.seconds === 60 ? '1 分钟' : '1 小时'}</span>
+            <span class="cred-account-usage-values">
+                ${renderMetric(window.requests, '次')}
+                <span class="cred-account-usage-dot" aria-hidden="true">·</span>
+                ${renderMetric(window.generated_tokens, 'Token')}
+            </span>
+        </span>`).join('');
+}
+
+async function saveAntigravityAccountUsageMode(select, card, credInfo) {
+    const previousMode = credInfo.account_usage.mode;
+    select.disabled = true;
+    try {
+        const response = await fetch(`./creds/${encodeURIComponent(credInfo.filename)}/usage-policy`, {
+            method: 'PATCH',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ mode: select.value }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '账号用量策略保存失败');
+        credInfo.account_usage = data.account_usage;
+        select.value = data.account_usage.mode;
+        card.querySelector('.cred-account-usage-content').innerHTML = renderAntigravityAccountUsageDetails(data.account_usage);
+        showStatus('账号用量策略已保存', 'success');
+    } catch (error) {
+        select.value = previousMode;
+        showStatus(escapeHtml(error.message), 'error');
+    } finally {
+        select.disabled = false;
+    }
+}
+
 function createCredCard(credInfo, manager) {
     const div = document.createElement('div');
     const { status, filename } = credInfo;
@@ -1341,6 +1407,7 @@ function createCredCard(credInfo, manager) {
             </div>
             <div class="cred-status">${statusBadges}${warmupBadge}</div>
         </div>
+        ${managerType === 'antigravity' ? renderAntigravityAccountUsage(credInfo.account_usage) : ''}
         <div class="cred-actions">${actionButtons}</div>
         ${managerType === 'antigravity' ? buildAntigravityTierDegradedNotice(filename) + buildAntigravityQuotaOverviewInline(filename) : ''}
         <div class="cred-details" id="details-${pathId}">
@@ -1375,6 +1442,10 @@ function createCredCard(credInfo, manager) {
     div.querySelectorAll('[data-concurrency-account]').forEach(button => {
         button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
     });
+    const usageSelect = div.querySelector('[data-account-usage-mode]');
+    if (usageSelect) {
+        usageSelect.addEventListener('change', () => saveAntigravityAccountUsageMode(usageSelect, div, credInfo));
+    }
     div.querySelectorAll('[data-telemetry-account]').forEach(button => {
         button.addEventListener('click', () => openAccountTelemetryDialog(button.dataset.telemetryAccount));
     });
@@ -6106,6 +6177,13 @@ function handleConfigTabKeydown(event) {
     switchConfigTab(tabs[next].id.replace('config-tab-', ''), true);
 }
 
+const accountUsageFields = {
+    requests_per_minute: 'antigravityAccountRequestsPerMinute',
+    requests_per_hour: 'antigravityAccountRequestsPerHour',
+    generated_tokens_per_minute: 'antigravityAccountTokensPerMinute',
+    generated_tokens_per_hour: 'antigravityAccountTokensPerHour',
+};
+
 async function loadConfig() {
     const loading = document.getElementById('configLoading');
     const form = document.getElementById('configForm');
@@ -6121,6 +6199,7 @@ async function loadConfig() {
             AppState.currentConfig = data.config;
             AppState.webhookSource = data.webhook_source;
             AppState.captureSchema = data.capture_schema || {};
+            AppState.accountUsageDefaults = data.account_usage_defaults;
             AppState.envLockedFields = new Set(data.env_locked || []);
 
             populateConfigForm();
@@ -6252,6 +6331,13 @@ function populateConfigForm() {
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
     setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
     setConfigField('antigravityPacingSlotWaitSeconds', c.antigravity_pacing_slot_wait_seconds ?? 30);
+    const accountUsage = c.antigravity_account_usage ?? {};
+    document.getElementById('antigravityAccountUsageEnabled').checked = accountUsage.enabled === true;
+    for (const [key, id] of Object.entries(accountUsageFields)) {
+        setConfigField(id, accountUsage[key] ?? 0);
+    }
+    const accountUsagePreset = document.getElementById('accountUsagePreset');
+    if (accountUsagePreset) accountUsagePreset.disabled = !AppState.accountUsageDefaults;
     document.getElementById('antigravityQuotaGuardEnabled').checked = Boolean(c.antigravity_quota_guard_enabled !== false);
     setConfigField('antigravityQuotaGuardThreshold', c.antigravity_quota_guard_threshold ?? 0.05);
 
@@ -6382,12 +6468,31 @@ function setConfigField(fieldId, value) {
     }
 }
 
+function applyAccountUsageDefaults() {
+    for (const [key, id] of Object.entries(accountUsageFields)) {
+        setConfigField(id, AppState.accountUsageDefaults[key]);
+    }
+    showStatus('已填入账号用量推荐值，点击「保存更改」应用', 'success');
+}
+
 async function saveConfig() {
     try {
         const getValue = (id, def = '') => document.getElementById(id)?.value.trim() || def;
         const getInt = (id, def = 0) => parseInt(document.getElementById(id)?.value) || def;
         const getFloat = (id, def = 0.0) => parseFloat(document.getElementById(id)?.value) || def;
         const getChecked = (id, def = false) => document.getElementById(id)?.checked || def;
+
+        const accountUsage = { enabled: getChecked('antigravityAccountUsageEnabled') };
+        for (const [key, id] of Object.entries(accountUsageFields)) {
+            const field = document.getElementById(id);
+            const value = field.valueAsNumber;
+            if (!Number.isSafeInteger(value) || value < 0) {
+                field.focus();
+                showStatus('账号用量上限须填写非负整数，填 0 表示不限', 'error');
+                return;
+            }
+            accountUsage[key] = value;
+        }
 
         const config = {
             host: getValue('host', '0.0.0.0'),
@@ -6424,6 +6529,7 @@ async function saveConfig() {
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
             antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
             antigravity_pacing_slot_wait_seconds: getValue('antigravityPacingSlotWaitSeconds', '30'),
+            antigravity_account_usage: accountUsage,
             antigravity_quota_guard_enabled: getChecked('antigravityQuotaGuardEnabled'),
             antigravity_quota_guard_threshold: getFloat('antigravityQuotaGuardThreshold', 0.05),
             anti_truncation_max_attempts: getInt('antiTruncationMaxAttempts', 3),

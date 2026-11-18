@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import sqlite3
 import time
 import zipfile
 from datetime import datetime
@@ -291,6 +292,12 @@ async def get_creds_status_common(
         tier_filter=tier_filter if tier_filter and tier_filter != "all" else None
     )
 
+    usage_snapshots = {}
+    if mode == "antigravity":
+        from src.antigravity_usage import get_account_usage_snapshots
+
+        usage_snapshots = await get_account_usage_snapshots([summary["filename"] for summary in result["items"]])
+
     creds_list = []
     for summary in result["items"]:
         cred_info = {
@@ -307,6 +314,7 @@ async def get_creds_status_common(
         if mode == "geminicli":
             cred_info["preview"] = summary.get("preview", True)
         else:
+            cred_info["account_usage"] = usage_snapshots[summary["filename"]]
             cred_info.update(get_antigravity_account_concurrency(summary["filename"]))
             cred_info["enable_credit"] = summary.get("enable_credit", False)
             cred_info["proxy_mode"] = summary.get("proxy_mode", "inherit")
@@ -947,6 +955,33 @@ async def _account_telemetry(filename, mode, setting=None):
 class AccountConcurrencyRequest(BaseModel):
     request_concurrency: Optional[int] = Field(default=None, ge=1, le=64, strict=True)
     image_task_concurrency: int = Field(ge=1, le=64, strict=True)
+
+
+class AccountUsagePolicyRequest(BaseModel):
+    mode: Literal["inherit", "off"]
+
+
+@router.patch("/{filename}/usage-policy")
+async def update_account_usage_policy(
+    filename: str,
+    request: AccountUsagePolicyRequest,
+    token: str = Depends(verify_panel_token),
+):
+    from src.antigravity_usage import get_account_usage_snapshots, set_account_usage_mode
+
+    if not filename.endswith(".json") or os.path.basename(filename) != filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    try:
+        saved = await set_account_usage_mode(filename, exempt=request.mode == "off")
+    except (sqlite3.Error, OSError) as exc:
+        log.error(f"[ACCOUNT USAGE] Policy save failed: {type(exc).__name__}")
+        raise HTTPException(status_code=503, detail="账号用量策略暂时无法保存") from exc
+    if not saved:
+        raise HTTPException(status_code=404, detail="Antigravity 凭证文件不存在")
+    snapshots = await get_account_usage_snapshots([filename])
+    snapshot = snapshots[filename]
+    snapshot.setdefault("mode", request.mode)
+    return {"account_usage": snapshot}
 
 
 @router.patch("/{filename}/concurrency")

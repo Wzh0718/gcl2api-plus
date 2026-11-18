@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
 from src.antigravity_400_classifier import upstream_error_log_detail
 from src.request_capture import record_local_capture, bind_capture_credential
+from src.antigravity_usage import AccountUsageLimitReached, begin_account_usage
 from src.claude_routing import bind_claude_request, bind_claude_stream
 
 from fastapi import Response
@@ -701,20 +702,26 @@ def _safe_response_json(response: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _credential_slot_backpressure_response() -> Response:
+def _credential_slot_backpressure_response(
+    error: Exception | None = None,
+) -> Response:
+    usage_limited = isinstance(error, AccountUsageLimitReached)
     return Response(
         content=json.dumps(
             {
                 "error": {
                     "code": 429,
-                    "message": "Upstream account capacity is busy; retry later.",
+                    "message": (
+                        "Upstream account usage limit reached; retry later."
+                        if usage_limited else "Upstream account capacity is busy; retry later."
+                    ),
                     "status": "RESOURCE_EXHAUSTED",
                 }
             }
         ),
         status_code=429,
         media_type="application/json",
-        headers={"Retry-After": "1"},
+        headers={"Retry-After": str(error.retry_after if usage_limited else 1)},
     )
 
 
@@ -1222,6 +1229,9 @@ async def _stream_request_inner(
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
         model_fell_back = False  # 标记本轮重试是否由模型降级触发（跳过换号）
+        usage_attempt = None
+        usage_metadata = upstream_model = None
+        usage_remainder = ""
 
         # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）。
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
@@ -1263,6 +1273,7 @@ async def _stream_request_inner(
                     status_code=429, media_type="application/json",
                 ))
                 return
+            usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
@@ -1429,7 +1440,9 @@ async def _stream_request_inner(
             # 流式请求完成，检查结果
             if success_recorded:
                 if native and usage_remainder:
-                    consume_usage_chunk(usage_remainder)
+                    consume_usage_chunk("\n")
+                if usage_attempt:
+                    await usage_attempt.confirm(usage_metadata)
                 log.debug(f"[ANTIGRAVITY STREAM] 流式响应完成，模型: {model_name}")
                 await record_billing_once(True, status_code=200)
                 return
@@ -1515,8 +1528,13 @@ async def _stream_request_inner(
                 attempt += 1
                 continue  # 重试
 
-        except CredentialSlotWaitTimeout:
-            await record_local_capture(slot_holder, model_name)
+        except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
+            if slot_acquired:
+                slot_acquired = False
+                release_credential_slot(slot_holder)
+                await release_dynamic_warmup_slot(slot_holder)
+            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
+            await record_local_capture(slot_holder, model_name, reason=reason)
             rate_limited_credentials.add(slot_holder)
             if retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
@@ -1526,7 +1544,7 @@ async def _stream_request_inner(
                     attempt += 1
                     continue
             await record_billing_once(False, status_code=429)
-            yield _credential_slot_backpressure_response()
+            yield _credential_slot_backpressure_response(exc)
             return
         except Exception as e:
             log.error(f"[ANTIGRAVITY STREAM] 流式请求异常: {e}, 凭证: {current_file}")
@@ -1554,6 +1572,10 @@ async def _stream_request_inner(
                     await record_billing_once(False)
                 return
         finally:
+            if usage_attempt:
+                if native and usage_remainder:
+                    consume_usage_chunk("\n")
+                await usage_attempt.confirm(usage_metadata)
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(slot_holder)
@@ -1776,10 +1798,12 @@ async def _non_stream_image_request_inner(
                 proxy_url=get_effective_proxy_url(credential_data),
                 timeout=300.0,
                 request_id=last_request_id,
+                credential_name=current_file,
             )
-        except CredentialSlotWaitTimeout:
-            await record_local_capture(current_file, requested_model)
-            last_response = _credential_slot_backpressure_response()
+        except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
+            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
+            await record_local_capture(current_file, requested_model, reason=reason)
+            last_response = _credential_slot_backpressure_response(exc)
             last_was_slot_backpressure = True
             await lease_tracker.release()
             continue
@@ -2201,6 +2225,7 @@ async def non_stream_request(
                     content=json.dumps({"error": "当前无可用凭证"}),
                     status_code=429, media_type="application/json",
                 ))
+            usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
@@ -2217,6 +2242,8 @@ async def non_stream_request(
                 timeout=300.0
             )
             upstream_elapsed = time.monotonic() - attempt_started
+            if usage_attempt:
+                await usage_attempt.confirm_response(response)
 
             status_code = response.status_code
 
@@ -2441,8 +2468,13 @@ async def non_stream_request(
                 attempt += 1
                 continue  # 重试
 
-        except CredentialSlotWaitTimeout:
-            await record_local_capture(slot_holder, model_name)
+        except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
+            if slot_acquired:
+                slot_acquired = False
+                release_credential_slot(slot_holder)
+                await release_dynamic_warmup_slot(slot_holder)
+            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
+            await record_local_capture(slot_holder, model_name, reason=reason)
             rate_limited_credentials.add(slot_holder)
             if retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
@@ -2452,7 +2484,7 @@ async def non_stream_request(
                     attempt += 1
                     continue
             await record_billing_once(False, status_code=429)
-            return _credential_slot_backpressure_response()
+            return _credential_slot_backpressure_response(exc)
         except Exception as e:
             log.error(f"[ANTIGRAVITY] 非流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
@@ -2564,11 +2596,13 @@ async def _post_image_generate(
     proxy_url: Any = ...,
     timeout: float = 300.0,
     request_id: Optional[str] = None,
+    credential_name: str = "",
 ) -> ImageUpstreamResult:
     """Run image generation on the configured AGY host with capacity backoff."""
     host = (await get_antigravity_api_url()).rstrip("/")
     attempts: List[ImageUpstreamAttempt] = []
     for capacity_attempt in range(IMAGE_CAPACITY_MAX_RETRIES + 1):
+        usage_attempt = await begin_account_usage(credential_name)
         started = time.monotonic()
         try:
             response = await post_async(
@@ -2597,6 +2631,8 @@ async def _post_image_generate(
             raise
 
         elapsed = time.monotonic() - started
+        if usage_attempt:
+            await usage_attempt.confirm_response(response)
         attempts.append(
             ImageUpstreamAttempt(
                 host=host,

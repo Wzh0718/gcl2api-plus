@@ -2131,6 +2131,7 @@
     <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
     <link rel="stylesheet" href="./front/config_tabs.css?v=prompt-settings-20261117">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
+    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-inline">
 </head>
 
 <body>
@@ -2741,7 +2742,7 @@
                 </div>
 
                 <div class="manage-actions">
-                    <button class="refresh-btn" onclick="refreshAntigravityCredsList()">刷新状态</button>
+                    <button class="refresh-btn" onclick="refreshAntigravityCredsList()" title="更新当前页账号状态和滚动用量">刷新状态</button>
                     <button class="download-all-btn" onclick="downloadAllAntigravityCreds()">打包下载所有文件</button>
                 </div>
 
@@ -3318,6 +3319,35 @@
 
                             <div class="form-group">
                                 <label>
+                                    <input type="checkbox" id="antigravityAccountUsageEnabled" class="config-checkbox" />
+                                    启用账号用量限制
+                                </label>
+                                <small class="config-note">上限默认应用到每个 Antigravity 账号，可在凭证卡片单独关闭。同一账号的所有 Key 与模型共用计数。生成 Token 以回执中的输出与思考 Token 为准。任一窗口达限时暂停向该账号派发新请求，0 表示该项不限。</small>
+                                <button type="button" id="accountUsagePreset" class="btn btn-small" onclick="applyAccountUsageDefaults()" disabled>填入推荐值</button>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityAccountRequestsPerMinute">实发请求上限（次 / 账号 / 滚动 1 分钟）</label>
+                                <input type="number" id="antigravityAccountRequestsPerMinute" class="config-input" min="0" step="1" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityAccountRequestsPerHour">实发请求上限（次 / 账号 / 滚动 1 小时）</label>
+                                <input type="number" id="antigravityAccountRequestsPerHour" class="config-input" min="0" step="1" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityAccountTokensPerMinute">已确认生成量上限（Token / 账号 / 滚动 1 分钟）</label>
+                                <input type="number" id="antigravityAccountTokensPerMinute" class="config-input" min="0" step="1" />
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityAccountTokensPerHour">已确认生成量上限（Token / 账号 / 滚动 1 小时）</label>
+                                <input type="number" id="antigravityAccountTokensPerHour" class="config-input" min="0" step="1" />
+                            </div>
+
+                            <div class="form-group">
+                                <label>
                                     <input type="checkbox" id="antigravityQuotaGuardEnabled" class="config-checkbox" />
                                     额度将尽主动避让
                                 </label>
@@ -3672,7 +3702,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=prompt-settings-20261117"></script>
+    <script src="./front/common.js?v=account-usage-inline"></script>
 
 </body>
 

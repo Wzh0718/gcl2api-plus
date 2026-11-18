@@ -11,7 +11,9 @@ import json
 import pytest
 from fastapi import Response
 
+import config
 from src import antigravity_pacing as pacing
+from src.antigravity_usage import CONFIG_KEY
 from src.api import antigravity as agy
 
 
@@ -142,6 +144,46 @@ async def test_non_stream_releases_slot(monkeypatch):
 
     response = await agy.non_stream_request(_body())
     assert response.status_code == 200
+    assert _inflight(cred[0]) == 0
+
+
+@pytest.mark.asyncio
+async def test_account_usage_shared_across_keys_and_streaming(monkeypatch, tmp_path):
+    from src import storage_adapter
+
+    cred = _patch_common(monkeypatch)
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKERS", "1")
+    storage = storage_adapter.StorageAdapter()
+    await storage.initialize()
+    assert await storage.store_credential(*cred, mode="antigravity")
+    monkeypatch.setattr(storage_adapter, "_storage_adapter", storage)
+    monkeypatch.setattr(storage, "get_api_key_record", lambda key: _awaitable({}))
+    monkeypatch.setattr(config, "_config_initialized", True)
+    monkeypatch.setattr(config, "_config_cache", {
+        CONFIG_KEY: {"enabled": True, "generated_tokens_per_minute": 10},
+    })
+    sent = []
+
+    async def fake_stream(**kwargs):
+        sent.append("stream")
+        yield b'data: {"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":7,"thoughtsTokenCount":3}}'
+
+    async def fake_post(**kwargs):
+        sent.append("post")
+        return _FakeResponse(200, b'{"candidates":[]}')
+
+    monkeypatch.setattr(agy, "stream_post_async", fake_stream)
+    monkeypatch.setattr(agy, "post_async", fake_post)
+
+    stream = agy.stream_request(_body(), native=True, api_key_id="first-key")
+    assert await anext(stream)
+    await stream.aclose()
+
+    response = await agy.non_stream_request(_body("gemini-2.5-flash-lite"), api_key_id="second-key")
+    assert response.status_code == 429
+    assert 1 <= int(response.headers["retry-after"]) <= 60
+    assert sent == ["stream"]
     assert _inflight(cred[0]) == 0
 
 
