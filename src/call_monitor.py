@@ -208,11 +208,14 @@ class CallMonitor:
     def buffer_counters(self, *, since_ts: float = 0.0) -> Dict[str, int]:
         """基于内存缓冲的角标计数（实时视图口径）。"""
         rows = [row for row in self._buffer if row.get("created_at", 0.0) >= since_ts]
+        account_rows = [row for row in rows if row.get("credential_name")]
         return {
             "logs": len(rows),
             "failed": sum(1 for row in rows if not row.get("success")),
-            "accounts": len({row.get("credential_name") for row in rows}),
+            "accounts": len({row["credential_name"] for row in account_rows}),
             "keys": len({row.get("api_key_id") for row in rows}),
+            "account_logs": len(account_rows),
+            "account_failed": sum(1 for row in account_rows if not row.get("success")),
         }
 
     async def realtime_page(

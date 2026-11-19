@@ -85,6 +85,8 @@ def _aggregate_from_buffer(
             continue
         if failed_only and row.get("success"):
             continue
+        if dims == ("credential_name",) and not row.get("credential_name"):
+            continue
         dim_values = tuple(row.get(name) for name in dims)
         key = dim_values + ((row.get("model_name"),) if with_model else ())
         entry = grouped.get(key)
@@ -278,8 +280,8 @@ async def call_monitor_overview(
         "degraded": degraded,
         "retention_days": await config.get_call_records_retention_days(),
         "counters": {
-            "logs": counters.get("logs", 0),
-            "failed": counters.get("failed", 0),
+            "logs": counters.get("account_logs" if view == "account" else "logs", 0),
+            "failed": counters.get("account_failed" if view == "account" else "failed", 0),
             "accounts": counters.get("accounts", 0),
             "keys": counters.get("keys", 0),
             "realtime": counters.get("logs", 0),
