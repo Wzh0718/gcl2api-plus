@@ -2424,8 +2424,8 @@ async function loadApiKeyPolicyModels() {
 }
 
 const apiKeyLimitFields = {
-    day_rpm: '白天每分钟上限', day_total: '白天时段总额度',
-    night_rpm: '晚上每分钟上限', night_total: '晚上时段总额度'
+    day_rpm: '工作日白天每分钟上限', day_total: '工作日白天时段总额度',
+    night_rpm: '其他时间每分钟上限', night_total: '其他时间时段总额度'
 };
 
 function renderApiKeys(items) {
@@ -2477,7 +2477,7 @@ function renderApiKeys(items) {
                 onchange="this.closest('article').querySelector('[data-limit-fields]').hidden = !this.checked"
                 ${item.limit_enabled ? 'checked' : ''}> 启用分时限流</label>
             <div data-limit-fields ${item.limit_enabled ? '' : 'hidden'}>
-                <small>${escapeHtml(item.limit_schedule || '')} · 按请求次数计，留空为不限</small>
+                <small>${escapeHtml(item.limit_schedule || '')} · 每把密钥按请求次数独立计数，每个连续时段独立计算总额度，留空表示该项不限。</small>
                 <div class="api-key-editor">
                     ${Object.entries(apiKeyLimitFields).map(([field, label]) =>
                         `<label>${label}<input data-field="${field}" type="number" min="1" step="1"

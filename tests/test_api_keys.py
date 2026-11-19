@@ -553,6 +553,29 @@ def test_antigravity_request_functions_expose_explicit_api_key_context():
     assert "api_key_id" in inspect.signature(stream_request).parameters
 
 
+def test_key_schedule_uses_one_other_period_for_the_weekend(monkeypatch):
+    from src.api_key_schedule import ApiKeySchedule
+
+    monkeypatch.delenv("API_KEY_LIMIT_TIMEZONE", raising=False)
+    monkeypatch.delenv("API_KEY_LIMIT_DAY_START", raising=False)
+    monkeypatch.delenv("API_KEY_LIMIT_NIGHT_START", raising=False)
+    schedule = ApiKeySchedule()
+
+    def timestamp(value):
+        return datetime.fromisoformat(value).replace(tzinfo=schedule.zone).timestamp()
+
+    for current, period, starts_at in (
+        ("2026-11-20T18:29:59", "day", "2026-11-20T09:00"),
+        ("2026-11-20T18:30", "night", "2026-11-20T18:30"),
+        ("2026-11-21T09:00", "night", "2026-11-20T18:30"),
+        ("2026-11-22T18:30", "night", "2026-11-20T18:30"),
+        ("2026-11-23T08:59:59", "night", "2026-11-20T18:30"),
+        ("2026-11-23T09:00", "day", "2026-11-23T09:00"),
+        ("2026-11-24T08:59:59", "night", "2026-11-23T18:30"),
+    ):
+        assert schedule.period(timestamp(current)) == (period, timestamp(starts_at)), current
+
+
 @pytest.mark.asyncio
 async def test_key_schedule_admission(tmp_path, monkeypatch):
     import asyncio
@@ -561,6 +584,9 @@ async def test_key_schedule_admission(tmp_path, monkeypatch):
     from src.storage.sqlite_manager import SQLiteManager
 
     monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("API_KEY_LIMIT_TIMEZONE", "Asia/Singapore")
+    monkeypatch.setenv("API_KEY_LIMIT_DAY_START", "09:00")
+    monkeypatch.setenv("API_KEY_LIMIT_NIGHT_START", "18:30")
     manager = SQLiteManager()
     await manager.initialize()
     service = ApiKeyService(manager)
@@ -568,7 +594,8 @@ async def test_key_schedule_admission(tmp_path, monkeypatch):
     key_id = created["item"]["id"]
     assert not created["item"]["limit_enabled"]
     await service.update_key(key_id, limit_enabled=True, day_rpm=1, day_total=2, night_total=1)
-    day = datetime(2026, 11, 19, 8, tzinfo=SHANGHAI)
+    day = datetime(2026, 11, 19, 9, tzinfo=SHANGHAI)
+    daytime = timedelta(hours=9, minutes=30)
 
     async def admit(at):
         return await service.authenticate(created["api_key"], now=at)
@@ -578,10 +605,16 @@ async def test_key_schedule_admission(tmp_path, monkeypatch):
     await admit(day + timedelta(minutes=1))
     with pytest.raises(ApiKeyAuthError, match="时段总额度"):
         await admit(day + timedelta(minutes=2))
-    await admit(day + timedelta(hours=12))
+    await admit(day + daytime)
     with pytest.raises(ApiKeyAuthError, match="时段总额度"):
         await admit(day + timedelta(hours=16))
     await admit(day + timedelta(days=1))
+    await admit(day + timedelta(days=1) + daytime)
+    with pytest.raises(ApiKeyAuthError, match="时段总额度"):
+        await admit(day + timedelta(days=2, hours=4))
+    with pytest.raises(ApiKeyAuthError, match="时段总额度"):
+        await admit(day + timedelta(days=4, minutes=-1))
+    await admit(day + timedelta(days=4))
     await service.update_key(key_id, limit_enabled=False)
-    await admit(day + timedelta(days=1))
+    await admit(day + timedelta(days=4))
     await manager.close()
