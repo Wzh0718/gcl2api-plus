@@ -340,11 +340,14 @@ function createCredsManager(type) {
                 batchBtnNames.push('NetworkHealth');
                 batchBtnNames.push('WarmupStart');
                 batchBtnNames.push('WarmupCancel');
+                batchBtnNames.push('MessageTest');
             }
             const batchBtns = batchBtnNames.map(action =>
                 document.getElementById(this.getElementId(`Batch${action}Btn`))
             );
-            batchBtns.forEach(btn => btn && (btn.disabled = selectedCount === 0));
+            batchBtns.forEach(btn => {
+                if (btn) btn.disabled = selectedCount === 0 || btn.getAttribute('aria-busy') === 'true';
+            });
 
             const selectAllCheckbox = document.getElementById(this.getElementId('SelectAllCheckbox'));
             if (!selectAllCheckbox) return;
@@ -1281,17 +1284,14 @@ function buildCredStatusBadges(credInfo, manager) {
 // =====================================================================
 function renderAntigravityAccountUsage(snapshot) {
     if (!snapshot) return '';
+    const modeLabel = { custom: '账号自定义', off: '单独关闭' }[snapshot.mode];
     return `
         <div class="cred-account-usage">
             <strong>账号用量</strong>
             <div class="cred-account-usage-content" aria-live="polite">
                 ${renderAntigravityAccountUsageDetails(snapshot)}
             </div>
-            <select aria-label="账号用量限制" data-account-usage-mode ${snapshot.mode ? '' : 'disabled'}>
-                <option value="inherit" ${snapshot.mode === 'inherit' ? 'selected' : ''}>继承全局</option>
-                <option value="off" ${snapshot.mode === 'off' ? 'selected' : ''}>单独关闭</option>
-                ${snapshot.mode ? '' : '<option value="" selected>暂不可用</option>'}
-            </select>
+            ${modeLabel ? `<span class="cred-account-usage-mode">${modeLabel}</span>` : ''}
         </div>`;
 }
 
@@ -1319,29 +1319,6 @@ function renderAntigravityAccountUsageDetails(snapshot) {
                 ${renderMetric(window.generated_tokens, 'Token')}
             </span>
         </span>`).join('');
-}
-
-async function saveAntigravityAccountUsageMode(select, card, credInfo) {
-    const previousMode = credInfo.account_usage.mode;
-    select.disabled = true;
-    try {
-        const response = await fetch(`./creds/${encodeURIComponent(credInfo.filename)}/usage-policy`, {
-            method: 'PATCH',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({ mode: select.value }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '账号用量策略保存失败');
-        credInfo.account_usage = data.account_usage;
-        select.value = data.account_usage.mode;
-        card.querySelector('.cred-account-usage-content').innerHTML = renderAntigravityAccountUsageDetails(data.account_usage);
-        showStatus('账号用量策略已保存', 'success');
-    } catch (error) {
-        select.value = previousMode;
-        showStatus(escapeHtml(error.message), 'error');
-    } finally {
-        select.disabled = false;
-    }
 }
 
 function createCredCard(credInfo, manager) {
@@ -1387,6 +1364,7 @@ function createCredCard(credInfo, manager) {
         <button class="cred-btn" onclick="test${managerType === 'antigravity' ? 'Antigravity' : ''}Credential('${filename}')" title="测试凭证是否可用">消息测试</button>
         <button class="cred-btn" onclick="toggle${managerType === 'antigravity' ? 'Antigravity' : ''}ErrorDetails('${pathId}')" title="查看该凭证的详细报错信息">查看报错</button>
         <button class="cred-btn delete" data-filename="${filename}" data-action="delete">删除</button>
+        ${managerType === 'antigravity' ? '<button type="button" class="cred-btn" data-adjust-account-usage>调整用量</button>' : ''}
     `;
 
     // 邮箱信息
@@ -1442,10 +1420,7 @@ function createCredCard(credInfo, manager) {
     div.querySelectorAll('[data-concurrency-account]').forEach(button => {
         button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
     });
-    const usageSelect = div.querySelector('[data-account-usage-mode]');
-    if (usageSelect) {
-        usageSelect.addEventListener('change', () => saveAntigravityAccountUsageMode(usageSelect, div, credInfo));
-    }
+    div.querySelector('[data-adjust-account-usage]')?.addEventListener('click', () => openAccountUsageDialog(div, credInfo));
     div.querySelectorAll('[data-telemetry-account]').forEach(button => {
         button.addEventListener('click', () => openAccountTelemetryDialog(button.dataset.telemetryAccount));
     });
@@ -1586,6 +1561,131 @@ function openAccountConcurrencyDialog(filename) {
     document.body.appendChild(dialog);
     dialog.showModal();
     form.elements.requestConcurrency.focus();
+}
+
+const accountUsageEditorFields = {
+    requests_per_minute: '每分钟请求次数',
+    requests_per_hour: '每小时请求次数',
+    generated_tokens_per_minute: '每分钟生成 Token',
+    generated_tokens_per_hour: '每小时生成 Token',
+};
+
+async function openAccountUsageDialog(card, credInfo) {
+    if (document.getElementById('accountUsageDialog')) return;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'accountUsageDialog';
+    dialog.className = 'proxy-policy-dialog';
+    dialog.setAttribute('aria-labelledby', 'accountUsageDialogTitle');
+    dialog.setAttribute('aria-describedby', 'accountUsageDialogHint');
+    dialog.innerHTML = `<form class="proxy-policy-form">
+        <div class="proxy-dialog-head"><h3 id="accountUsageDialogTitle">调整用量</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p class="proxy-dialog-copy account-usage-dialog-account" data-account></p>
+        <p id="accountUsageDialogHint" class="proxy-dialog-copy">账号值优先，留空继承全局，填 0 表示该项不限。</p>
+        <fieldset class="account-usage-dialog-fields" aria-label="账号用量上限" disabled>
+            ${Object.entries(accountUsageEditorFields).map(([name, label]) => `<label class="proxy-dialog-field">
+                <span>${label}</span><input name="${name}" type="number" min="0" max="${Number.MAX_SAFE_INTEGER}" step="1" inputmode="numeric">
+            </label>`).join('')}
+        </fieldset>
+        <label class="account-usage-dialog-off"><input name="off" type="checkbox" disabled> 单独关闭此账号的用量限制</label>
+        <p class="proxy-dialog-copy" data-loading role="status">正在加载账号用量设置…</p>
+        <p class="proxy-dialog-copy" data-error role="alert" hidden></p>
+        <div class="proxy-dialog-actions">
+            <button type="button" data-inherit class="secondary" disabled>恢复继承</button>
+            <button type="button" data-close class="secondary">取消</button>
+            <button type="submit" disabled>保存</button>
+        </div>
+    </form>`;
+    dialog.querySelector('[data-account]').textContent = credInfo.user_email || credInfo.filename;
+    const form = dialog.querySelector('form');
+    const fields = form.querySelector('fieldset');
+    const off = form.elements.off;
+    const reset = form.querySelector('[data-inherit]');
+    const save = form.querySelector('[type="submit"]');
+    const loading = dialog.querySelector('[data-loading]');
+    const errorLabel = dialog.querySelector('[data-error]');
+    const closeButtons = dialog.querySelectorAll('[data-close]');
+    const inputs = Object.keys(accountUsageEditorFields).map(name => form.elements[name]);
+    const endpoint = `./creds/${encodeURIComponent(credInfo.filename)}/usage-policy`;
+    const controller = new AbortController();
+    let loaded = false;
+    let saving = false;
+
+    function updateControls() {
+        off.disabled = reset.disabled = save.disabled = !loaded || saving;
+        fields.disabled = off.disabled || off.checked;
+        closeButtons.forEach(button => { button.disabled = saving; });
+    }
+    function showError(message) {
+        errorLabel.textContent = message;
+        errorLabel.hidden = !message;
+    }
+
+    off.addEventListener('change', updateControls);
+    reset.addEventListener('click', () => {
+        off.checked = false;
+        inputs.forEach(input => { input.value = ''; });
+        updateControls();
+        inputs[0].focus();
+    });
+    closeButtons.forEach(button => button.addEventListener('click', () => dialog.close()));
+    dialog.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
+    dialog.addEventListener('close', () => {
+        controller.abort();
+        dialog.remove();
+    });
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (!loaded || saving || !form.reportValidity()) return;
+        const limits = Object.fromEntries(inputs.filter(input => input.value !== '').map(input => [input.name, input.valueAsNumber]));
+        const payload = off.checked ? { mode: 'off' } : Object.keys(limits).length ? { mode: 'custom', limits } : { mode: 'inherit' };
+        saving = true;
+        updateControls();
+        showError('');
+        try {
+            const response = await fetch(endpoint, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(payload),
+            });
+            const data = await readJsonResponse(response, '账号用量设置保存失败');
+            credInfo.account_usage = data.account_usage;
+            const usageRow = card.querySelector('.cred-account-usage');
+            const usageHtml = renderAntigravityAccountUsage(data.account_usage);
+            if (usageRow) usageRow.outerHTML = usageHtml;
+            else card.querySelector('.cred-actions')?.insertAdjacentHTML('beforebegin', usageHtml);
+            dialog.close();
+            showStatus('账号用量设置已保存', 'success');
+        } catch (error) {
+            showError(error.message);
+        } finally {
+            saving = false;
+            updateControls();
+        }
+    });
+
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    try {
+        const response = await fetch(endpoint, { headers: getAuthHeaders(), signal: controller.signal });
+        const data = await readJsonResponse(response, '账号用量设置加载失败');
+        if (!dialog.open) return;
+        const { mode, overrides, global_limits: globalLimits } = data.account_usage;
+        const format = new Intl.NumberFormat('zh-CN');
+        inputs.forEach(input => {
+            input.value = overrides[input.name] ?? '';
+            const globalValue = globalLimits[input.name];
+            input.placeholder = !globalLimits.enabled ? '全局未启用'
+                : (globalValue === 0 ? '全局不限' : `全局 ${format.format(globalValue)}`);
+        });
+        off.checked = mode === 'off';
+        loaded = true;
+        updateControls();
+        if (document.activeElement === closeButtons[0]) (off.checked ? off : inputs[0]).focus();
+    } catch (error) {
+        if (dialog.open) showError(error.message);
+    } finally {
+        loading.hidden = true;
+    }
 }
 
 const ANTIGRAVITY_WARMUP_CONFIG_FIELDS = [
@@ -1953,6 +2053,7 @@ async function autoLogin() {
 }
 
 function logout() {
+    stopAntigravityImportProgress();
     localStorage.removeItem('gcli2api_auth_token');
     AppState.authToken = '';
     document.getElementById('loginSection').classList.remove('hidden');
@@ -2166,6 +2267,7 @@ function switchTab(tabName, sourceTab = null) {
 
 // 标签页数据加载（从动画中分离出来）
 function triggerTabDataLoad(tabName) {
+    if (tabName !== 'antigravity') stopAntigravityImportProgress();
     if (tabName === 'api-keys') loadApiKeys();
     if (tabName === 'manage') AppState.creds.refresh();
     if (tabName === 'antigravity-manage') AppState.antigravityCreds.refresh();
@@ -2174,7 +2276,10 @@ function triggerTabDataLoad(tabName) {
         loadCliVersionStatus();
         loadProxyGroups({ silent: true });
     }
-    if (tabName === 'antigravity') syncAntigravityRefreshTokenProxy();
+    if (tabName === 'antigravity') {
+        syncAntigravityRefreshTokenProxy();
+        startAntigravityImportProgress();
+    }
     if (tabName === 'antigravity-manage') loadProxyGroups({ silent: true });
     if (tabName === 'billing') {
         loadBillingDashboard();
@@ -2318,6 +2423,11 @@ async function loadApiKeyPolicyModels() {
         : '仅允许模型按网关执行模型判断，不匹配的请求会被拒绝；目录不代表账号可用额度。Key 融合设置优先于账号和全局。';
 }
 
+const apiKeyLimitFields = {
+    day_rpm: '白天每分钟上限', day_total: '白天时段总额度',
+    night_rpm: '晚上每分钟上限', night_total: '晚上时段总额度'
+};
+
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
     if (!list) return;
@@ -2362,6 +2472,18 @@ function renderApiKeys(items) {
                 <label>绑定账号<select data-field="claude_credential_name"${AppState.apiKeyAccounts === null ? ' disabled' : ''}>${apiKeyAccountOptions(item.claude_credential_name || '')}</select><small>Gemini / Claude 共用此账号；不可用时不自动换号。</small></label>
                 <label>提示词融合<select data-field="prompt_fusion_mode">${apiKeyFusionOptions(item.prompt_fusion_mode || 'inherit')}</select></label>
                 <label>仅允许模型<select data-field="allowed_model"${AppState.apiKeyPolicyModels === null ? ' disabled' : ''}>${apiKeyPolicyModelOptions(item.allowed_model || '')}</select><small>按执行模型限制，不自动降级到其他模型。</small></label>
+            </div>
+            <label><input type="checkbox" role="switch" data-field="limit_enabled"
+                onchange="this.closest('article').querySelector('[data-limit-fields]').hidden = !this.checked"
+                ${item.limit_enabled ? 'checked' : ''}> 启用分时限流</label>
+            <div data-limit-fields ${item.limit_enabled ? '' : 'hidden'}>
+                <small>${escapeHtml(item.limit_schedule || '')} · 按请求次数计，留空为不限</small>
+                <div class="api-key-editor">
+                    ${Object.entries(apiKeyLimitFields).map(([field, label]) =>
+                        `<label>${label}<input data-field="${field}" type="number" min="1" step="1"
+                            max="9007199254740991" placeholder="不限" value="${escapeHtml(String(item[field] ?? ''))}"></label>`
+                    ).join('')}
+                </div>
             </div>
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
@@ -2565,7 +2687,16 @@ async function saveApiKey(apiKeyId) {
     if (!card) return;
     const quotaValue = card.querySelector('[data-field="quota_amount"]')?.value.trim() || '';
     try {
+        const limits = {limit_enabled: card.querySelector('[data-field="limit_enabled"]').checked};
+        if (limits.limit_enabled) {
+            for (const field of Object.keys(apiKeyLimitFields)) {
+                const input = card.querySelector(`[data-field="${field}"]`);
+                if (!input.reportValidity()) return;
+                limits[field] = input.value === '' ? null : input.valueAsNumber;
+            }
+        }
         await patchApiKey(apiKeyId, {
+            ...limits,
             name: card.querySelector('[data-field="name"]')?.value.trim(),
             quota_amount: quotaValue === '' ? null : quotaValue,
             reset_mode: card.querySelector('[data-field="reset_mode"]')?.value,
@@ -2872,45 +3003,219 @@ function onAntigravityRefreshTokenProxyModeChange() {
     customGroup.style.display = select.value === 'custom' ? 'block' : 'none';
 }
 
-async function importAntigravityByRefreshToken() {
-    const refreshToken = document.getElementById('antigravityRefreshTokenInput').value.trim();
-    const proxyMode = document.getElementById('antigravityRefreshTokenProxySelect')?.value || '';
+function parseAntigravityRefreshTokens(text) {
+    let entries;
+    if (['{', '[', '"'].includes(text[0])) {
+        try {
+            entries = JSON.parse(text);
+        } catch (error) {
+            if (!text.includes('\n')) throw error;
+            entries = text.split('\n').map(line => line.trim()).filter(Boolean).map(line => JSON.parse(line));
+        }
+    } else if (/\s/.test(text)) {
+        throw new Error('请粘贴一个 refresh_token 或有效的凭证 JSON');
+    } else {
+        entries = text;
+    }
+    if (!Array.isArray(entries)) entries = [entries];
+    if (!entries.length || entries.length > 100) {
+        throw new Error('每次可导入 1 至 100 条凭证');
+    }
+    return entries.map(entry => {
+        const value = typeof entry === 'string' ? entry : entry?.refresh_token;
+        return typeof value === 'string' ? value.trim() : '';
+    });
+}
 
-    if (!refreshToken) {
-        showStatus('请输入 refresh_token', 'error');
+async function importAntigravityByRefreshToken() {
+    const input = document.getElementById('antigravityRefreshTokenInput');
+    const button = document.getElementById('antigravityImportBtn');
+    const proxySelect = document.getElementById('antigravityRefreshTokenProxySelect');
+    const proxyInput = document.getElementById('antigravityRefreshTokenProxyInput');
+    if (button.disabled) return;
+    if (!input.value.trim()) {
+        showStatus('请粘贴 refresh_token 或凭证 JSON', 'error');
         return;
     }
 
-    const body = { refresh_token: refreshToken };
-    if (proxyMode.startsWith('group:')) {
-        body.proxy_group_id = Number(proxyMode.slice(6));
-    } else if (proxyMode === 'custom') {
-        const proxyUrl = document.getElementById('antigravityRefreshTokenProxyInput').value.trim();
-        if (proxyUrl) body.proxy_url = proxyUrl;
-    }
-
-    showStatus('正在通过 Refresh Token 导入 Antigravity 账号...', 'info');
-
+    let tokens;
     try {
-        const response = await fetch('./auth/add-by-refresh-token', {
+        tokens = parseAntigravityRefreshTokens(input.value.trim());
+    } catch (error) {
+        showStatus(error instanceof SyntaxError ? '凭证 JSON 格式无效' : error.message, 'error');
+        return;
+    }
+    const controls = [button, input, proxySelect, proxyInput];
+    controls.forEach(control => { control.disabled = true; });
+    try {
+        const result = await requestAntigravityImport('./auth/refresh-import-batches', {
             method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify(body)
+            body: JSON.stringify({
+                ...antigravityImportNetwork(proxySelect.value, proxyInput.value),
+                refresh_tokens: tokens
+            })
         });
+        input.value = '';
+        proxyInput.value = '';
+        sessionStorage.setItem('antigravityImportBatch', result.batch_id);
+        showStatus('凭证已加入导入队列', 'success');
+        await refreshAntigravityImportProgress({ reloadBatches: true });
+    } catch (error) {
+        showStatus(error.message, 'error');
+    } finally {
+        controls.forEach(control => { control.disabled = false; });
+    }
+}
 
-        const result = await response.json();
+function antigravityImportNetwork(value, proxyUrl) {
+    if (value.startsWith('group:')) {
+        return { proxy_mode: 'group', proxy_group_id: Number(value.slice(6)) };
+    }
+    if (value === 'custom') {
+        return { proxy_mode: 'custom', proxy_url: proxyUrl.trim() || null };
+    }
+    return { proxy_mode: 'inherit' };
+}
 
-        if (response.ok && result.credentials) {
-            showStatus(`✅ Refresh Token 导入成功！${result.email ? '邮箱: ' + result.email + '，' : ''}文件已保存到: ${result.file_path}`, 'success');
-            document.getElementById('antigravityCredsContent').textContent = JSON.stringify(result.credentials, null, 2);
-            document.getElementById('antigravityCredsSection').classList.remove('hidden');
-            document.getElementById('antigravityRefreshTokenInput').value = '';
-        } else {
-            showStatus(`❌ 错误: ${result.error || result.detail || 'Refresh Token 导入失败'}`, 'error');
+async function requestAntigravityImport(url, options = {}) {
+    const response = await fetch(url, { ...options, headers: getAuthHeaders() });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '导入请求失败');
+    return data;
+}
+
+let antigravityImportProgressTimer;
+let antigravityImportProgressVersion = 0;
+let antigravityImportProgressRequests = 0;
+
+function startAntigravityImportProgress() {
+    stopAntigravityImportProgress();
+    refreshAntigravityImportProgress({ reloadBatches: true });
+    antigravityImportProgressTimer = setInterval(() => {
+        if (!antigravityImportProgressRequests) refreshAntigravityImportProgress();
+    }, 4000);
+}
+
+function stopAntigravityImportProgress() {
+    clearInterval(antigravityImportProgressTimer);
+    antigravityImportProgressVersion++;
+}
+
+async function refreshAntigravityImportProgress({ reloadBatches = false } = {}) {
+    const select = document.getElementById('antigravityImportBatch');
+    const results = document.getElementById('antigravityImportResults');
+    const history = document.getElementById('antigravityImportHistory');
+    if (!select) return;
+    const version = ++antigravityImportProgressVersion;
+    antigravityImportProgressRequests++;
+    try {
+        if (reloadBatches || !select.options.length) {
+            const { batches } = await requestAntigravityImport('./auth/refresh-import-batches');
+            if (version !== antigravityImportProgressVersion) return;
+            const selected = sessionStorage.getItem('antigravityImportBatch');
+            select.replaceChildren(...batches.map(batch => new Option(
+                `${new Date(batch.created_at * 1000).toLocaleString()} · ${batch.total} 条 · ${batch.batch_id.slice(0, 6)}`,
+                batch.batch_id
+            )));
+            if (selected && batches.some(batch => batch.batch_id === selected)) select.value = selected;
+        }
+        history.hidden = !select.value;
+        if (!select.value) return;
+        sessionStorage.setItem('antigravityImportBatch', select.value);
+        const { items } = await requestAntigravityImport(`./auth/refresh-import-batches/${encodeURIComponent(select.value)}`);
+        if (version !== antigravityImportProgressVersion) return;
+        const snapshot = JSON.stringify(items);
+        if (results.dataset.snapshot !== snapshot) {
+            results.replaceChildren(...items.map(renderAntigravityImportItem));
+            results.dataset.snapshot = snapshot;
         }
     } catch (error) {
-        showStatus(`网络错误: ${error.message}`, 'error');
+        if (reloadBatches && version === antigravityImportProgressVersion) showStatus(error.message, 'error');
+    } finally {
+        antigravityImportProgressRequests--;
     }
+}
+
+function renderAntigravityImportItem(item) {
+    const statuses = {
+        queued: '已排队',
+        running: '检查并导入中…',
+        disabled: '已禁用',
+        failed: '失败',
+        imported: '已导入'
+    };
+    const row = document.createElement('li');
+    row.textContent = [statuses[item.status], item.message, item.email || item.file_path, item.egress_ip]
+        .filter(Boolean).join(' · ');
+    if (item.status === 'disabled') {
+        const enable = document.createElement('button');
+        enable.type = 'button';
+        enable.textContent = '检查并启用';
+        enable.addEventListener('click', async () => {
+            enable.disabled = true;
+            try {
+                await requestAntigravityImport(`./auth/refresh-import-items/${item.id}/enable`, { method: 'POST' });
+                await refreshAntigravityImportProgress();
+            } catch (error) {
+                showStatus(error.message, 'error');
+            } finally {
+                enable.disabled = false;
+            }
+        });
+        row.append(' ', enable);
+    }
+    if (['queued', 'disabled', 'failed'].includes(item.status)) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = '编辑';
+        edit.addEventListener('click', () => editAntigravityImportItem(item));
+        row.append(' ', edit);
+    }
+    return row;
+}
+
+async function editAntigravityImportItem(item) {
+    const dialog = document.getElementById('antigravityImportEditDialog');
+    const form = dialog.querySelector('form');
+    const proxySelect = form.elements.proxy_mode;
+    await syncAntigravityRefreshTokenProxy();
+    if (dialog.open) return;
+    form.reset();
+    const importProxy = document.getElementById('antigravityRefreshTokenProxySelect');
+    proxySelect.replaceChildren(...Array.from(importProxy.options, option => option.cloneNode(true)));
+    const mode = item.proxy_group_id ? `group:${item.proxy_group_id}` : item.has_custom_proxy ? 'custom' : '';
+    if (mode.startsWith('group:') && !Array.from(proxySelect.options).some(option => option.value === mode)) {
+        proxySelect.add(new Option(`代理组 ${item.proxy_group_id}（不可用）`, mode));
+    }
+    proxySelect.value = mode;
+    const proxyField = form.elements.proxy_url;
+    const syncFields = () => { proxyField.parentElement.hidden = proxySelect.value !== 'custom'; };
+    proxySelect.onchange = syncFields;
+    syncFields();
+    const feedback = form.querySelector('[role="status"]');
+    feedback.textContent = '';
+    form.onsubmit = async event => {
+        event.preventDefault();
+        const save = form.querySelector('[type="submit"]');
+        save.disabled = true;
+        try {
+            await requestAntigravityImport(`./auth/refresh-import-items/${item.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    ...antigravityImportNetwork(proxySelect.value, proxyField.value),
+                    refresh_token: form.elements.refresh_token.value.trim() || null
+                })
+            });
+            dialog.close();
+            await refreshAntigravityImportProgress();
+        } catch (error) {
+            feedback.textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    dialog.onclose = () => form.reset();
+    dialog.showModal();
 }
 
 // =====================================================================
@@ -3298,10 +3603,34 @@ function _cmStatusBadge(success) {
         : '<span class="cm-badge cm-badge-fail">失败</span>';
 }
 
-function _cmStatusCodeChip(code) {
+function _cmRateLimitText(attribution) {
+    const source = { gateway: '网关', upstream: '上游' }[attribution?.source];
+    if (!source) return { label: '来源未知', detail: '此记录缺少可确认的 429 来源' };
+    const reasons = {
+        account_usage_limit: '账号用量', capacity_busy: '账号并发', warmup_capacity: '养号限流',
+        usage_store_unavailable: '用量检查不可用', account_pool_unavailable: '号池不可用', api_key_quota: '密钥额度', api_key_rate_limit: '密钥分时限流',
+        quota_exhausted: '配额耗尽', credits_exhausted: 'Credit 余额不足', model_capacity: '模型容量',
+    };
+    const rules = {
+        requests_per_minute: '每分钟请求次数', requests_per_hour: '每小时请求次数',
+        generated_tokens_per_minute: '每分钟生成 Token', generated_tokens_per_hour: '每小时生成 Token',
+    };
+    const label = attribution.source === 'gateway' && attribution.reason === 'account_usage_limit'
+        ? '系统主动拦截 · 账号用量达限'
+        : `${source} · ${reasons[attribution.reason] || '限流'}`;
+    const matched = Array.isArray(attribution.rules)
+        ? attribution.rules.map(rule => rules[rule]).filter(Boolean)
+        : [];
+    return { label, detail: matched.length ? `${label} · ${matched.join('、')}达限` : label };
+}
+
+function _cmStatusCodeChip(code, rateLimit) {
     if (code === null || code === undefined) return '<span class="cm-code cm-code-muted">-</span>';
     const cls = code < 300 ? 'cm-code-ok' : code < 500 ? 'cm-code-warn' : 'cm-code-fail';
-    return `<span class="cm-code ${cls}">${code}</span>`;
+    const chip = `<span class="cm-code ${cls}">${_cmEscape(code)}</span>`;
+    if (Number(code) !== 429 || rateLimit === undefined) return chip;
+    const { label, detail } = _cmRateLimitText(rateLimit);
+    return `${chip}<span class="cm-rate-limit-source" title="${_cmEscape(detail)}">${_cmEscape(label)}</span>`;
 }
 
 function _cmRateCell(rate) {
@@ -3698,7 +4027,7 @@ function _cmRenderGrouped(rows, view) {
 
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
-    const available = features.capture_id || features.client || features.upstream;
+    const available = features.capture_id || features.client || features.upstream || features.rate_limit;
     if (!available) return '<span class="cm-muted">未采集</span>';
     return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">查看详情</button>`;
 }
@@ -3715,6 +4044,7 @@ async function showCallMonitorContent(index) {
     dialog.setAttribute('aria-labelledby', 'cmRequestContentTitle');
     dialog.innerHTML = `<div class="proxy-dialog-head"><h3 id="cmRequestContentTitle">请求详情</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
         <p data-request class="telemetry-account"></p>
+        <p data-rate-limit class="telemetry-account" hidden></p>
         <div data-content aria-live="polite"><p>正在加载请求详情…</p></div>
         <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">关闭</button></div>`;
     const content = dialog.querySelector('[data-content]');
@@ -3723,6 +4053,11 @@ async function showCallMonitorContent(index) {
     dialog.addEventListener('close', () => { controller.abort(); dialog.remove(); }, { once: true });
     document.body.append(dialog);
     dialog.showModal();
+    if (Number(record?.status_code) === 429) {
+        const note = dialog.querySelector('[data-rate-limit]');
+        note.textContent = `HTTP 429 · ${_cmRateLimitText(record.request_features?.rate_limit).detail}`;
+        note.hidden = false;
+    }
     if (callMonitorState.mask) {
         content.textContent = '当前已开启脱敏。请先关闭列表上方的“脱敏”，再查看请求原文。';
         return;
@@ -3937,7 +4272,7 @@ function _cmRenderRealtime(records) {
             ${_cmModelCell(row)}
             <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
-            <td>${_cmStatusCodeChip(row.status_code)}</td>
+            <td>${_cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
             <td>${statusCell}</td>
             <td>${_cmLatencyCell(row)}</td>
             <td>${_cmFormatTime(row.created_at)}</td>
@@ -4695,15 +5030,19 @@ async function testCredential(filename) {
     }
 }
 
+function requestAntigravityCredentialTest(filename) {
+    return fetch(`./creds/test/${encodeURIComponent(filename)}?mode=antigravity`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+    });
+}
+
 async function testAntigravityCredential(filename) {
     try {
         // 显示加载状态
         showStatus('🧪 正在测试Antigravity凭证，请稍候...', 'info');
 
-        const response = await fetch(`./creds/test/${encodeURIComponent(filename)}?mode=antigravity`, {
-            method: 'POST',
-            headers: getAuthHeaders()
-        });
+        const response = await requestAntigravityCredentialTest(filename);
 
         // 解析JSON响应
         const data = await response.json();
@@ -4740,6 +5079,57 @@ async function testAntigravityCredential(filename) {
         const errorMsg = `测试失败: ${error.message}`;
         showStatus(`❌ ${errorMsg}`, 'error');
         showMessageModal('测试失败', `❌ ${errorMsg}`, 'error');
+    }
+}
+
+async function batchTestAntigravityCredentials(button) {
+    const manager = AppState.antigravityCreds;
+    const filenames = [...manager.selectedFiles];
+    if (button.disabled || !filenames.length) return;
+    if (!confirm(`确定对选中的 ${filenames.length} 个凭证发送测试消息吗？\n测试成功会清除对应错误状态并重新启用凭证。`)) return;
+
+    const label = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = `测试中 0/${filenames.length}`;
+    try {
+        const messages = [];
+        let passed = 0;
+        let rateLimited = 0;
+        const concurrency = 4;
+        for (let offset = 0; offset < filenames.length; offset += concurrency) {
+            const batchMessages = await Promise.all(filenames.slice(offset, offset + concurrency).map(async filename => {
+                try {
+                    const response = await requestAntigravityCredentialTest(filename);
+                    const data = await response.json().catch(() => null);
+                    if (response.status === 200 && data?.success) {
+                        passed++;
+                        return `✅ ${filename}（HTTP 200）`;
+                    }
+                    if (response.status === 429 && data?.success) {
+                        rateLimited++;
+                        return `⚠️ ${filename}（HTTP 429，凭证有效，当前限流）`;
+                    }
+                    const detail = data?.error || data?.detail || data?.message;
+                    const reason = typeof detail === 'string' ? detail : JSON.stringify(detail);
+                    return `❌ ${filename}（HTTP ${response.status}）${reason ? ` ${reason.slice(0, 600)}` : ''}`;
+                } catch (error) {
+                    return `❌ ${filename}（请求失败）${error.message}`;
+                }
+            }));
+            messages.push(...batchMessages);
+            button.textContent = `测试中 ${messages.length}/${filenames.length}`;
+        }
+
+        await manager.refresh();
+        const failed = filenames.length - passed - rateLimited;
+        const type = passed === filenames.length ? 'success' : failed === filenames.length ? 'error' : 'info';
+        const counts = `通过 ${passed}，限流 ${rateLimited}，失败 ${failed}，共 ${filenames.length} 项`;
+        showMessageModal('批量消息测试完成', `${counts}\n\n${escapeHtml(messages.join('\n'))}`, type);
+    } finally {
+        button.textContent = label;
+        button.removeAttribute('aria-busy');
+        manager.updateBatchControls();
     }
 }
 
@@ -6311,7 +6701,7 @@ function populateConfigForm() {
     }
     const obfuscationMode = document.getElementById('antigravitySystemObfuscationMode');
     if (obfuscationMode) {
-        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled ? 'full' : 'off');
+        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled === false ? 'off' : 'protected');
         obfuscationMode.disabled = AppState.envLockedFields.has('antigravity_system_obfuscation_mode') || AppState.envLockedFields.has('antigravity_system_vowel_obfuscation_enabled');
         obfuscationMode.classList.toggle('env-locked', obfuscationMode.disabled);
         obfuscationMode.title = obfuscationMode.disabled ? '由环境变量控制' : '';
@@ -7400,8 +7790,8 @@ function syncSystemObfuscationChoice() {
     });
     const descriptions = {
         off: '保留客户端原始文本。',
-        full: '替换全部英文元音，代码和路径也会改变。',
-        protected: '保留代码、路径和工具名，附加解码说明。',
+        full: '替换英文元音并附加解码说明，保留明确的输出要求和已声明的字段、枚举。',
+        protected: '自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。',
     };
     const hint = document.getElementById('systemObfuscationHint');
     if (hint) hint.textContent = descriptions[mode.value] || descriptions.off;

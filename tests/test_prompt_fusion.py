@@ -40,8 +40,8 @@ async def test_account_precedence(global_on, mode, expected):
 @pytest.mark.parametrize('inject,as_user', [(False, False), (True, False), (False, True), (True, True)])
 async def test_fusion_preserves_task_tools_and_original(monkeypatch, inject, as_user):
     config._config_cache.update(antigravity_system_prompt_enabled=inject, antigravity_system_as_user_enabled=as_user,
-                               system_prompt_append='Gateway policy\n')
-    generate = AsyncMock(return_value='Ask approval before deleting. Use shell.')
+                               antigravity_system_obfuscation_mode='protected', system_prompt_append='Gateway policy\n')
+    generate = AsyncMock(return_value='Ask approval before deleting. Use shell at runtime/settings.json.')
     monkeypatch.setattr(fusion, '_generate', generate)
     raw = request()
     prepared = await prepare_antigravity_system_prompt(raw)
@@ -52,7 +52,12 @@ async def test_fusion_preserves_task_tools_and_original(monkeypatch, inject, as_
     assert result['tools'] == raw['tools']
     text = result['systemInstruction']['parts'][0]['text']
     assert text.startswith('Gateway policy\nYou are Antigravity')
-    assert 'Ask approval before deleting' in text
+    assert text == 'Gateway policy\n' + fusion.baseline_prompt() + '\n\n' + fusion.BRIDGE
+    assert result['systemInstruction']['parts'][1]['text'].startswith(fusion.TASK_SCOPE)
+    assert result['systemInstruction']['parts'][2]['text'].startswith('Leet encoding adapter.')
+    assert result['systemInstruction']['parts'][3]['text'] == (
+        '4sk 4ppr0v4l b3f0r3 d3l3t1ng. Vs3 shell 4t runtime/settings.json.'
+    )
     source = json.loads(generate.call_args.args[0])
     assert source['client_guidance'] == raw['systemInstruction']['parts'][0]['text']
     assert 'My private task' not in generate.call_args.args[0]
@@ -282,7 +287,7 @@ async def test_actual_wrapper_respects_account_and_internal_bypass(monkeypatch):
     for account, bypass, expected in [('a', False, False), ('b', False, True), ('b', True, False)]:
         payload, _ = await antigravity.wrap_cli_request(prepared, 'gemini-test', 'project',
             credential_key=account, credential_data={'access_token': 'test'}, skip_prompt_fusion=bypass)
-        assert ('Adapted instructions' in str(payload['request']['systemInstruction'])) is expected
+        assert ('4d4pt3d 1nstrvct10ns' in str(payload['request']['systemInstruction'])) is expected
         assert payload['request']['contents'] == raw['contents']
         assert 'fusion_instruction' not in json.dumps(payload)
     assert mock.await_count == 1

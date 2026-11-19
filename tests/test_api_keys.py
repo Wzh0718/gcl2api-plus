@@ -443,6 +443,7 @@ async def test_antigravity_auth_accepts_managed_and_environment_keys(tmp_path, m
     monkeypatch.setenv("API_PASSWORD", "legacy-environment-key")
     import src.storage_adapter as storage_module
     from src.api_keys import ApiKeyPrincipal, ApiKeyService
+    from src.call_monitor import get_call_monitor
     from src.utils import authenticate_antigravity_key
 
     await storage_module.close_storage_adapter()
@@ -479,6 +480,19 @@ async def test_antigravity_auth_accepts_managed_and_environment_keys(tmp_path, m
             "/antigravity/test", headers={"x-api-key": "invalid"}
         )
         assert invalid.status_code == 403
+
+        key_id = created["item"]["id"]
+        await storage._backend.set_api_key_quota_used(key_id, "10.00000000")
+        exhausted = await client.get(
+            "/antigravity/test", headers={"x-goog-api-key": created["api_key"]}
+        )
+        assert exhausted.status_code == 429
+        monitor = await get_call_monitor(storage)
+        row, = monitor.realtime(api_key_id=key_id)
+        assert row["status_code"] == 429
+        assert row["request_features"]["rate_limit"] == {
+            "source": "gateway", "reason": "api_key_quota",
+        }
     await storage_module.close_storage_adapter()
 
 
@@ -537,3 +551,37 @@ def test_antigravity_request_functions_expose_explicit_api_key_context():
 
     assert "api_key_id" in inspect.signature(non_stream_request).parameters
     assert "api_key_id" in inspect.signature(stream_request).parameters
+
+
+@pytest.mark.asyncio
+async def test_key_schedule_admission(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import timedelta
+    from src.api_keys import ApiKeyAuthError, ApiKeyService
+    from src.storage.sqlite_manager import SQLiteManager
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    manager = SQLiteManager()
+    await manager.initialize()
+    service = ApiKeyService(manager)
+    created = await service.create_key(name="schedule")
+    key_id = created["item"]["id"]
+    assert not created["item"]["limit_enabled"]
+    await service.update_key(key_id, limit_enabled=True, day_rpm=1, day_total=2, night_total=1)
+    day = datetime(2026, 11, 19, 8, tzinfo=SHANGHAI)
+
+    async def admit(at):
+        return await service.authenticate(created["api_key"], now=at)
+
+    attempts = await asyncio.gather(*(admit(day) for _ in range(4)), return_exceptions=True)
+    assert sum(isinstance(result, ApiKeyAuthError) and result.status_code == 429 for result in attempts) == 3
+    await admit(day + timedelta(minutes=1))
+    with pytest.raises(ApiKeyAuthError, match="时段总额度"):
+        await admit(day + timedelta(minutes=2))
+    await admit(day + timedelta(hours=12))
+    with pytest.raises(ApiKeyAuthError, match="时段总额度"):
+        await admit(day + timedelta(hours=16))
+    await admit(day + timedelta(days=1))
+    await service.update_key(key_id, limit_enabled=False)
+    await admit(day + timedelta(days=1))
+    await manager.close()

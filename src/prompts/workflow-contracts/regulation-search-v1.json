@@ -1,0 +1,24 @@
+{
+  "bindings": {},
+  "contracts": {
+    "regulation-search-v1": {
+      "response_schema": {
+        "type": "object",
+        "required": ["embedding_query", "rerank_query", "policy_axes"],
+        "additionalProperties": false,
+        "properties": {
+          "embedding_query": {"type": "string", "pattern": "\\S"},
+          "rerank_query": {"type": "string", "pattern": "\\S"},
+          "policy_axes": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 8,
+            "items": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"}
+          }
+        }
+      },
+      "legacy_markers": ["FINAL_JSON_START", "FINAL_JSON_END"],
+      "legacy_markdown_prefix": true
+    }
+  }
+}

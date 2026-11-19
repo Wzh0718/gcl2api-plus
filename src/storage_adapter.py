@@ -3,7 +3,7 @@
 import asyncio
 import json
 import os
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from log import log
 
@@ -20,7 +20,10 @@ class StorageBackend(Protocol):
         ...
 
     # 凭证管理
-    async def store_credential(self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:
+    async def store_credential(
+        self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli",
+        *, import_network: Optional[Dict[str, str]] = None,
+    ) -> bool:
         """存储凭证数据"""
         ...
 
@@ -91,6 +94,9 @@ class StorageBackend(Protocol):
     async def delete_proxy_group(self, group_id: int) -> bool: ...
     async def import_proxy_group_nodes(self, group_id: int, nodes: List[Dict[str, str]], replace: bool = False) -> Dict[str, Any]: ...
     async def select_proxy_group_node(self, group_id: int, advance: bool = True) -> Optional[Dict[str, Any]]: ...
+    async def list_free_proxy_import_nodes(self, group_id: int) -> List[Tuple[int, str]]: ...
+    async def reserve_proxy_import_node(self, group_id: int, node_id: int, proxy_url: str, egress_ip: str, lease_id: str) -> bool: ...
+    async def release_proxy_import_node(self, lease_id: str) -> None: ...
     async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]: ...
     async def batch_update_credential_network(self, filenames: List[str], **kwargs) -> Dict[str, Any]: ...
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
@@ -133,11 +139,23 @@ class StorageAdapter:
         if not self._initialized or not self._backend:
             raise RuntimeError("Storage adapter not initialized")
 
+    @property
+    def refresh_import_queue(self):
+        self._ensure_initialized()
+        return self._backend.refresh_import_queue
+
     # ============ 凭证管理 ============
 
-    async def store_credential(self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:
+    async def store_credential(
+        self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli",
+        *, import_network: Optional[Dict[str, str]] = None,
+    ) -> bool:
         """存储凭证数据"""
         self._ensure_initialized()
+        if import_network is not None:
+            return await self._backend.store_credential(
+                filename, credential_data, mode, import_network=import_network,
+            )
         return await self._backend.store_credential(filename, credential_data, mode)
 
     async def compare_and_swap_credential(self, filename, expected, replacement, mode="geminicli", *, state_updates=None, lease_owner=None):
@@ -310,6 +328,20 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.select_proxy_group_node(group_id, advance=advance)
 
+    async def list_free_proxy_import_nodes(self, group_id: int) -> List[Tuple[int, str]]:
+        self._ensure_initialized()
+        return await self._backend.list_free_proxy_import_nodes(group_id)
+
+    async def reserve_proxy_import_node(
+        self, group_id: int, node_id: int, proxy_url: str, egress_ip: str, lease_id: str,
+    ) -> bool:
+        self._ensure_initialized()
+        return await self._backend.reserve_proxy_import_node(group_id, node_id, proxy_url, egress_ip, lease_id)
+
+    async def release_proxy_import_node(self, lease_id: str) -> None:
+        self._ensure_initialized()
+        await self._backend.release_proxy_import_node(lease_id)
+
     async def create_api_key_record(self, **kwargs) -> Dict[str, Any]:
         self._ensure_initialized()
         return await self._backend.create_api_key_record(**kwargs)
@@ -333,6 +365,10 @@ class StorageAdapter:
     async def update_api_key_record(self, api_key_id: str, **updates) -> Dict[str, Any]:
         self._ensure_initialized()
         return await self._backend.update_api_key_record(api_key_id, **updates)
+
+    async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
+        self._ensure_initialized()
+        return await self._backend.admit_api_key_request(api_key_id, now)
 
     async def revoke_api_key(self, api_key_id: str) -> bool:
         self._ensure_initialized()

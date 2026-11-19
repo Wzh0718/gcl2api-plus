@@ -58,3 +58,10 @@
     display: inline-block;
     white-space: nowrap;
 }
+.cm-rate-limit-source {
+    display: block;
+    margin-top: 3px;
+    color: var(--ui-muted, #5f6b7d);
+    font-size: 11px;
+    white-space: nowrap;
+}

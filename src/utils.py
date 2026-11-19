@@ -365,13 +365,20 @@ async def authenticate_antigravity_key(
         from src.api_keys import ApiKeyAuthError, ApiKeyService
         from src.storage_adapter import get_storage_adapter
 
-        principal = await ApiKeyService(await get_storage_adapter()).authenticate(token)
+        storage = await get_storage_adapter()
+        principal = await ApiKeyService(storage).authenticate(token)
         from src.request_capture import capture_context
         if (capture := capture_context.get()) is not None:
             capture.api_key_id = principal.api_key_id
         mark_stage("auth_finished")
         return principal
     except ApiKeyAuthError as exc:
+        if exc.status_code == 429 and exc.api_key_id:
+            from src.call_monitor import record_gateway_rejection
+            from src.rate_limits import RateLimit
+
+            await record_gateway_rejection(RateLimit("gateway", exc.reason),
+                                          api_key_id=exc.api_key_id, storage=storage)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except HTTPException:
         raise

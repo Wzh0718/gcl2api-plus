@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from log import log
+from src.rate_limits import selection_usage_resume_at
 from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
 
 from src.google_oauth_api import Credentials
@@ -201,6 +202,7 @@ class CredentialManager:
         await self._ensure_initialized()
 
         from src.claude_routing import bound_claude_credential
+        selection_usage_resume_at.set(0)
         pinned = bound_claude_credential() if mode == "antigravity" else None
         if mode == "antigravity" and (
             image_request or "image" in (model_name or "").lower()
@@ -330,6 +332,11 @@ class CredentialManager:
                 runtime_health=self._image_runtime_health,
                 excluded_filenames=attempted_filenames,
             )
+            now = time.time()
+            available = [name for name in ranked if (states[name].get("usage_resume_at") or 0) <= now]
+            if ranked and not available:
+                selection_usage_resume_at.set(min(states[name]["usage_resume_at"] for name in ranked))
+            ranked = available
             if not ranked:
                 log.warning(
                     f"没有可用图片凭证 (mode=antigravity, model_name={model_name})"
@@ -479,6 +486,8 @@ class CredentialManager:
         network = await self._storage_adapter.resolve_credential_network(
             credential_name, mode="antigravity"
         )
+        if network.get("fixed_proxy_ip") and not network.get("proxy_url"):
+            return None
         exclusive = bool(network.get("exclusive_assignment"))
         credential_data = dict(credential_data)
         credential_data.update(network)

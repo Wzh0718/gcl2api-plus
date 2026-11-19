@@ -910,7 +910,8 @@ async def complete_auth_flow_from_callback_url(
 
 
 async def add_antigravity_account_by_refresh_token(
-    refresh_token: str, proxy_url: Any = ...
+    refresh_token: str, proxy_url: Any = ...,
+    *, import_network: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     通过 refresh_token 直接导入 Antigravity 账号（RT 登录）
@@ -974,6 +975,8 @@ async def add_antigravity_account_by_refresh_token(
             mode="antigravity",
             subscription_tier=subscription_tier,
             oauth_client_key=client_key,
+            **({"import_network": {**import_network, "email": email, "refresh_token": refresh_token}}
+               if import_network is not None else {}),
         )
 
         creds_data = _prepare_credentials_data(
@@ -994,18 +997,27 @@ async def add_antigravity_account_by_refresh_token(
         }
 
     except Exception as e:
+        if import_network is not None:
+            log.error(f"RT 导入失败: {type(e).__name__}")
+            return {"success": False, "error": "导入失败"}
         log.error(f"RT 登录失败: {e}")
         return {"success": False, "error": str(e)}
 
 
 @auth_stage
-async def save_credentials(creds: Credentials, project_id: str, mode: str = "geminicli", subscription_tier: str = None, oauth_client_key: str = None) -> str:
+async def save_credentials(
+    creds: Credentials, project_id: str, mode: str = "geminicli",
+    subscription_tier: str = None, oauth_client_key: str = None,
+    *, import_network: Optional[Dict[str, str]] = None,
+) -> str:
     """通过统一存储系统保存凭证"""
     # 生成文件名（使用project_id和时间戳）
     timestamp = int(time.time())
 
     # antigravity模式使用特殊前缀
-    if mode == "antigravity":
+    if import_network is not None:
+        filename = f"ag_{project_id}-{uuid.uuid4().hex}.json"
+    elif mode == "antigravity":
         filename = f"ag_{project_id}-{timestamp}.json"
     else:
         filename = f"{project_id}-{timestamp}.json"
@@ -1015,7 +1027,10 @@ async def save_credentials(creds: Credentials, project_id: str, mode: str = "gem
 
     # 通过存储适配器保存
     storage_adapter = await get_storage_adapter()
-    success = await storage_adapter.store_credential(filename, creds_data, mode=mode)
+    success = await storage_adapter.store_credential(
+        filename, creds_data, mode=mode,
+        **({"import_network": import_network} if import_network is not None else {}),
+    )
 
     if success:
         # 创建默认状态记录
@@ -1024,7 +1039,7 @@ async def save_credentials(creds: Credentials, project_id: str, mode: str = "gem
                 "error_codes": [],
                 "disabled": False,
                 "last_success": time.time(),
-                "user_email": None,
+                "user_email": (import_network or {}).get("email"),
                 "tier": subscription_tier,
             }
             await storage_adapter.update_credential_state(filename, default_state, mode=mode)

@@ -18,16 +18,20 @@ from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
+
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MONEY_QUANTUM = Decimal("0.00000001")
 
 
 class ApiKeyAuthError(RuntimeError):
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, detail: str, *, api_key_id: str | None = None, reason: str = "api_key_quota"):
         super().__init__(detail)
+        self.reason = reason
         self.status_code = status_code
         self.detail = detail
+        self.api_key_id = api_key_id
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,8 @@ class ApiKeyService:
     def _public(self, record: dict[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
         current = _now(now)
         result = dict(record)
+        result["limit_enabled"] = bool(result.get("limit_enabled"))
+        result["limit_schedule"] = ApiKeySchedule().label()
         ciphertext = result.pop("secret_ciphertext", None)
         result["secret_available"] = bool(
             result.get("secret_available", ciphertext)
@@ -335,6 +341,16 @@ class ApiKeyService:
     ) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         current = _now(now)
+        if "limit_enabled" in updates:
+            if type(updates["limit_enabled"]) is not bool:
+                raise ValueError("分时限流开关必须为布尔值")
+            normalized["limit_enabled"] = updates["limit_enabled"]
+        for field in LIMIT_FIELDS:
+            if field in updates:
+                limit = updates[field]
+                if limit is not None and (type(limit) is not int or not 1 <= limit <= 2**53 - 1):
+                    raise ValueError("限额必须为正整数，留空表示不限")
+                normalized[field] = limit
         if "prompt_fusion_mode" in updates:
             normalized["prompt_fusion_mode"] = self._prompt_fusion_mode(updates["prompt_fusion_mode"])
         if "allowed_model" in updates:
@@ -409,7 +425,11 @@ class ApiKeyService:
         quota_amount = _money(record.get("quota_amount"), allow_none=True)
         quota_used = _money(record.get("quota_used")) or "0.00000000"
         if quota_amount is not None and Decimal(quota_used) >= Decimal(quota_amount):
-            raise ApiKeyAuthError(429, "密钥额度已耗尽")
+            raise ApiKeyAuthError(429, "密钥额度已耗尽", api_key_id=record["id"])
+        if record.get("limit_enabled"):
+            rejection = await self.storage.admit_api_key_request(record["id"], current.timestamp() if now else None)
+            if rejection:
+                raise ApiKeyAuthError(429, rejection, api_key_id=record["id"], reason="api_key_rate_limit")
         return ApiKeyPrincipal(
             api_key_id=record["id"],
             name=record["name"],

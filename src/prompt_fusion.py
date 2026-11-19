@@ -12,7 +12,7 @@ import uuid
 
 from config import get_config_value, get_credentials_dir, get_system_prompt_append
 from log import log
-from src.converter.antigravity_system_prompt import baseline_prompt, BRIDGE
+from src.converter.antigravity_system_prompt import baseline_prompt, BRIDGE, TASK_SCOPE
 
 TTL = 86400
 VERSION = '3'
@@ -316,7 +316,20 @@ async def fuse_request(request, model, account, credential):
         return request
     result = deepcopy(dict(request))
     result.pop('system_instructions', None)
-    result['systemInstruction'] = {'parts': [{'text': prefix + baseline_prompt() + '\n\n' + BRIDGE + '\n\nClient runtime guidance:\n' + guidance}]}
+    host = prefix + baseline_prompt() + '\n\n' + BRIDGE
+    if getattr(request, 'system_obfuscation_mode', None) == 'protected':
+        from src.converter.protected_leet import detect_client_profile, protected_system_parts
+
+        stops = (request.get('generationConfig') or {}).get('stopSequences')
+        client_parts = protected_system_parts(
+            [{'text': guidance}], request.get('tools', []), detect_client_profile(text),
+            stop_sequences=stops if isinstance(stops, list) else (),
+        )
+    else:
+        client_parts = [{'text': guidance}]
+    result['systemInstruction'] = {'parts': [
+        {'text': host}, {'text': TASK_SCOPE + '\n\nClient runtime guidance:'}, *client_parts,
+    ]}
     if getattr(request, 'fusion_moved_guidance', False):
         result['contents'] = result.get('contents', [])[1:]
     return result

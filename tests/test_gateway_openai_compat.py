@@ -15,6 +15,8 @@ def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_cache', {})
     monkeypatch.setenv('SENSITIVE_WORD_REPLACE_ENABLED', 'false')
     monkeypatch.delenv('COMPATIBILITY_MODE', raising=False)
+    monkeypatch.delenv('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', raising=False)
+    monkeypatch.delenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED', raising=False)
 
 
 @pytest.mark.parametrize('compatibility', [False, True])
@@ -127,10 +129,12 @@ async def test_gateway_chat_route_with_simulated_upstream(channel, stream, monke
         monkeypatch.setattr(route, 'non_stream_request', fake_non_stream)
     if hasattr(route, 'stream_request'):
         monkeypatch.setattr(route, 'stream_request', fake_stream)
+    contract = '## Output Format\nUse the value pending review for unresolved records.'
+    guidance = f'Keep actual tool schemas.\n{contract}'
     payload = OpenAIChatCompletionRequest.model_validate({
         'model': 'gemini-4-argon-low', 'stream': stream,
         'stream_options': {'include_usage': True},
-        'messages': [{'role': 'developer', 'content': 'Keep actual tool schemas.'},
+        'messages': [{'role': 'developer', 'content': guidance},
                      {'role': 'user', 'content': 'Task'}],
     })
     if channel == 'antigravity':
@@ -149,5 +153,10 @@ async def test_gateway_chat_route_with_simulated_upstream(channel, stream, monke
         assert data['choices'][0]['message']['content'] == 'ok'
         assert data['usage']['total_tokens'] == 3
     assert len(seen) == 1
-    assert seen[0]['request']['systemInstruction']['parts'][0]['text'] == 'Keep actual tool schemas.'
+    system = seen[0]['request']['systemInstruction']['parts']
+    if channel == 'antigravity':
+        assert system[0]['text'].startswith('Leet encoding adapter.')
+        assert system[1:] == [{'text': f'K33p 4ctv4l t00l sch3m4s.\n{contract}'}]
+    else:
+        assert system == [{'text': guidance}]
     assert all(c['role'] in ('user', 'model') for c in seen[0]['request']['contents'])

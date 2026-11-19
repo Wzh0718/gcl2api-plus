@@ -3,6 +3,7 @@
 !package.json
 !package-lock.json
 !tsconfig.json
+!src/prompts/workflow-contracts/regulation-search-v1.json
 *.toml
 !pyproject.toml
 creds/
@@ -97,9 +98,8 @@ Thumbs.db
 *.log
 log.txt
 
-# Generated Banana image stress-test reports
-reports/banana-stress-*.html
-reports/banana-stress-*.json
+# Local reports
+/reports/
 
 # Temporary files
 *.tmp

@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from collections import deque
 from typing import Any, Dict, List, Optional
 
 from log import log
+from src.rate_limits import RateLimit
 
 REALTIME_BUFFER_SIZE = 1000
 CLEANUP_INTERVAL_SECONDS = 3600
@@ -82,6 +84,7 @@ class CallMonitor:
         task_type: str = "chat",
         success: bool,
         status_code: Optional[int] = None,
+        rate_limit: RateLimit | None = None,
         gateway_seconds: Optional[float] = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
@@ -111,6 +114,8 @@ class CallMonitor:
                 capture.api_key_id = api_key_id
         else:
             features, details = build_request_features(upstream_request)
+        if status_code == 429 and rate_limit is not None:
+            features["rate_limit"] = rate_limit.as_dict()
         row: Dict[str, Any] = {
             "request_id": request_id,
             "created_at": float(created_at if created_at is not None else time.time()),
@@ -334,3 +339,22 @@ async def get_call_monitor(storage: Any = None) -> CallMonitor:
         monitor = CallMonitor(storage)
         _monitors[key] = monitor
     return monitor
+
+
+async def record_gateway_rejection(rate_limit: RateLimit, *, api_key_id: str, model: str = "", storage=None) -> None:
+    """Monitor a local 429 raised before billing has an upstream request ID."""
+    from src.request_capture import capture_context
+
+    capture = capture_context.get()
+    try:
+        monitor = await get_call_monitor(storage)
+        await monitor.record(
+            request_id=f"gateway-{capture.request_id if capture else uuid.uuid4().hex}",
+            api_key_id=api_key_id,
+            model_name=model or (capture.request_model if capture else ""),
+            success=False,
+            status_code=429,
+            rate_limit=rate_limit,
+        )
+    except Exception as exc:
+        log.warning(f"[CALL MONITOR] 本地拒绝记录失败: {type(exc).__name__}")

@@ -1192,9 +1192,6 @@
                 padding: 12px 20px;
             }
         }
-        .config-hero { margin: 2px 0 14px; padding: 16px; border: 1px solid #d8e4f3; border-radius: 10px; background: #f8fbff; }
-        .config-hero h3 { margin: 5px 0 4px; color: #172b4d; font-size: 21px; }
-        .config-hero p { margin: 0; color: #6b7a90; font-size: 12px; line-height: 1.5; }
         .proxy-console { border-color: #c8d8ee; background: linear-gradient(180deg, #f7fbff 0%, #fff 100%); }
         .proxy-console-head, .proxy-group-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
         .proxy-console-head h4, .proxy-group-card h5, .proxy-editor-card h5 { margin: 4px 0 6px; color: #172b4d; }
@@ -1294,7 +1291,7 @@
         .cm-page-btn:disabled { color: #adb5bd; background: #f8f9fa; opacity: 0.8; }
         .cm-page-ellipsis { padding: 0 3px; color: #adb5bd; font-size: 12px; }
     </style>
-    <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
+    <link rel="stylesheet" href="./front/call_monitor.css?v=rate-limit-source">
     <style id="api-key-management-styles">
         .api-key-shell { color: #172033; }
         .api-key-header { padding-bottom: 14px; border-bottom: 1px solid #dce3ec; }
@@ -1328,9 +1325,9 @@
         .api-key-readonly { margin: 12px 0 0; color: #687386; font-size: 11px; }
         .api-key-empty { padding: 24px 12px; border: 1px dashed #cfd8e5; border-radius: 9px; color: #7a8494; background: #f7f9fc; text-align: center; font-size: 12px; }
     </style>
-    <link rel="stylesheet" href="./front/config_tabs.css?v=prompt-settings-20261117">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
-    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-inline">
+    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
 </head>
 
 <body>
@@ -2119,14 +2116,9 @@
             </div>
 
             <div id="configTab" class="tab-content">
-                <div class="config-hero">
-                    <span class="proxy-kicker">CONTROL PLANE</span>
-                    <h3>配置管理</h3>
-                    <p>运行时网络、端点和代理策略集中管理；环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p>
-                </div>
-
                 <div id="configSection">
                     <div class="config-toolbar">
+                        <h2 class="config-title">配置管理</h2>
                         <div class="config-category-tabs" role="tablist" aria-label="配置分类">
                             <button type="button" id="config-tab-general" class="config-category-tab" role="tab" aria-selected="true" aria-controls="config-panel-general" tabindex="0" onclick="switchConfigTab('general')" onkeydown="handleConfigTabKeydown(event)">基础设置</button>
                             <button type="button" id="config-tab-network" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-network" tabindex="-1" onclick="switchConfigTab('network')" onkeydown="handleConfigTabKeydown(event)">网络代理</button>
@@ -2136,12 +2128,12 @@
                             <button type="button" id="config-tab-alerts" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-alerts" tabindex="-1" onclick="switchConfigTab('alerts')" onkeydown="handleConfigTabKeydown(event)">保活与告警</button>
                             <button type="button" id="config-tab-monitoring" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-monitoring" tabindex="-1" onclick="switchConfigTab('monitoring')" onkeydown="handleConfigTabKeydown(event)">监控与采集</button>
                         </div>
-                        <div class="config-toolbar-footer">
-                            <span class="config-tabs-note">切换分类保留未保存的输入，保存更改将保存全部分类。</span>
-                            <div class="config-toolbar-actions"><button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button><button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button></div>
+                        <div class="config-toolbar-actions">
+                            <button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button>
+                            <button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button>
                         </div>
                     </div>
-                    <div class="loading" id="configLoading">正在加载配置...</div>
+                    <div class="loading" id="configLoading" role="status">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
                         <div class="card">
@@ -2536,9 +2528,9 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityAccountUsageEnabled" />
-                                    启用账号用量限制
+                                    启用全局用量限制
                                 </label>
-                                <small class="config-note">上限默认应用到每个 Antigravity 账号，可在凭证卡片单独关闭。同一账号的所有 Key 与模型共用计数。0 表示该项不限。</small>
+                                <small class="config-note">全局上限用于账号未单独设置的项目。关闭全局后，账号自定义上限仍生效。同一账号的所有 Key 与模型共用计数。0 表示该项不限。</small>
                             </div>
 
                             <div class="form-group">
@@ -2664,12 +2656,12 @@
                             <fieldset class="prompt-mode-fieldset" aria-describedby="systemObfuscationHint">
                                 <legend>文本处理</legend>
                                 <div class="prompt-mode-options">
-                                    <label><input type="radio" name="systemObfuscationChoice" value="off" checked onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="off" onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
                                     <label><input type="radio" name="systemObfuscationChoice" value="full" onchange="selectSystemObfuscationMode(this.value)"><span>全文 Leet</span></label>
-                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" checked onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
                                 </div>
-                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected">智能保护 Leet</option></select>
-                                <p id="systemObfuscationHint" class="prompt-setting-hint">保留客户端原始文本。</p>
+                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected" selected>智能保护 Leet</option></select>
+                                <p id="systemObfuscationHint" class="prompt-setting-hint">自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。</p>
                                 <p id="systemObfuscationLock" class="prompt-setting-lock" hidden>由环境变量控制</p>
                             </fieldset>
                             <label class="prompt-setting-row" for="antigravitySystemAsUserEnabled">
@@ -2908,7 +2900,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-usage-inline"></script>
+    <script src="./front/common.js?v=key-schedule"></script>
 </body>
 
 </html>

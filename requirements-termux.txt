@@ -14,3 +14,4 @@ cryptography
 PyYAML
 redis
 asyncpg
+jsonschema>=4.23,<5

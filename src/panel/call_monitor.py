@@ -394,7 +394,8 @@ async def call_monitor_content(
                                       chosen.get("details", {}).items() if isinstance(payload, dict)}
         feature_rows = await asyncio.to_thread(store.query, "features", policies["features"],
                                                request_id=capture_id, limit=30)
-        content["request_features"] = next((r["features"] for r in feature_rows if r.get("features", {}).get("upstream")), {})
+        captured_features = next((r["features"] for r in feature_rows if r.get("features", {}).get("upstream")), {})
+        content["request_features"] = {**captured_features, **content["request_features"]}
         content.update(capture_id=capture_id, capture_state="available" if chosen else "not_available")
     from fastapi.responses import JSONResponse
     return JSONResponse(content, headers={"Cache-Control": "no-store"})

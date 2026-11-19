@@ -102,8 +102,15 @@ async def test_503_preserves_body_cooldown_and_supports_retry_after(fixed_time):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["stream", "non_stream", "image"])
-async def test_real_request_paths_persist_retry_after_cooldown(monkeypatch, fixed_time, transport):
+@pytest.mark.parametrize(("transport", "reason", "attribution"), [
+    ("stream", "RATE_LIMIT_EXCEEDED", "rate_limited"),
+    ("non_stream", "QUOTA_EXHAUSTED", "quota_exhausted"),
+    ("non_stream", "INSUFFICIENT_G1_CREDITS_BALANCE", "credits_exhausted"),
+    ("image", "MODEL_CAPACITY_EXHAUSTED", "model_capacity"),
+])
+async def test_real_request_paths_persist_retry_after_cooldown(
+    monkeypatch, fixed_time, transport, reason, attribution,
+):
     """Only external boundaries are mocked; exercise each real cooldown call site."""
     manager = SimpleNamespace(
         get_valid_credential=AsyncMock(return_value=(
@@ -123,14 +130,15 @@ async def test_real_request_paths_persist_retry_after_cooldown(monkeypatch, fixe
     monkeypatch.setattr(agy, "wrap_cli_request", AsyncMock(return_value=({"model": "test-model"}, "request-id")))
     monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
     monkeypatch.setattr(agy, "_alert_all_accounts_unavailable_if_needed", AsyncMock(return_value=False))
-    monkeypatch.setattr(agy, "get_billing_recorder", AsyncMock(return_value=SimpleNamespace(record=AsyncMock())))
+    record = AsyncMock()
+    monkeypatch.setattr(agy, "get_billing_recorder", AsyncMock(return_value=SimpleNamespace(record=record)))
     monkeypatch.setattr(agy, "resolve_dynamic_image_model_for_credential", AsyncMock(return_value="gemini-3.1-flash-image"))
     monkeypatch.setattr(pacing, "pace_credential", AsyncMock(return_value=0))
     monkeypatch.setattr(pacing, "acquire_credential_slot", AsyncMock(return_value=0))
     monkeypatch.setattr(pacing, "release_credential_slot", lambda name: None)
     errors = AsyncMock()
     monkeypatch.setattr(agy, "record_api_call_error", errors)
-    error = b'{"error":{"reason":"RATE_LIMIT_EXCEEDED"}}'
+    error = json.dumps({"error": {"reason": reason}}).encode()
     upstream = SimpleNamespace(status_code=429, content=error, text=error.decode(), headers={"Retry-After": "180"}, json=lambda: json.loads(error))
 
     async def stream_response(**kwargs):
@@ -149,5 +157,10 @@ async def test_real_request_paths_persist_retry_after_cooldown(monkeypatch, fixe
     else:
         response = await agy.non_stream_request(body)
         assert response.status_code == 429
+    record.assert_awaited_once()
+    billed = record.await_args.kwargs
+    assert billed["status_code"] == 429
+    assert billed["credential_name"] == "account.json"
+    assert billed["rate_limit"].as_dict() == {"source": "upstream", "reason": attribution}
     assert errors.await_count == 1
     assert errors.await_args.args[3] == NOW + 180

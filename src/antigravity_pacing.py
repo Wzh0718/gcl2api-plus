@@ -41,6 +41,12 @@ _MAX_TRACKED = 2000
 class CredentialSlotWaitTimeout(Exception):
     """账号并发槽位在等待上限内未释放，需要向调用方施加背压。"""
 
+    def __init__(self, credential_name: str, *, warmup: bool = False):
+        from src.rate_limits import RateLimit
+
+        super().__init__(credential_name)
+        self.rate_limit = RateLimit('gateway', 'warmup_capacity' if warmup else 'capacity_busy')
+
 
 class _Slot:
     """单账号的并发闸门状态（纯同步计数 + Event 唤醒）。"""
@@ -137,7 +143,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
 
     warmup = await acquire_dynamic_warmup_slot(credential_name)
     if not warmup.get("acquired"):
-        raise CredentialSlotWaitTimeout(credential_name)
+        raise CredentialSlotWaitTimeout(credential_name, warmup=True)
     try:
         if not get_antigravity_pacing_enabled_sync():
             return 0.0

@@ -1009,24 +1009,6 @@
             margin: 3px 0;
         }
 
-        .config-hero {
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-between;
-            gap: 16px;
-            margin: 2px 0 16px;
-            padding: 18px 20px;
-            border: 1px solid #d8e4f3;
-            border-radius: 12px;
-            background: #f8fbff;
-        }
-
-        .config-hero h3 { margin: 5px 0 4px; color: #172b4d; font-size: 22px; }
-        .config-hero p { margin: 0; color: #6b7a90; font-size: 12px; }
-        .config-hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
-        .config-hero-actions .btn, .config-hero-actions .refresh-btn { width: auto; margin: 0; }
-        .config-save-note { color: #6b7a90; font-size: 11px; }
-
         .proxy-console {
             border-color: #c8d8ee;
             background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
@@ -2127,11 +2109,11 @@
             .billing-key-filter { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="./front/control_panel.css?v=fixed-config-header-20261117">
-    <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
-    <link rel="stylesheet" href="./front/config_tabs.css?v=prompt-settings-20261117">
+    <link rel="stylesheet" href="./front/control_panel.css?v=config-layout-20261119">
+    <link rel="stylesheet" href="./front/call_monitor.css?v=rate-limit-source">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
-    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-inline">
+    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
 </head>
 
 <body>
@@ -2383,11 +2365,12 @@
                     style="margin: 20px 0; padding: 15px; border: 2px solid #e8f4fd; border-radius: 8px; background: #f8fcff;">
                     <div style="font-weight: bold; color: #0066cc; margin-bottom: 10px;">🔑 Refresh Token 导入</div>
                     <div style="color: #666; font-size: 13px; margin-bottom: 12px; line-height: 1.6;">
-                        直接粘贴 refresh_token 导入 Antigravity 账号，无需浏览器授权流程。
+                        支持批量粘贴凭证 JSON。选择代理组时，每个账号固定绑定一个空闲出口。无可用出口的条目会标为「已禁用」，可在巡查时检查并启用。
                     </div>
                     <div class="input-group">
-                        <textarea id="antigravityRefreshTokenInput" rows="3"
-                            placeholder="粘贴 refresh_token..."
+                        <textarea id="antigravityRefreshTokenInput" rows="5" spellcheck="false" autocomplete="off"
+                            aria-label="Refresh Token 或凭证 JSON"
+                            placeholder='[{"refresh_token":"…"}, {"refresh_token":"…"}]'
                             style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;"></textarea>
                     </div>
                     <div class="input-group" style="margin-top: 10px;">
@@ -2403,10 +2386,39 @@
                             placeholder="自定义代理地址，例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
                             style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;">
                     </div>
-                    <button class="btn" style="margin-top: 10px;" onclick="importAntigravityByRefreshToken()">
+                    <button class="btn" id="antigravityImportBtn" type="button" style="margin-top: 10px;"
+                        onclick="importAntigravityByRefreshToken()">
                         导入凭证
                     </button>
+                    <div id="antigravityImportHistory" style="margin-top: 12px;" hidden>
+                        <label for="antigravityImportBatch">导入批次</label>
+                        <select id="antigravityImportBatch" onchange="refreshAntigravityImportProgress()"></select>
+                        <ol id="antigravityImportResults" style="margin: 12px 0 0; padding-left: 1.5rem;"
+                            aria-live="polite" aria-label="逐条导入结果"></ol>
+                    </div>
                 </div>
+
+                <dialog id="antigravityImportEditDialog" aria-labelledby="antigravityImportEditTitle"
+                    style="width: min(32rem, 90vw); padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+                    <form>
+                        <h3 id="antigravityImportEditTitle">编辑导入条目</h3>
+                        <label class="form-group">
+                            新的 refresh_token
+                            <input name="refresh_token" type="password" placeholder="留空保留原凭证" autocomplete="off">
+                        </label>
+                        <label class="form-group">
+                            代理方式
+                            <select name="proxy_mode"></select>
+                        </label>
+                        <label class="form-group" hidden>
+                            自定义代理地址
+                            <input name="proxy_url" type="password" placeholder="留空保留已设置的地址" autocomplete="off">
+                        </label>
+                        <p role="status"></p>
+                        <button class="btn" type="submit">保存并检查</button>
+                        <button class="btn" type="button" onclick="this.closest('dialog').close()">取消</button>
+                    </form>
+                </dialog>
 
                 <div id="antigravityAuthUrlSection" class="hidden">
                     <h3>Antigravity 认证链接：</h3>
@@ -2786,6 +2798,8 @@
                             onclick="batchAntigravityWarmup('cancel')" disabled>批量取消养号</button>
                         <button class="batch-btn batch-email" onclick="refreshAllAntigravityEmails()">刷新所有邮箱</button>
                         <button class="batch-btn" onclick="deduplicateAntigravityByEmail()">凭证一键去重</button>
+                        <button type="button" class="batch-btn" id="antigravityBatchMessageTestBtn"
+                            onclick="batchTestAntigravityCredentials(this)" disabled>批量消息测试</button>
                     </div>
                 </div>
 
@@ -2926,16 +2940,9 @@
 
             <!-- 配置管理标签页 -->
             <div id="configTab" class="tab-content">
-                <div class="config-hero">
-                    <div><span class="proxy-kicker">运行配置</span><h3>配置管理</h3><p>集中管理运行时网络、端点和策略。环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p></div>
-                </div>
-
-                <div class="manage-actions">
-                    <span class="config-save-note">配置保存后按字段类型热更新；端口和目录等字段仍需重启。</span>
-                </div>
-
                 <div id="configSection">
                     <div class="config-toolbar">
+                        <h2 class="config-title">配置管理</h2>
                         <div class="config-category-tabs" role="tablist" aria-label="配置分类">
                             <button type="button" id="config-tab-general" class="config-category-tab" role="tab" aria-selected="true" aria-controls="config-panel-general" tabindex="0" onclick="switchConfigTab('general')" onkeydown="handleConfigTabKeydown(event)">基础设置</button>
                             <button type="button" id="config-tab-network" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-network" tabindex="-1" onclick="switchConfigTab('network')" onkeydown="handleConfigTabKeydown(event)">网络代理</button>
@@ -2945,12 +2952,12 @@
                             <button type="button" id="config-tab-alerts" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-alerts" tabindex="-1" onclick="switchConfigTab('alerts')" onkeydown="handleConfigTabKeydown(event)">保活与告警</button>
                             <button type="button" id="config-tab-monitoring" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-monitoring" tabindex="-1" onclick="switchConfigTab('monitoring')" onkeydown="handleConfigTabKeydown(event)">监控与采集</button>
                         </div>
-                        <div class="config-toolbar-footer">
-                            <span class="config-tabs-note">切换分类保留未保存的输入，保存更改将保存全部分类。</span>
-                            <div class="config-toolbar-actions"><button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button><button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button></div>
+                        <div class="config-toolbar-actions">
+                            <button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button>
+                            <button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button>
                         </div>
                     </div>
-                    <div class="loading" id="configLoading">正在加载配置...</div>
+                    <div class="loading" id="configLoading" role="status">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
                         <div class="config-group">
@@ -3320,9 +3327,9 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityAccountUsageEnabled" class="config-checkbox" />
-                                    启用账号用量限制
+                                    启用全局用量限制
                                 </label>
-                                <small class="config-note">上限默认应用到每个 Antigravity 账号，可在凭证卡片单独关闭。同一账号的所有 Key 与模型共用计数。生成 Token 以回执中的输出与思考 Token 为准。任一窗口达限时暂停向该账号派发新请求，0 表示该项不限。</small>
+                                <small class="config-note">全局上限用于账号未单独设置的项目。关闭全局后，账号自定义上限仍生效。同一账号的所有 Key 与模型共用计数。生成 Token 以回执中的输出与思考 Token 为准。任一窗口达限时暂停派发，0 表示该项不限。</small>
                                 <button type="button" id="accountUsagePreset" class="btn btn-small" onclick="applyAccountUsageDefaults()" disabled>填入推荐值</button>
                             </div>
 
@@ -3447,12 +3454,12 @@
                             <fieldset class="prompt-mode-fieldset" aria-describedby="systemObfuscationHint">
                                 <legend>文本处理</legend>
                                 <div class="prompt-mode-options">
-                                    <label><input type="radio" name="systemObfuscationChoice" value="off" checked onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="off" onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
                                     <label><input type="radio" name="systemObfuscationChoice" value="full" onchange="selectSystemObfuscationMode(this.value)"><span>全文 Leet</span></label>
-                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" checked onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
                                 </div>
-                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected">智能保护 Leet</option></select>
-                                <p id="systemObfuscationHint" class="prompt-setting-hint">保留客户端原始文本。</p>
+                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected" selected>智能保护 Leet</option></select>
+                                <p id="systemObfuscationHint" class="prompt-setting-hint">自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。</p>
                                 <p id="systemObfuscationLock" class="prompt-setting-lock" hidden>由环境变量控制</p>
                             </fieldset>
                             <label class="prompt-setting-row" for="antigravitySystemAsUserEnabled">
@@ -3470,13 +3477,13 @@
                                         <pre id="systemVowelPreviewOutput"></pre>
                                         <details id="systemVowelDecoderDetails" class="prompt-decoder" hidden><summary>附加的解码说明</summary><pre id="systemVowelDecoderOutput"></pre></details>
                                     </div>
-                                    <p class="prompt-preview-footnote">仅预览文本转换，不叠加工具定义、敏感词过滤或提示词融合。</p>
+                                    <p class="prompt-preview-footnote">预览仅使用示例文本。实际请求还会读取工具定义和输出 Schema。</p>
                                 </div>
                             </details>
                             <details class="prompt-settings-advanced">
                                 <summary>更多设置与处理说明</summary>
                                 <label class="prompt-setting-row" for="antigravitySystemPromptEnabled"><span><strong>AGY 基础提示</strong><span class="prompt-setting-hint">额外注入 2.31.2 基础模块。</span></span><input type="checkbox" id="antigravitySystemPromptEnabled"></label>
-                                <ul class="prompt-rules"><li>全文 Leet 替换 a/e/i/o/u → 4/3/1/0/v，代码和路径也会改变。</li><li>智能保护识别 Codex、Claude Code、DSH、Pi 结构，保留代码、路径、工具名等精确内容；未匹配时使用通用规则。精确值建议用反引号标记。</li><li>转为 user 后优先级也降为 user；提示词融合成功时优先于这些处理。不保证减少 429 或避免 403。</li></ul>
+                                <ul class="prompt-rules"><li>两种 Leet 模式都附加解码说明，保留明确的输出要求、工具参数和输出 Schema 的字段与枚举。精确值建议用反引号标记。</li><li>智能保护额外识别代码块、路径和工具或环境章节，支持 Codex、Claude Code、DSH、Pi 的常见结构。</li><li>转为 user 后优先级也降为 user；提示词融合成功时优先于这些处理。不保证减少 429 或避免 403。</li></ul>
                             </details>
                         </section>
                         <div class="config-group">
@@ -3702,7 +3709,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-usage-inline"></script>
+    <script src="./front/common.js?v=key-schedule"></script>
 
 </body>
 
