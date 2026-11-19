@@ -338,22 +338,35 @@ async def test_count_min_ts_and_delete_before(tmp_path, monkeypatch):
 async def test_monitor_record_buffer_and_preload(tmp_path, monkeypatch):
     adapter = await _make_adapter(tmp_path, monkeypatch)
     from src.call_monitor import CallMonitor
+    from src.rate_limits import RateLimit
+    from src.request_capture import capture_managed
 
     monitor = CallMonitor(adapter)
-    await monitor.record(**_record_kwargs("m1"))
-    await monitor.record(**_record_kwargs("m2", success=False))
+    rate_limit = RateLimit("gateway", "account_usage_limit", ("requests_per_minute",))
+    # Managed requests with evidence capture disabled have no capture context.
+    token = capture_managed.set(True)
+    try:
+        await monitor.record(**_record_kwargs("m1"))
+        await monitor.record(**_record_kwargs("m2", success=False))
+        await monitor.record(**_record_kwargs("m3", success=False), rate_limit=rate_limit)
+    finally:
+        capture_managed.reset(token)
 
     realtime = monitor.realtime()
-    assert [row["request_id"] for row in realtime] == ["m2", "m1"]
-    assert [row["request_id"] for row in monitor.realtime(failed_only=True)] == ["m2"]
+    assert [row["request_id"] for row in realtime] == ["m3", "m2", "m1"]
+    assert [row["request_id"] for row in monitor.realtime(failed_only=True)] == ["m3", "m2"]
     counters = monitor.buffer_counters()
-    assert counters["logs"] == 2 and counters["failed"] == 1
+    assert counters["logs"] == 3 and counters["failed"] == 2
 
     # 模拟重启：新实例从 SQLite 预热后仍能读到历史
     monitor2 = CallMonitor(adapter)
     assert monitor2.realtime() == []
     await monitor2.preload()
-    assert [row["request_id"] for row in monitor2.realtime()] == ["m2", "m1"]
+    persisted = monitor2.realtime()
+    assert [row["request_id"] for row in persisted] == ["m3", "m2", "m1"]
+    for rows in (realtime, persisted):
+        assert rows[0]["request_features"] == {"rate_limit": rate_limit.as_dict()}
+        assert rows[1]["request_features"] == {}
     await adapter.close()
 
 

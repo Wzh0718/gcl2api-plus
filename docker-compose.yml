@@ -14,6 +14,11 @@ services:
       # - API_PASSWORD=${API_PASSWORD:-your_api_password}
       # - PANEL_PASSWORD=${PANEL_PASSWORD:-your_panel_password}
 
+      # Managed API key day/night request limits (local HH:MM)
+      - API_KEY_LIMIT_TIMEZONE=${API_KEY_LIMIT_TIMEZONE:-Asia/Singapore}
+      - API_KEY_LIMIT_DAY_START=${API_KEY_LIMIT_DAY_START:-08:00}
+      - API_KEY_LIMIT_NIGHT_START=${API_KEY_LIMIT_NIGHT_START:-20:00}
+
       # Server configuration
       - PORT=${PORT:-7861}
       - HOST=${HOST:-0.0.0.0}

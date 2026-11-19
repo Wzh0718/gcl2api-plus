@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 from src.antigravity_400_classifier import upstream_error_log_detail
 from src.request_capture import record_local_capture, bind_capture_credential
 from src.antigravity_usage import AccountUsageLimitReached, begin_account_usage
+from src.rate_limits import CREDITS_EXHAUSTED_MARKER, RateLimit, upstream_rate_limit
 from src.claude_routing import bind_claude_request, bind_claude_stream
 
 from fastapi import Response
@@ -708,14 +709,14 @@ def _credential_slot_backpressure_response(
     error: Exception | None = None,
 ) -> Response:
     usage_limited = isinstance(error, AccountUsageLimitReached)
-    return Response(
+    response = Response(
         content=json.dumps(
             {
                 "error": {
                     "code": 429,
                     "message": (
-                        "Upstream account usage limit reached; retry later."
-                        if usage_limited else "Upstream account capacity is busy; retry later."
+                        f"{error}; retry later."
+                        if usage_limited else "Gateway account capacity is busy; retry later."
                     ),
                     "status": "RESOURCE_EXHAUSTED",
                 }
@@ -725,6 +726,36 @@ def _credential_slot_backpressure_response(
         media_type="application/json",
         headers={"Retry-After": str(error.retry_after if usage_limited else 1)},
     )
+    response.rate_limit = RateLimit("gateway", "account_usage_limit" if usage_limited else "capacity_busy")
+    return response
+
+
+def _account_pool_429() -> Response:
+    response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
+                        media_type="application/json")
+    response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
+    return response
+
+
+def _mark_upstream_429(response, error_body, *, request_id, credential_name, model, upstream_request):
+    if response.status_code == 429:
+        response.rate_limit = upstream_rate_limit(error_body)
+        response.rate_limit_attempt = {
+            "request_id": request_id, "credential_name": credential_name,
+            "model": model, "upstream_request": upstream_request,
+        }
+
+
+def _billing_response_fields(response, status_code, request_id, credential_name, model, upstream_request):
+    fields = {
+        "request_id": request_id, "credential_name": credential_name, "model": model,
+        "upstream_request": upstream_request,
+        "status_code": response.status_code if response is not None else status_code,
+    }
+    if fields["status_code"] == 429 and (attribution := getattr(response, "rate_limit", None)) is not None:
+        fields["rate_limit"] = attribution
+        fields.update(getattr(response, "rate_limit_attempt", {}))
+    return fields
 
 
 def _upstream_403_to_503(response: Any) -> Any:
@@ -804,12 +835,12 @@ async def _handle_antigravity_403(
     }:
         note_dynamic_warmup_outcome(credential_name, "paused")
 
-    # VALIDATION_REQUIRED 是临时性账号验证：只冷却模型并轮换凭证，
+    # VALIDATION_REQUIRED 是临时性账号验证：记录模型冷却，
     # 即使自动封禁开关打开也不禁用账号（验证完成后账号仍可恢复）。
     if decision.category == "validation_required":
         return Antigravity403HandlingResult(
             decision,
-            should_retry=True,
+            should_retry=False,
             cooldown_until=timestamp + VALIDATION_REQUIRED_COOLDOWN_SECONDS,
         )
 
@@ -818,27 +849,19 @@ async def _handle_antigravity_403(
             await credential_manager.set_cred_disabled(
                 credential_name, True, mode="antigravity"
             )
-            return Antigravity403HandlingResult(decision, should_retry=True)
+            return Antigravity403HandlingResult(decision, should_retry=False)
         if await check_should_auto_ban(403):
             await credential_manager.set_cred_disabled(
                 credential_name, True, mode="antigravity"
             )
-            return Antigravity403HandlingResult(decision, should_retry=True)
+            return Antigravity403HandlingResult(decision, should_retry=False)
         return Antigravity403HandlingResult(decision, should_retry=False)
 
     if decision.cooldown_model:
         return Antigravity403HandlingResult(
             decision,
-            should_retry=True,
+            should_retry=False,
             cooldown_until=timestamp + MODEL_FORBIDDEN_COOLDOWN_SECONDS,
-        )
-
-    if decision.retry_after_rebind and await get_antigravity_network_check_enabled():
-        rebound = await credential_manager.rebind_antigravity_account(
-            credential_name, credential_data
-        )
-        return Antigravity403HandlingResult(
-            decision, should_retry=bool(rebound)
         )
 
     return Antigravity403HandlingResult(decision, should_retry=False)
@@ -959,46 +982,6 @@ def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
     return None
 
 
-async def _try_model_fallback(
-    *,
-    model_name: str,
-    inner_request: Dict[str, Any],
-    credential_data: Dict[str, Any],
-    quota_exhausted: bool,
-    image_request: bool,
-    log_prefix: str,
-    credential_key: Optional[str] = None,
-) -> Optional[Tuple[str, Dict[str, Any], str, Tuple[str, Dict[str, Any]]]]:
-    """模型配额耗尽后，沿降级链选择有可用凭证的后续模型。
-
-    返回 (新模型名, 新payload, 新request_id, 新凭证)；无可用路由时返回 None。
-    """
-    if image_request or not quota_exhausted:
-        return None
-    chain = await get_antigravity_model_fallback_chain()
-    next_model = _next_fallback_model(chain, model_name)
-    while next_model:
-        cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=next_model
-        )
-        if cred_result:
-            credential_key, credential_data = cred_result
-            break
-        next_model = _next_fallback_model(chain, next_model)
-    if not next_model:
-        return None
-    new_payload, new_request_id = await wrap_cli_request(
-        inner_request, next_model, credential_data.get("project_id", ""),
-        user_email=credential_data.get("user_email"),
-        credential_key=credential_key,
-        credential_data=credential_data,
-    )
-    log.warning(
-        f"{log_prefix} 模型 {model_name} 配额耗尽且号池无可用凭证，降级到 {next_model}"
-    )
-    return next_model, new_payload, new_request_id, cred_result
-
-
 # ==================== 新的流式和非流式请求函数 ====================
 
 async def _stream_request_inner(
@@ -1051,11 +1034,14 @@ async def _stream_request_inner(
         # 文本号池暂时不可用返回429，图片保留原有语义。
         log.error("[ANTIGRAVITY STREAM] 当前无可用凭证")
         await _alert_all_accounts_unavailable_if_needed(model_name)
-        yield Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=500 if image_request else 429,
-            media_type="application/json"
-        )
+        if image_request:
+            yield Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=500,
+                           media_type="application/json")
+        else:
+            from src.call_monitor import record_gateway_rejection
+            response = _account_pool_429()
+            await record_gateway_rejection(response.rate_limit, api_key_id=api_key_id, model=model_name)
+            yield response
         return
 
     current_file, credential_data = cred_result
@@ -1104,7 +1090,6 @@ async def _stream_request_inner(
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
-    last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
@@ -1139,7 +1124,7 @@ async def _stream_request_inner(
             usage_metadata = extract_usage_metadata(payload) or usage_metadata
             upstream_model = extract_model_version(payload) or upstream_model
 
-    async def record_billing_once(success: bool, status_code: Optional[int] = None):
+    async def record_billing_once(success: bool, status_code: Optional[int] = None, *, response=None):
         nonlocal billing_recorded
         if billing_recorded:
             return
@@ -1147,14 +1132,12 @@ async def _stream_request_inner(
         try:
             recorder = await get_billing_recorder()
             await recorder.record(
-                request_id=request_id, credential_name=current_file, model=model_name,
+                **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
                 usage_metadata=usage_metadata, success=success, api_key_id=api_key_id,
                 task_type="image" if image_request else "chat",
-                status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
                 request_model=original_model,
-                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record stream request: {type(exc).__name__}")
@@ -1230,7 +1213,6 @@ async def _stream_request_inner(
     while attempt <= max_retries:
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
-        model_fell_back = False  # 标记本轮重试是否由模型降级触发（跳过换号）
         usage_attempt = None
         usage_metadata = upstream_model = None
         usage_remainder = ""
@@ -1269,11 +1251,9 @@ async def _stream_request_inner(
                 if retry_config["retry_enabled"] and attempt < max_retries and await refresh_credential_fast():
                     attempt += 1
                     continue
-                await record_billing_once(False, status_code=429)
-                yield (_upstream_403_to_503(last_error_response) if last_error_response is not None else Response(
-                    content=json.dumps({"error": "当前无可用凭证"}),
-                    status_code=429, media_type="application/json",
-                ))
+                response = _upstream_403_to_503(last_error_response) if last_error_response is not None else _account_pool_429()
+                await record_billing_once(False, response=response)
+                yield response
                 return
             usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
@@ -1295,11 +1275,12 @@ async def _stream_request_inner(
                         error_body = chunk.body.decode('utf-8') if isinstance(chunk.body, bytes) else str(chunk.body)
                     except Exception:
                         error_body = ""
+                    _mark_upstream_429(chunk, error_body, request_id=request_id, credential_name=current_file,
+                                       model=model_name, upstream_request=final_payload)
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                         log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}")
-                        last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_body)
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
@@ -1324,7 +1305,7 @@ async def _stream_request_inner(
                         stream_final_failure = (
                             attempt >= max_retries
                             or not retry_config["retry_enabled"]
-                            or (classified_403 is not None and not classified_403.should_retry)
+                            or status_code in (403, 429)
                         )
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
@@ -1334,30 +1315,19 @@ async def _stream_request_inner(
                             gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None
                         )
 
-                        if classified_403 is not None:
-                            should_retry = (
-                                retry_config["retry_enabled"]
-                                and classified_403.should_retry
-                                and attempt < max_retries
-                            )
-                        elif status_code == 429 and not image_request:
-                            rate_limited_credentials.add(current_file)
-                            if await check_should_auto_ban(status_code):
+                        if status_code in (403, 429):
+                            if status_code == 429 and await check_should_auto_ban(status_code):
                                 await handle_auto_ban(credential_manager, status_code, current_file, mode="antigravity")
-                            should_retry = retry_config["retry_enabled"] and attempt < max_retries
-                        else:
-                            # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
-                            sleep_interval = (
-                                min(retry_interval * (2 ** attempt), 30.0)
-                                * random.uniform(0.5, 1.5)
-                                if status_code == 429
-                                else retry_interval
-                            )
-                            should_retry = await handle_error_with_retry(
-                                credential_manager, status_code, current_file,
-                                retry_config["retry_enabled"], attempt, max_retries, sleep_interval,
-                                mode="antigravity"
-                            )
+                            await record_billing_once(False, response=chunk)
+                            await _alert_all_accounts_unavailable_if_needed(model_name, attempted_credentials)
+                            yield chunk
+                            return
+
+                        should_retry = await handle_error_with_retry(
+                            credential_manager, status_code, current_file,
+                            retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                            mode="antigravity",
+                        )
 
                         if should_retry and attempt < max_retries and lease_tracker is not None:
                             await lease_tracker.release()
@@ -1379,27 +1349,9 @@ async def _stream_request_inner(
                             need_retry = True
                             break  # 跳出内层循环，准备重试
                         else:
-                            # 配额耗尽型 429：先沿降级链切换模型，链路全部耗尽才算整体 429
-                            if last_error_quota_exhausted:
-                                fallback = await _try_model_fallback(
-                                    model_name=model_name,
-                                    inner_request=inner_request,
-                                    credential_data=credential_data,
-                                    quota_exhausted=True,
-                                    image_request=image_request,
-                                    log_prefix="[ANTIGRAVITY STREAM]",
-                                    credential_key=current_file,
-                                )
-                                if fallback is not None:
-                                    model_name, final_payload, request_id, fallback_cred = fallback
-                                    rate_limited_credentials.clear()
-                                    await apply_cred_result(fallback_cred, rebuild_payload=False)
-                                    need_retry = True
-                                    model_fell_back = True
-                                    break  # 跳出内层循环，用降级模型重试
                             # 不重试，直接返回原始错误（上游 403 改写为 503）
                             log.error(f"[ANTIGRAVITY STREAM] 达到最大重试次数或不应重试，返回原始错误")
-                            await record_billing_once(False, status_code=status_code)
+                            await record_billing_once(False, response=chunk)
                             await _alert_all_accounts_unavailable_if_needed(
                                 model_name, attempted_credentials
                             )
@@ -1451,7 +1403,6 @@ async def _stream_request_inner(
             elif not need_retry:
                 # 没有收到任何数据（空回复），需要重试
                 log.warning(f"[ANTIGRAVITY STREAM] 收到空回复，无任何内容，凭证: {current_file}")
-                last_error_quota_exhausted = False
                 await record_api_call_error(
                     credential_manager, current_file, 200,
                     None, mode="antigravity", model_name=model_name,
@@ -1479,11 +1430,6 @@ async def _stream_request_inner(
                 if lease_tracker is not None:
                     await lease_tracker.release()
 
-                if model_fell_back:
-                    # 模型已降级，沿用当前凭证直接重试，重试预算重置
-                    attempt = 0
-                    continue
-
                 switched, next_cred_task = await _switch_credential_for_retry(
                     next_cred_task=next_cred_task,
                     retry_interval=(
@@ -1497,28 +1443,14 @@ async def _stream_request_inner(
                     stop_when_unavailable=not image_request and last_error_response is not None and last_error_response.status_code == 429,
                 )
                 if not switched:
-                    # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
-                    fallback = await _try_model_fallback(
-                        model_name=model_name,
-                        inner_request=inner_request,
-                        credential_data=credential_data,
-                        quota_exhausted=last_error_quota_exhausted,
-                        image_request=image_request,
-                        log_prefix="[ANTIGRAVITY STREAM]",
-                        credential_key=current_file,
-                    )
-                    if fallback is not None:
-                        model_name, final_payload, request_id, fallback_cred = fallback
-                        rate_limited_credentials.clear()
-                        await apply_cred_result(fallback_cred, rebuild_payload=False)
-                        attempt = 0
-                        continue
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
-                    await record_billing_once(False)
+                    returned_429 = (not image_request and last_error_response is not None
+                                    and last_error_response.status_code == 429)
+                    await record_billing_once(False, response=last_error_response if returned_429 else None)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
-                    if not image_request and last_error_response is not None and last_error_response.status_code == 429:
+                    if returned_429:
                         yield last_error_response
                         return
                     yield Response(
@@ -1545,10 +1477,15 @@ async def _stream_request_inner(
                 if await refresh_credential_fast():
                     attempt += 1
                     continue
-            await record_billing_once(False, status_code=429)
-            yield _credential_slot_backpressure_response(exc)
+            response = _credential_slot_backpressure_response(exc)
+            await record_billing_once(False, response=response)
+            yield response
             return
         except Exception as e:
+            if last_error_response is not None and last_error_response.status_code in (403, 429):
+                await record_billing_once(False, response=last_error_response)
+                yield last_error_response
+                return
             log.error(f"[ANTIGRAVITY STREAM] 流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
@@ -1559,7 +1496,7 @@ async def _stream_request_inner(
                 # 所有重试都失败，返回最后一次的错误（如果有）
                 log.error(f"[ANTIGRAVITY STREAM] 所有重试均失败，最后异常: {e}")
                 if last_error_response:
-                    await record_billing_once(False)
+                    await record_billing_once(False, response=last_error_response)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
@@ -1588,16 +1525,16 @@ async def _stream_request_inner(
     # 所有重试均已耗尽（while 循环正常结束），返回最后记录的错误
     log.error("[ANTIGRAVITY STREAM] 所有重试均失败")
     if last_error_response:
-        await record_billing_once(False)
+        await record_billing_once(False, response=last_error_response)
         await _alert_all_accounts_unavailable_if_needed(
             model_name, attempted_credentials
         )
         yield _upstream_403_to_503(last_error_response)
     else:
-        await record_billing_once(False)
+        await record_billing_once(False, status_code=502)
         yield Response(
             content=json.dumps({"error": "请求失败，所有重试均已耗尽"}),
-            status_code=429,
+            status_code=502,
             media_type="application/json"
         )
 
@@ -1705,6 +1642,7 @@ async def _non_stream_image_request_inner(
         credential_name: str,
         response_payload: Any = None,
         status_code: Optional[int] = None,
+        *, response=None,
     ) -> None:
         nonlocal billing_recorded
         if billing_recorded:
@@ -1713,18 +1651,15 @@ async def _non_stream_image_request_inner(
         try:
             recorder = await get_billing_recorder()
             await recorder.record(
-                request_id=last_request_id,
-                credential_name=credential_name,
-                model=requested_model,
+                **_billing_response_fields(response, status_code, last_request_id, credential_name,
+                                           requested_model, final_payload),
                 usage_metadata=extract_usage_metadata(response_payload),
                 success=success,
                 api_key_id=api_key_id,
                 task_type="image",
-                status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=extract_model_version(response_payload),
                 request_model=request_model or requested_model,
-                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(
@@ -1884,10 +1819,12 @@ async def _non_stream_image_request_inner(
             status_code=status_code,
             headers=get_decoded_response_headers(response.headers),
         )
+        _mark_upstream_429(last_response, error_text, request_id=last_request_id, credential_name=current_file,
+                           model=requested_model, upstream_request=final_payload)
         last_was_capacity = is_image_model_capacity_exhausted(
             status_code, error_text
         )
-        if last_was_capacity:
+        if last_was_capacity and status_code != 429:
             await _record_image_account_outcome(
                 current_file,
                 success=False,
@@ -1916,11 +1853,9 @@ async def _non_stream_image_request_inner(
                 error_text=error_text,
             )
             cooldown_until = classified_403.cooldown_until
-        retryable = status_code != 400 and (
-            status_code in (403, 404, 429, 500, 503) or status_code in disable_error_codes
+        retryable = status_code not in (400, 403, 429) and (
+            status_code in (404, 500, 503) or status_code in disable_error_codes
         )
-        if classified_403 is not None:
-            retryable = classified_403.should_retry
         will_retry = retry_enabled and retryable and account_attempt < max_account_attempts - 1
         await record_api_call_error(
             credential_manager,
@@ -1941,7 +1876,7 @@ async def _non_stream_image_request_inner(
     await record_billing_once(
         False,
         billing_credential,
-        status_code=last_response.status_code if last_response is not None else None,
+        response=last_response,
     )
     if last_response is not None:
         if last_was_slot_backpressure:
@@ -1950,7 +1885,7 @@ async def _non_stream_image_request_inner(
             await _alert_all_accounts_unavailable_if_needed(
                 requested_model, attempted_credentials
             )
-        return _upstream_403_to_503(last_response)
+        return last_response
 
     await _alert_all_accounts_unavailable_if_needed(
         requested_model, attempted_credentials or None
@@ -2059,11 +1994,10 @@ async def non_stream_request(
         # 文本号池暂时不可用返回429，不作为内部故障。
         log.error("[ANTIGRAVITY] 当前无可用凭证")
         await _alert_all_accounts_unavailable_if_needed(model_name)
-        return Response(
-            content=json.dumps({"error": "当前无可用凭证"}),
-            status_code=429,
-            media_type="application/json"
-        )
+        from src.call_monitor import record_gateway_rejection
+        response = _account_pool_429()
+        await record_gateway_rejection(response.rate_limit, api_key_id=api_key_id, model=model_name)
+        return response
 
     current_file, credential_data = cred_result
     access_token = credential_data.get("access_token") or credential_data.get("token")
@@ -2107,7 +2041,6 @@ async def non_stream_request(
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
-    last_error_quota_exhausted = False  # 最后一次错误是否为配额耗尽型 429
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
@@ -2119,6 +2052,7 @@ async def non_stream_request(
         success: bool,
         response_payload: Any = None,
         status_code: Optional[int] = None,
+        *, response=None,
     ):
         nonlocal billing_recorded, usage_metadata, upstream_model
         if billing_recorded:
@@ -2130,17 +2064,13 @@ async def non_stream_request(
         try:
             recorder = await get_billing_recorder()
             await recorder.record(
-                request_id=request_id,
-                credential_name=current_file,
-                model=model_name,
+                **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
                 usage_metadata=usage_metadata,
                 success=success,
                 api_key_id=api_key_id,
-                status_code=status_code,
                 gateway_seconds=time.monotonic() - gateway_started,
                 upstream_model=upstream_model,
                 request_model=original_model,
-                upstream_request=final_payload,
             )
         except Exception as exc:
             log.warning(f"[BILLING] failed to record non-stream request: {type(exc).__name__}")
@@ -2231,11 +2161,9 @@ async def non_stream_request(
                 if retry_config["retry_enabled"] and attempt < max_retries and await refresh_credential_fast():
                     attempt += 1
                     continue
-                await record_billing_once(False, status_code=429)
-                return (_upstream_403_to_503(last_error_response) if last_error_response is not None else Response(
-                    content=json.dumps({"error": "当前无可用凭证"}),
-                    status_code=429, media_type="application/json",
-                ))
+                response = _upstream_403_to_503(last_error_response) if last_error_response is not None else _account_pool_429()
+                await record_billing_once(False, response=response)
+                return response
             usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
@@ -2253,7 +2181,7 @@ async def non_stream_request(
                 timeout=300.0
             )
             upstream_elapsed = time.monotonic() - attempt_started
-            if usage_attempt:
+            if usage_attempt and response.status_code not in (403, 429):
                 await usage_attempt.confirm_response(response)
 
             status_code = response.status_code
@@ -2263,7 +2191,6 @@ async def non_stream_request(
                 # 检查是否为空回复
                 if not response.content or len(response.content) == 0:
                     log.warning(f"[ANTIGRAVITY] 收到200响应但内容为空，凭证: {current_file}")
-                    last_error_quota_exhausted = False
                     
                     # 记录错误
                     await record_api_call_error(
@@ -2322,10 +2249,11 @@ async def non_stream_request(
                     error_text = response.text
                 except Exception:
                     pass
+                _mark_upstream_429(last_error_response, error_text, request_id=request_id,
+                                   credential_name=current_file, model=model_name, upstream_request=final_payload)
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                     log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}")
-                    last_error_quota_exhausted = _is_quota_exhausted_429(status_code, error_text)
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
@@ -2350,7 +2278,7 @@ async def non_stream_request(
                     ns_final_failure = (
                         attempt >= max_retries
                         or not retry_config["retry_enabled"]
-                        or (classified_403 is not None and not classified_403.should_retry)
+                        or status_code in (403, 429)
                     )
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
@@ -2360,30 +2288,18 @@ async def non_stream_request(
                         gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None
                     )
 
-                    if classified_403 is not None:
-                        should_retry = (
-                            retry_config["retry_enabled"]
-                            and classified_403.should_retry
-                            and attempt < max_retries
-                        )
-                    elif status_code == 429:
-                        rate_limited_credentials.add(current_file)
-                        if await check_should_auto_ban(status_code):
+                    if status_code in (403, 429):
+                        if status_code == 429 and await check_should_auto_ban(status_code):
                             await handle_auto_ban(credential_manager, status_code, current_file, mode="antigravity")
-                        should_retry = retry_config["retry_enabled"] and attempt < max_retries
-                    else:
-                        # 429 退避：指数 + 抖动（retry_interval × 2^attempt × U(0.5,1.5)，封顶 30s）
-                        sleep_interval = (
-                            min(retry_interval * (2 ** attempt), 30.0)
-                            * random.uniform(0.5, 1.5)
-                            if status_code == 429
-                            else retry_interval
-                        )
-                        should_retry = await handle_error_with_retry(
-                            credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries, sleep_interval,
-                            mode="antigravity"
-                        )
+                        await record_billing_once(False, response=last_error_response)
+                        await _alert_all_accounts_unavailable_if_needed(model_name, attempted_credentials)
+                        return last_error_response
+
+                    should_retry = await handle_error_with_retry(
+                        credential_manager, status_code, current_file,
+                        retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                        mode="antigravity",
+                    )
 
                     if should_retry and next_cred_task is None and attempt < max_retries:
                         next_cred_task = asyncio.create_task(
@@ -2396,26 +2312,9 @@ async def non_stream_request(
                     if should_retry and attempt < max_retries:
                         need_retry = True
                     else:
-                        # 配额耗尽型 429：先沿降级链切换模型，链路全部耗尽才算整体 429
-                        if last_error_quota_exhausted:
-                            fallback = await _try_model_fallback(
-                                model_name=model_name,
-                                inner_request=inner_request,
-                                credential_data=credential_data,
-                                quota_exhausted=True,
-                                image_request=False,
-                                log_prefix="[ANTIGRAVITY]",
-                                credential_key=current_file,
-                            )
-                            if fallback is not None:
-                                model_name, final_payload, request_id, fallback_cred = fallback
-                                rate_limited_credentials.clear()
-                                await apply_cred_result(fallback_cred, rebuild_payload=False)
-                                attempt = 0
-                                continue
                         # 不重试，直接返回原始错误（上游 403 改写为 503）
                         log.error(f"[ANTIGRAVITY] 达到最大重试次数或不应重试，返回原始错误")
-                        await record_billing_once(False, status_code=status_code)
+                        await record_billing_once(False, response=last_error_response)
                         await _alert_all_accounts_unavailable_if_needed(
                             model_name, attempted_credentials
                         )
@@ -2453,24 +2352,10 @@ async def non_stream_request(
                     stop_when_unavailable=last_error_response is not None and last_error_response.status_code == 429,
                 )
                 if not switched:
-                    # 配额耗尽且号池无可用凭证时，按降级链切换模型后重试
-                    fallback = await _try_model_fallback(
-                        model_name=model_name,
-                        inner_request=inner_request,
-                        credential_data=credential_data,
-                        quota_exhausted=last_error_quota_exhausted,
-                        image_request=False,
-                        log_prefix="[ANTIGRAVITY]",
-                        credential_key=current_file,
-                    )
-                    if fallback is not None:
-                        model_name, final_payload, request_id, fallback_cred = fallback
-                        rate_limited_credentials.clear()
-                        await apply_cred_result(fallback_cred, rebuild_payload=False)
-                        attempt = 0
-                        continue
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
-                    await record_billing_once(False)
+                    await record_billing_once(False, response=last_error_response if (
+                        last_error_response is not None and last_error_response.status_code == 429
+                    ) else None)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
@@ -2499,9 +2384,13 @@ async def non_stream_request(
                 if await refresh_credential_fast():
                     attempt += 1
                     continue
-            await record_billing_once(False, status_code=429)
-            return _credential_slot_backpressure_response(exc)
+            response = _credential_slot_backpressure_response(exc)
+            await record_billing_once(False, response=response)
+            return response
         except Exception as e:
+            if last_error_response is not None and last_error_response.status_code in (403, 429):
+                await record_billing_once(False, response=last_error_response)
+                return last_error_response
             log.error(f"[ANTIGRAVITY] 非流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
@@ -2512,7 +2401,7 @@ async def non_stream_request(
                 # 所有重试都失败，返回最后一次的错误（如果有）或500错误
                 log.error(f"[ANTIGRAVITY] 所有重试均失败，最后异常: {e}")
                 if last_error_response:
-                    await record_billing_once(False)
+                    await record_billing_once(False, response=last_error_response)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
@@ -2533,7 +2422,7 @@ async def non_stream_request(
     # 所有重试都失败，返回最后一次的原始错误（如果有）或500错误
     log.error("[ANTIGRAVITY] 所有重试均失败")
     if last_error_response:
-        await record_billing_once(False)
+        await record_billing_once(False, response=last_error_response)
         await _alert_all_accounts_unavailable_if_needed(
             model_name, attempted_credentials
         )
@@ -2549,8 +2438,8 @@ async def non_stream_request(
 
 # ==================== 模型和配额查询 ====================
 
-# 轻量端点可降级的状态码：408/429/5xx 或连接异常时尝试下一个 host；非 429 的 4xx 不降级
-_HOST_FALLBACK_STATUSES = (408, 429)
+# 轻量端点可降级的状态码：408/5xx 或连接异常时尝试下一个 host；其他 4xx 不降级
+_HOST_FALLBACK_STATUSES = (408,)
 
 
 async def _post_with_host_fallback(
@@ -2563,7 +2452,7 @@ async def _post_with_host_fallback(
     """
     轻量端点三 host 降级 POST（sandbox → daily → prod，仅默认配置时启用）。
 
-    遇到 408/429/5xx 或连接异常时按顺序尝试下一个 host；非 429 的 4xx
+    遇到 408/5xx 或连接异常时按顺序尝试下一个 host；其他 4xx
     立即返回（不降级）。全部 host 连接异常时抛出最后一个异常；
     全部返回可降级状态码时返回最后一个响应，交给调用方按失败处理。
     """
@@ -2647,7 +2536,7 @@ async def _post_image_generate(
             raise
 
         elapsed = time.monotonic() - started
-        if usage_attempt:
+        if usage_attempt and response.status_code not in (403, 429):
             await usage_attempt.confirm_response(response)
         attempts.append(
             ImageUpstreamAttempt(
@@ -2657,7 +2546,7 @@ async def _post_image_generate(
             )
         )
         error_text = response.text if response.status_code != 200 else ""
-        if not is_image_model_capacity_exhausted(response.status_code, error_text):
+        if response.status_code == 429 or not is_image_model_capacity_exhausted(response.status_code, error_text):
             return ImageUpstreamResult(response, host, tuple(attempts))
         if capacity_attempt >= IMAGE_CAPACITY_MAX_RETRIES:
             return ImageUpstreamResult(response, host, tuple(attempts))
@@ -2977,11 +2866,6 @@ async def _fetch_quota_summary_groups(
 
 # 瞬时限流（429 但未携带配额重置时间）的默认短冷却秒数
 RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS = 60
-
-# 上游 429 可能携带的 GOOGLE_ONE_AI credit reason。这个 reason 本身不能证明
-# 账号会长期不可用；只有明确的 quotaResetTimeStamp/quotaResetDelay 才能延长冷却。
-CREDITS_EXHAUSTED_MARKER = "INSUFFICIENT_G1_CREDITS_BALANCE"
-
 
 async def _resolve_error_cooldown(
     status_code: int,

@@ -98,9 +98,8 @@ Thumbs.db
 *.log
 log.txt
 
-# Generated Banana image stress-test reports
-reports/banana-stress-*.html
-reports/banana-stress-*.json
+# Local reports
+/reports/
 
 # Temporary files
 *.tmp

@@ -334,6 +334,10 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.update_api_key_record(api_key_id, **updates)
 
+    async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
+        self._ensure_initialized()
+        return await self._backend.admit_api_key_request(api_key_id, now)
+
     async def revoke_api_key(self, api_key_id: str) -> bool:
         self._ensure_initialized()
         return await self._backend.revoke_api_key(api_key_id)

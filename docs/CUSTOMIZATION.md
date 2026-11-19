@@ -204,7 +204,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
-| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 配额耗尽型 429 的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
+| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 首次发送前无可用凭证时使用的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
 | `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按请求原子轮转，历史及分钟次数不参与选号 | `15` |
 | `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
@@ -229,9 +229,9 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 
 | 变量 | 作用 | 默认值 |
 | --- | --- | --- |
-| `RETRY_429_ENABLED` | 429 重试开关 | `true` |
-| `RETRY_429_MAX_RETRIES` | 429 最大重试次数 | `5` |
-| `RETRY_429_INTERVAL` | 429 重试间隔（秒） | `1` |
+| `RETRY_429_ENABLED` | 可恢复错误重试开关（Antigravity 上游 403 和 429 直接返回） | `true` |
+| `RETRY_429_MAX_RETRIES` | 可恢复错误最大重试次数 | `5` |
+| `RETRY_429_INTERVAL` | 可恢复错误重试间隔（秒） | `1` |
 | `AUTO_BAN` | 命中错误码自动封禁凭证；Antigravity 明确 TOS_VIOLATION 不受此开关影响，始终立即禁用 | `false` |
 | `AUTO_BAN_ERROR_CODES` | 触发封禁的状态码，逗号分隔 | `403` |
 | `ANTI_TRUNCATION_MAX_ATTEMPTS` | 流式抗截断最大续写尝试（`流式抗截断/` 前缀模型） | `3` |

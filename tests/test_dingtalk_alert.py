@@ -321,7 +321,7 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[0].status_code, 429)
         alert.assert_awaited_once()
 
-    async def test_all_attempted_accounts_return_non_200_sends_one_alert(self):
+    async def test_one_upstream_denial_does_not_alert_for_unattempted_accounts(self):
         from src.api import antigravity
 
         now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc).timestamp()
@@ -437,7 +437,8 @@ class AntigravityDingTalkAlertIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(response.status_code, 429)
-        alert.assert_awaited_once()
+        self.assertEqual(len(responses), 1)
+        alert.assert_not_awaited()
 
 
 if __name__ == "__main__":

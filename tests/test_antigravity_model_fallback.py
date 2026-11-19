@@ -119,8 +119,7 @@ async def _awaitable(value):
 
 
 @pytest.mark.asyncio
-async def test_non_stream_falls_back_to_next_model_on_quota_exhaustion(monkeypatch):
-    """首个模型配额耗尽且无可用凭证时，应降级到链上下一个模型重试。"""
+async def test_non_stream_returns_quota_exhaustion_without_model_fallback(monkeypatch):
     chain = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.6-flash-tiered"]
     _patch_common(monkeypatch, chain)
 
@@ -156,8 +155,8 @@ async def test_non_stream_falls_back_to_next_model_on_quota_exhaustion(monkeypat
     }
     resp = await non_stream_request(body)
 
-    assert resp.status_code == 200
-    assert sent_models == ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
+    assert resp.status_code == 429
+    assert sent_models == ["gemini-2.5-flash"]
 
 
 @pytest.mark.asyncio
@@ -228,8 +227,7 @@ async def test_non_stream_no_fallback_on_transient_429(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_stream_falls_back_when_retries_exhausted(monkeypatch):
-    """重试次数耗尽（max_retries=0）时，配额耗尽 429 也应先走降级链再报错。"""
+async def test_non_stream_returns_quota_exhaustion_with_zero_retry_budget(monkeypatch):
     chain = ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
     _patch_common(monkeypatch, chain, max_retries=0)
 
@@ -258,13 +256,12 @@ async def test_non_stream_falls_back_when_retries_exhausted(monkeypatch):
     }
     resp = await non_stream_request(body)
 
-    assert resp.status_code == 200
-    assert sent_models == ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
+    assert resp.status_code == 429
+    assert sent_models == ["gemini-2.5-flash"]
 
 
 @pytest.mark.asyncio
-async def test_stream_falls_back_when_retries_exhausted(monkeypatch):
-    """流式路径：重试耗尽时配额耗尽 429 先降级，链路耗尽才向客户端报错。"""
+async def test_stream_returns_quota_exhaustion_with_zero_retry_budget(monkeypatch):
     chain = ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
     _patch_common(monkeypatch, chain, max_retries=0)
 
@@ -294,13 +291,12 @@ async def test_stream_falls_back_when_retries_exhausted(monkeypatch):
     }
     chunks = [item async for item in agy.stream_request(body)]
 
-    assert sent_models == ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
-    assert chunks == ['data: {"candidates": []}\n\n']
+    assert sent_models == ["gemini-2.5-flash"]
+    assert len(chunks) == 1 and chunks[0].status_code == 429
 
 
 @pytest.mark.asyncio
-async def test_stream_returns_429_only_after_chain_exhausted(monkeypatch):
-    """链上所有模型都配额耗尽后，才把 429 返回给客户端。"""
+async def test_stream_returns_429_before_trying_chain(monkeypatch):
     chain = ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
     _patch_common(monkeypatch, chain, max_retries=0)
 
@@ -327,8 +323,7 @@ async def test_stream_returns_429_only_after_chain_exhausted(monkeypatch):
     }
     chunks = [item async for item in agy.stream_request(body)]
 
-    # 链上每个模型都试过一遍之后，才返回最后的 429
-    assert sent_models == ["gemini-2.5-flash", "gemini-3.1-flash-lite"]
+    assert sent_models == ["gemini-2.5-flash"]
     assert len(chunks) == 1 and chunks[0].status_code == 429
 
 
@@ -358,7 +353,7 @@ def _patch_text_transport(monkeypatch, respond):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_tail_429_tries_distinct_credentials_then_preserves_429(monkeypatch, streaming):
+async def test_tail_429_stops_after_first_credential(monkeypatch, streaming):
     """即使时钟越过CD，同一请求也不能绕回已试凭证。"""
     model = "gemini-2.5-flash"
     _patch_common(monkeypatch, [model], max_retries=5)
@@ -383,12 +378,11 @@ async def test_tail_429_tries_distinct_credentials_then_preserves_429(monkeypatc
     monkeypatch.setattr(agy.asyncio, "sleep", sleep)
     _patch_text_transport(monkeypatch, respond)
     response = await _run_text_request(streaming, model)
-    assert sent == [(model, "Bearer a.json"), (model, "Bearer b.json")]
+    assert sent == [(model, "Bearer a.json")]
     assert response.status_code == 429
     assert response.body == b'{"error":{"reason":"RATE_LIMIT_EXCEEDED"}}'
-    assert {"a.json", "b.json"} in selected
-    # 无可用账号时不等待（唯一退避发生在A→B之间）。
-    assert len(sleeps) <= 1
+    assert selected == [set()]
+    assert sleeps == []
 
 
 @pytest.mark.asyncio
@@ -433,7 +427,7 @@ async def test_rechecks_cooldown_after_slot_wait_before_sending(monkeypatch, str
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_fallback_does_not_reuse_credential_cooled_on_next_model(monkeypatch, streaming):
+async def test_quota_denial_stops_before_next_model_selection(monkeypatch, streaming):
     first, tail = "gemini-2.5-flash", "gemini-3.1-flash-lite"
     _patch_common(monkeypatch, [first, tail], max_retries=0)
     sent = []
@@ -453,8 +447,8 @@ async def test_fallback_does_not_reuse_credential_cooled_on_next_model(monkeypat
     monkeypatch.setattr(agy.credential_manager, "get_valid_credential", choose)
     _patch_text_transport(monkeypatch, respond)
     response = await _run_text_request(streaming, first)
-    assert response.status_code == 200
-    assert sent == [(first, "Bearer a.json"), (tail, "Bearer b.json")]
+    assert response.status_code == 429
+    assert sent == [(first, "Bearer a.json")]
 
 
 @pytest.mark.asyncio
@@ -481,7 +475,7 @@ async def test_tail_429_respects_retry_switch_and_budget(monkeypatch, streaming,
     _patch_text_transport(monkeypatch, respond)
     response = await _run_text_request(streaming, model)
     assert response.status_code == 429
-    assert sent == (["Bearer a.json", "Bearer b.json"] if retry_enabled else ["Bearer a.json"])
+    assert sent == ["Bearer a.json"]
 
 
 @pytest.mark.asyncio
@@ -683,8 +677,7 @@ async def test_text_entry_with_no_available_credential_returns_429(monkeypatch, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("stale_state", ["disabled", "cooldown"])
-async def test_stale_guard_maps_previous_validation_403_to_503(monkeypatch, streaming, stale_state):
-    """A待验证403后，预选B失效且预算耗尽，最终仍须将403映射为503。"""
+async def test_validation_403_ends_request_before_reselection(monkeypatch, streaming, stale_state):
     model = "gemini-2.5-flash"
     _patch_common(monkeypatch, [model], max_retries=1)
     selected, sent = [], []
@@ -719,9 +712,9 @@ async def test_stale_guard_maps_previous_validation_403_to_503(monkeypatch, stre
     monkeypatch.setattr(storage, "get_storage_adapter", lambda: _awaitable(SimpleNamespace(get_credential_state=state)))
     _patch_text_transport(monkeypatch, respond)
     response = await _run_text_request(streaming, model)
-    assert response.status_code == 503
+    assert response.status_code == 403
     assert response.body == error_body
-    assert selected == ["a.json", "b.json"]
+    assert selected == ["a.json"]
     assert sent == ["Bearer a.json"]
 
 

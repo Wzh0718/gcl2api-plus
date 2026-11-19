@@ -2110,7 +2110,7 @@
         }
     </style>
     <link rel="stylesheet" href="./front/control_panel.css?v=config-layout-20261119">
-    <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
+    <link rel="stylesheet" href="./front/call_monitor.css?v=rate-limit-source">
     <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
@@ -3133,7 +3133,7 @@
                                     <input type="checkbox" id="retry429Enabled" class="config-checkbox" />
                                     启用错误重试
                                 </label>
-                                <small class="config-note">遇到错误时自动重试</small>
+                                <small class="config-note">可恢复错误按配置重试；Antigravity 上游 403 和 429 直接返回</small>
                             </div>
 
                             <div class="form-group">
@@ -3232,7 +3232,7 @@
                                 <label for="antigravityModelFallbackChain">模型配额降级链:</label>
                                 <input type="text" id="antigravityModelFallbackChain" class="config-input"
                                     placeholder="留空关闭降级，如：gemini-3.8-flash,gemini-3.8-flash-tiered" />
-                                <small class="config-note">逗号分隔；模型配额耗尽且号池无可用凭证时，按顺序降级到下一个模型重试。默认留空 = 关闭降级 <span
+                                <small class="config-note">逗号分隔；首次发送前没有可用凭证时，依次检查后续模型。默认留空 = 关闭降级 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
 
@@ -3677,7 +3677,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-usage-dialog"></script>
+    <script src="./front/common.js?v=key-schedule"></script>
 
 </body>
 

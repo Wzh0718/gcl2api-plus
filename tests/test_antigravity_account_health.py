@@ -569,7 +569,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         # 上游 403 在最终出口处对客户端改写为 503（响应体保留）
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(response.body, b"Forbidden")
         generic_retry.assert_not_awaited()
         switch_retry.assert_not_awaited()
@@ -666,7 +666,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(chunks), 1)
         # 上游 403 在最终出口处对客户端改写为 503（响应体保留）
-        self.assertEqual(chunks[0].status_code, 503)
+        self.assertEqual(chunks[0].status_code, 403)
         generic_retry.assert_not_awaited()
         self.assertEqual(manager.health["last_403_category"], "unknown_403")
 
@@ -762,7 +762,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result.decision.category, "account_forbidden")
-        self.assertTrue(result.should_retry)
+        self.assertFalse(result.should_retry)
         self.assertEqual(
             manager.disabled,
             [("account.json", True, "antigravity")],
@@ -857,7 +857,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result.decision.category, "model_forbidden")
-        self.assertTrue(result.should_retry)
+        self.assertFalse(result.should_retry)
         self.assertGreaterEqual(
             result.cooldown_until,
             before + antigravity.MODEL_FORBIDDEN_COOLDOWN_SECONDS,
@@ -894,7 +894,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result.decision.category, "validation_required")
-        self.assertTrue(result.should_retry)
+        self.assertFalse(result.should_retry)
         self.assertIsNotNone(result.cooldown_until)
         self.assertGreaterEqual(
             result.cooldown_until, before + 600

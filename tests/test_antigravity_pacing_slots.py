@@ -272,6 +272,7 @@ async def test_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch):
         lambda: _awaitable({"retry_enabled": True, "max_retries": 1, "retry_interval": 0}),
     )
     monkeypatch.setattr(agy, "_text_credential_is_available", lambda *a: _awaitable(True))
+    monkeypatch.setattr(agy, "handle_error_with_retry", lambda *a, **k: _awaitable(True))
     credentials = iter((account_a, account_b))
 
     async def select_credential(**kwargs):
@@ -285,8 +286,8 @@ async def test_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch):
         upstream_bodies.append(copy.deepcopy(kwargs["body"]))
         if len(upstream_bodies) == 1:
             yield Response(
-                content=b'{"error":{"reason":"RATE_LIMIT_EXCEEDED"}}',
-                status_code=429,
+                content=b'{"error":{"reason":"UNAVAILABLE"}}',
+                status_code=503,
                 media_type="application/json",
             )
         else:
@@ -301,7 +302,7 @@ async def test_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch):
     assert second["requestId"] != first["requestId"]
     for key in ("cascade_id", "root_cascade_id", "request_id", "trajectory_id"):
         assert second["request"]["labels"][key] != first["request"]["labels"][key]
-    assert not any(isinstance(item, Response) and item.status_code == 429 for item in chunks)
+    assert not any(isinstance(item, Response) and item.status_code == 503 for item in chunks)
 
 
 @pytest.mark.asyncio
@@ -377,6 +378,7 @@ async def test_non_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch
         lambda: _awaitable({"retry_enabled": True, "max_retries": 1, "retry_interval": 0}),
     )
     monkeypatch.setattr(agy, "_text_credential_is_available", lambda *a: _awaitable(True))
+    monkeypatch.setattr(agy, "handle_error_with_retry", lambda *a, **k: _awaitable(True))
     credentials = iter((account_a, account_b))
 
     async def select_credential(**kwargs):
@@ -389,7 +391,7 @@ async def test_non_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch
     async def fake_post(**kwargs):
         upstream_bodies.append(copy.deepcopy(kwargs["json"]))
         if len(upstream_bodies) == 1:
-            return _FakeResponse(429, b'{"error":{"reason":"RATE_LIMIT_EXCEEDED"}}')
+            return _FakeResponse(503, b'{"error":{"reason":"UNAVAILABLE"}}')
         return _FakeResponse(200, b'{"candidates":[]}')
 
     monkeypatch.setattr(agy, "post_async", fake_post)

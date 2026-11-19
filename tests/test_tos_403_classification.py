@@ -90,5 +90,5 @@ async def test_tos_disables_account_even_when_auto_ban_is_disabled(monkeypatch):
 
     assert manager.disabled == [("tos.json", True, "antigravity")]
     assert manager.health["last_403_category"] == "account_forbidden"
-    assert result.should_retry is True
+    assert result.should_retry is False
     auto_ban.assert_not_awaited()

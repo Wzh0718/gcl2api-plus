@@ -2415,6 +2415,11 @@ async function loadApiKeyPolicyModels() {
         : '仅允许模型按网关执行模型判断，不匹配的请求会被拒绝；目录不代表账号可用额度。Key 融合设置优先于账号和全局。';
 }
 
+const apiKeyLimitFields = {
+    day_rpm: '白天每分钟上限', day_total: '白天时段总额度',
+    night_rpm: '晚上每分钟上限', night_total: '晚上时段总额度'
+};
+
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
     if (!list) return;
@@ -2459,6 +2464,18 @@ function renderApiKeys(items) {
                 <label>绑定账号<select data-field="claude_credential_name"${AppState.apiKeyAccounts === null ? ' disabled' : ''}>${apiKeyAccountOptions(item.claude_credential_name || '')}</select><small>Gemini / Claude 共用此账号；不可用时不自动换号。</small></label>
                 <label>提示词融合<select data-field="prompt_fusion_mode">${apiKeyFusionOptions(item.prompt_fusion_mode || 'inherit')}</select></label>
                 <label>仅允许模型<select data-field="allowed_model"${AppState.apiKeyPolicyModels === null ? ' disabled' : ''}>${apiKeyPolicyModelOptions(item.allowed_model || '')}</select><small>按执行模型限制，不自动降级到其他模型。</small></label>
+            </div>
+            <label><input type="checkbox" role="switch" data-field="limit_enabled"
+                onchange="this.closest('article').querySelector('[data-limit-fields]').hidden = !this.checked"
+                ${item.limit_enabled ? 'checked' : ''}> 启用分时限流</label>
+            <div data-limit-fields ${item.limit_enabled ? '' : 'hidden'}>
+                <small>${escapeHtml(item.limit_schedule || '')} · 按请求次数计，留空为不限</small>
+                <div class="api-key-editor">
+                    ${Object.entries(apiKeyLimitFields).map(([field, label]) =>
+                        `<label>${label}<input data-field="${field}" type="number" min="1" step="1"
+                            max="9007199254740991" placeholder="不限" value="${escapeHtml(String(item[field] ?? ''))}"></label>`
+                    ).join('')}
+                </div>
             </div>
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
@@ -2662,7 +2679,16 @@ async function saveApiKey(apiKeyId) {
     if (!card) return;
     const quotaValue = card.querySelector('[data-field="quota_amount"]')?.value.trim() || '';
     try {
+        const limits = {limit_enabled: card.querySelector('[data-field="limit_enabled"]').checked};
+        if (limits.limit_enabled) {
+            for (const field of Object.keys(apiKeyLimitFields)) {
+                const input = card.querySelector(`[data-field="${field}"]`);
+                if (!input.reportValidity()) return;
+                limits[field] = input.value === '' ? null : input.valueAsNumber;
+            }
+        }
         await patchApiKey(apiKeyId, {
+            ...limits,
             name: card.querySelector('[data-field="name"]')?.value.trim(),
             quota_amount: quotaValue === '' ? null : quotaValue,
             reset_mode: card.querySelector('[data-field="reset_mode"]')?.value,
@@ -3395,10 +3421,34 @@ function _cmStatusBadge(success) {
         : '<span class="cm-badge cm-badge-fail">失败</span>';
 }
 
-function _cmStatusCodeChip(code) {
+function _cmRateLimitText(attribution) {
+    const source = { gateway: '网关', upstream: '上游' }[attribution?.source];
+    if (!source) return { label: '来源未知', detail: '此记录缺少可确认的 429 来源' };
+    const reasons = {
+        account_usage_limit: '账号用量', capacity_busy: '账号并发', warmup_capacity: '养号限流',
+        usage_store_unavailable: '用量检查不可用', account_pool_unavailable: '号池不可用', api_key_quota: '密钥额度', api_key_rate_limit: '密钥分时限流',
+        quota_exhausted: '配额耗尽', credits_exhausted: 'Credit 余额不足', model_capacity: '模型容量',
+    };
+    const rules = {
+        requests_per_minute: '每分钟请求次数', requests_per_hour: '每小时请求次数',
+        generated_tokens_per_minute: '每分钟生成 Token', generated_tokens_per_hour: '每小时生成 Token',
+    };
+    const label = attribution.source === 'gateway' && attribution.reason === 'account_usage_limit'
+        ? '系统主动拦截 · 账号用量达限'
+        : `${source} · ${reasons[attribution.reason] || '限流'}`;
+    const matched = Array.isArray(attribution.rules)
+        ? attribution.rules.map(rule => rules[rule]).filter(Boolean)
+        : [];
+    return { label, detail: matched.length ? `${label} · ${matched.join('、')}达限` : label };
+}
+
+function _cmStatusCodeChip(code, rateLimit) {
     if (code === null || code === undefined) return '<span class="cm-code cm-code-muted">-</span>';
     const cls = code < 300 ? 'cm-code-ok' : code < 500 ? 'cm-code-warn' : 'cm-code-fail';
-    return `<span class="cm-code ${cls}">${code}</span>`;
+    const chip = `<span class="cm-code ${cls}">${_cmEscape(code)}</span>`;
+    if (Number(code) !== 429 || rateLimit === undefined) return chip;
+    const { label, detail } = _cmRateLimitText(rateLimit);
+    return `${chip}<span class="cm-rate-limit-source" title="${_cmEscape(detail)}">${_cmEscape(label)}</span>`;
 }
 
 function _cmRateCell(rate) {
@@ -3795,7 +3845,7 @@ function _cmRenderGrouped(rows, view) {
 
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
-    const available = features.capture_id || features.client || features.upstream;
+    const available = features.capture_id || features.client || features.upstream || features.rate_limit;
     if (!available) return '<span class="cm-muted">未采集</span>';
     return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">查看详情</button>`;
 }
@@ -3812,6 +3862,7 @@ async function showCallMonitorContent(index) {
     dialog.setAttribute('aria-labelledby', 'cmRequestContentTitle');
     dialog.innerHTML = `<div class="proxy-dialog-head"><h3 id="cmRequestContentTitle">请求详情</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
         <p data-request class="telemetry-account"></p>
+        <p data-rate-limit class="telemetry-account" hidden></p>
         <div data-content aria-live="polite"><p>正在加载请求详情…</p></div>
         <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">关闭</button></div>`;
     const content = dialog.querySelector('[data-content]');
@@ -3820,6 +3871,11 @@ async function showCallMonitorContent(index) {
     dialog.addEventListener('close', () => { controller.abort(); dialog.remove(); }, { once: true });
     document.body.append(dialog);
     dialog.showModal();
+    if (Number(record?.status_code) === 429) {
+        const note = dialog.querySelector('[data-rate-limit]');
+        note.textContent = `HTTP 429 · ${_cmRateLimitText(record.request_features?.rate_limit).detail}`;
+        note.hidden = false;
+    }
     if (callMonitorState.mask) {
         content.textContent = '当前已开启脱敏。请先关闭列表上方的“脱敏”，再查看请求原文。';
         return;
@@ -4034,7 +4090,7 @@ function _cmRenderRealtime(records) {
             ${_cmModelCell(row)}
             <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
-            <td>${_cmStatusCodeChip(row.status_code)}</td>
+            <td>${_cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
             <td>${statusCell}</td>
             <td>${_cmLatencyCell(row)}</td>
             <td>${_cmFormatTime(row.created_at)}</td>

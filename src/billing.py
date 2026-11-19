@@ -18,6 +18,7 @@ from typing import Any, Dict, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from log import log
+from src.rate_limits import RateLimit
 from src.redis_config import create_redis_client_from_env
 
 
@@ -502,6 +503,7 @@ class BillingRecorder:
                     channel: str = "antigravity",
                     task_type: Optional[str] = None,
                     status_code: Optional[int] = None,
+                    rate_limit: RateLimit | None = None,
                     gateway_seconds: Optional[float] = None,
                     upstream_model: Optional[str] = None,
                     request_model: Optional[str] = None,
@@ -564,6 +566,7 @@ class BillingRecorder:
                     task_type=task_type or ("image" if "image" in (model or "").lower() else "chat"),
                     success=success,
                     status_code=status_code,
+                    rate_limit=rate_limit,
                     gateway_seconds=gateway_seconds,
                     input_tokens=metrics.input_tokens,
                     output_tokens=metrics.output_tokens,

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from log import log
+from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
 import inspect
 from src.operational_audit import make_event, reference
 from src.credential_revision import credential_snapshot, next_credential_revision, checked_state_updates
@@ -175,6 +176,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     await self._migrate_api_key_secret_ciphertext(db)
                     await self._migrate_api_key_claude_credential(db)
                     await self._migrate_api_key_prompt_policy(db)
+                    await self._migrate_api_key_limits(db)
 
                     # billing_daily 的联合主键需要包含调用方密钥。旧表不能通过
                     # ALTER COLUMN 修改主键，因此使用一次性事务迁移并回填环境密钥。
@@ -775,6 +777,23 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             await db.execute("ALTER TABLE api_keys ADD COLUMN prompt_fusion_mode TEXT NOT NULL DEFAULT 'inherit'")
         if "allowed_model" not in columns:
             await db.execute("ALTER TABLE api_keys ADD COLUMN allowed_model TEXT NOT NULL DEFAULT ''")
+
+    async def _migrate_api_key_limits(self, db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA table_info(api_keys)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        definitions = {
+            "limit_enabled": "INTEGER NOT NULL DEFAULT 0",
+            **dict.fromkeys(LIMIT_FIELDS, "INTEGER"),
+            "limit_period_start": "REAL",
+            "limit_period_used": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for field, definition in definitions.items():
+            if field not in columns:
+                await db.execute(f"ALTER TABLE api_keys ADD COLUMN {field} {definition}")
+        await db.execute("""CREATE TABLE IF NOT EXISTS api_key_recent_requests (
+            key_id TEXT NOT NULL, admitted_at REAL NOT NULL)""")
+        await db.execute("""CREATE INDEX IF NOT EXISTS idx_key_recent_requests
+            ON api_key_recent_requests(key_id, admitted_at)""")
 
     async def _migrate_call_records_upstream_model(
         self, db: aiosqlite.Connection
@@ -2383,7 +2402,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         "quota_amount", "quota_used", "quota_tokens_used", "currency", "reset_mode",
         "quota_period_start", "expires_at", "last_used_at", "last_reset_at",
         "revoked_at", "created_at", "updated_at", "claude_credential_name",
-        "prompt_fusion_mode", "allowed_model",
+        "prompt_fusion_mode", "allowed_model", "limit_enabled", *LIMIT_FIELDS,
     )
 
     @classmethod
@@ -2498,7 +2517,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         allowed = {
             "name", "status", "quota_amount", "currency", "reset_mode",
-            "quota_period_start", "expires_at", "claude_credential_name", "prompt_fusion_mode", "allowed_model",
+            "quota_period_start", "expires_at", "claude_credential_name", "prompt_fusion_mode", "allowed_model", "limit_enabled", *LIMIT_FIELDS,
         }
         unknown = set(updates) - allowed
         if unknown:
@@ -2531,6 +2550,36 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if record is None:
             raise KeyError(api_key_id)
         return record
+
+    async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
+        """Serialize admissions across workers sharing the credentials database."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            timestamp = time.time() if now is None else now
+            period, start = ApiKeySchedule().period(timestamp)
+            async with db.execute(
+                f"""SELECT limit_enabled, {period}_rpm, {period}_total,
+                           limit_period_start, limit_period_used FROM api_keys WHERE id = ?""",
+                (api_key_id,),
+            ) as cursor:
+                enabled, rpm, total, previous_start, used = await cursor.fetchone()
+            if not enabled:
+                return None
+            used = used if previous_start == start else 0
+            if total is not None and used >= total:
+                return "时段总额度已耗尽"
+            await db.execute("DELETE FROM api_key_recent_requests WHERE key_id = ? AND admitted_at <= ?",
+                             (api_key_id, timestamp - 60))
+            if rpm is not None:
+                async with db.execute("SELECT COUNT(*) FROM api_key_recent_requests WHERE key_id = ?",
+                                      (api_key_id,)) as cursor:
+                    if (await cursor.fetchone())[0] >= rpm:
+                        return "已达每分钟请求上限"
+            await db.execute("INSERT INTO api_key_recent_requests VALUES (?, ?)", (api_key_id, timestamp))
+            await db.execute("UPDATE api_keys SET limit_period_start = ?, limit_period_used = ? WHERE id = ?",
+                             (start, used + 1, api_key_id))
+            await db.commit()
+            return None
 
     async def revoke_api_key(self, api_key_id: str) -> bool:
         self._ensure_initialized()

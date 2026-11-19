@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -28,7 +28,15 @@ class ApiKeyCreateRequest(BaseModel):
     expires_at: datetime | None = None
 
 
+RequestLimit = Annotated[int, Field(strict=True, gt=0, le=2**53 - 1)]
+
+
 class ApiKeyUpdateRequest(BaseModel):
+    limit_enabled: bool = Field(default=False, strict=True)
+    day_rpm: RequestLimit | None = None
+    day_total: RequestLimit | None = None
+    night_rpm: RequestLimit | None = None
+    night_total: RequestLimit | None = None
     prompt_fusion_mode: Literal["inherit", "on", "off"] = "inherit"
     allowed_model: str = Field(default="", max_length=200)
     claude_credential_name: str | None = Field(default=None, max_length=255)

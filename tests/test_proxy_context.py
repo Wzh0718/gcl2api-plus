@@ -40,7 +40,7 @@ async def test_antigravity_retry_switches_token_project_proxy_and_billing_accoun
 
     calls = []
     responses = [
-        httpx.Response(429, content=b'{"error":"retry"}'),
+        httpx.Response(503, content=b'{"error":"unavailable"}'),
         httpx.Response(200, json={"response": {"usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 3}, "modelVersion": "gemini-3.8-flash-n"}}),
     ]
 
