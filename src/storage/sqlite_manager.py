@@ -3416,6 +3416,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if group_by not in ("api_key_id", "credential_name"):
             raise ValueError(f"不支持的聚合维度: {group_by}")
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        if group_by == "credential_name":
+            where += " AND credential_name <> ''"
         async with aiosqlite.connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT {group_by} AS group_key, model_name,
@@ -3629,8 +3631,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             async with db.execute(
                 f"""SELECT COUNT(*),
                         SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
-                        COUNT(DISTINCT credential_name),
-                        COUNT(DISTINCT api_key_id)
+                        COUNT(DISTINCT NULLIF(credential_name, '')),
+                        COUNT(DISTINCT api_key_id),
+                        COUNT(NULLIF(credential_name, '')),
+                        COUNT(CASE WHEN success = 0 AND credential_name <> '' THEN 1 END)
                    FROM call_records WHERE {where}""",
                 tuple(params),
             ) as cursor:
@@ -3640,6 +3644,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "failed": int(row[1] or 0),
             "accounts": int(row[2] or 0),
             "keys": int(row[3] or 0),
+            "account_logs": int(row[4] or 0),
+            "account_failed": int(row[5] or 0),
         }
 
     async def get_call_records_min_ts(self) -> Optional[float]:

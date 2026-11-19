@@ -267,6 +267,60 @@ async def test_overview_key_view_nests_key_and_account(tmp_path, monkeypatch):
     await adapter.close()
 
 
+async def test_key_rate_limit_counts_as_key_failure_but_not_account_failure(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.call_monitor import get_call_monitor, record_gateway_rejection
+    from src.panel import call_monitor as panel
+    from src.rate_limits import RateLimit
+
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(return_value=adapter))
+    monkeypatch.setattr("src.dingtalk_alert.send_status_frequency_alert", AsyncMock())
+
+    try:
+        monitor = await get_call_monitor(adapter)
+        await monitor.record(**_record_kwargs("success"))
+        await monitor.record(
+            **_record_kwargs("upstream-429", success=False),
+            rate_limit=RateLimit("upstream", "rate_limited"),
+        )
+        await record_gateway_rejection(
+            RateLimit("gateway", "api_key_rate_limit"), api_key_id="key-1", storage=adapter,
+        )
+
+        async def check_views(*, degraded):
+            account = await panel.call_monitor_overview(view="account", range="all", _token=None)
+            assert account["degraded"] is degraded
+            assert account["counters"]["accounts"] == 1
+            assert account["counters"]["logs"] == 2
+            assert account["counters"]["failed"] == 1
+            assert account["counters"]["realtime"] == 3
+            assert len(account["rows"]) == 1
+            row = account["rows"][0]
+            assert (row["group_key"], row["total"], row["failed_count"]) == ("acc-a.json", 2, 1)
+            assert row["last_status_code"] == 429
+            failed_accounts = await panel.call_monitor_overview(
+                view="account", range="all", failed_only=True, _token=None,
+            )
+            assert [row["group_key"] for row in failed_accounts["rows"]] == ["acc-a.json"]
+
+            key = await panel.call_monitor_overview(view="key", range="all", _token=None)
+            assert key["counters"]["failed"] == 2
+            assert sum(row["failed_count"] for row in key["rows"]) == 2
+
+        await check_views(degraded=False)
+        realtime = await panel.call_monitor_realtime(range="all", failed_only=True, _token=None)
+        assert realtime["total"] == 2
+        assert realtime["records"][0]["request_features"]["rate_limit"] == {
+            "source": "gateway", "reason": "api_key_rate_limit",
+        }
+        monkeypatch.setattr(adapter._backend, "count_call_records", None)
+        await check_views(degraded=True)
+    finally:
+        await adapter.close()
+
+
 def test_aggregate_from_buffer_key_account_dims():
     from src.panel.call_monitor import _aggregate_from_buffer
 
@@ -346,7 +400,10 @@ async def test_count_min_ts_and_delete_before(tmp_path, monkeypatch):
     )
 
     counters = await backend.count_call_records(since_ts=0)
-    assert counters == {"logs": 2, "failed": 1, "accounts": 2, "keys": 1}
+    assert counters == {
+        "logs": 2, "failed": 1, "accounts": 2, "keys": 1,
+        "account_logs": 2, "account_failed": 1,
+    }
     assert (await backend.get_call_records_min_ts()) == pytest.approx(now - 10 * 86400, abs=1)
 
     deleted = await backend.delete_call_records_before(now - 86400)
