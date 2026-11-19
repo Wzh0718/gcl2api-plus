@@ -35,22 +35,41 @@ _VERBATIM = re.compile(
     r'|(?a:\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b)'
 )
 _OUTPUT_TITLE = (
-    r'(?:(?:output|response|return)(?:[ \t]+(?:format|contract|schema|structure|template|requirements|rules|fields))?'
-    r'|(?:输出|返回|响应|回复)(?:格式|约定|结构|模板|要求|规则|字段)?)'
+    r'(?:(?:output|response|return)(?:[ \t]+(?:format|contract|schema|structure|template|requirements|rules|fields|examples?))?'
+    r'|json[ \t]+(?:schema|output)'
+    r'|structured[ \t]+(?:output|response)(?:[ \t]+(?:compatibility|format|schema))?'
+    r'|(?:输出|返回|响应|回复)(?:格式|约定|结构|模板|要求|规则|字段|示例|样例|[ \t]*schema)?'
+    r'|结构化(?:输出|返回|响应)(?:格式|约定|结构|模板)?)'
 )
 _OUTPUT_HEADING = re.compile(_OUTPUT_TITLE, re.IGNORECASE)
 _FORMAT_NAME = r'(?:JSONL?|NDJSON|YAML|XML|CSV|TSV|TOML)'
+_OUTPUT_COMMAND = (
+    r'\b(?:(?:return|respond|reply|output|emit|produce|generate)[ \t]++'
+    r'(?:[^.!?;\r\n]{0,120}?\b(?:as|in|with)[ \t]++)?|(?:the|your)[ \t]+(?:final[ \t]+)?'
+    r'(?:response|output|result)[ \t]+(?:must|should)[ \t]+be[ \t]+)'
+    r'(?:(?:only|exactly)[ \t]+)?(?:(?:a|an|the)[ \t]+)?'
+    rf'(?:(?:valid|strict|pure|raw|parseable)[ \t]+)?[`"\']?{_FORMAT_NAME}(?![A-Za-z0-9_])'
+    r'|(?:输出|返回|回复|以)[ \t]*(?:仅|只)?[ \t]*(?:一个|一份|一条)?[ \t]*'
+    rf'(?:有效的?|纯|严格的?|可解析的?)?[ \t]*[`"\']?{_FORMAT_NAME}(?![A-Za-z0-9_])'
+    rf'|(?:结果|输出|返回值|响应|回复)[ \t]*(?:必须|应当|应)[ \t]*(?:为|是|采用)[ \t]*'
+    rf'(?:有效的?|纯|严格的?|可解析的?)?[ \t]*[`"\']?{_FORMAT_NAME}(?![A-Za-z0-9_])'
+)
+_OUTPUT_FORMAT_COMMAND = re.compile(_OUTPUT_COMMAND, re.IGNORECASE)
 _OUTPUT_DECLARATION = re.compile(
     r'^[ \t]*+(?:(?:[-*]|\d++[.)])[ \t]++)?(?:'
     rf'(?:\*\*)?{_OUTPUT_TITLE}(?:\*\*)?[ \t]*(?:[:：]|(?=\r?$))'
     rf'|(?:\[{_OUTPUT_TITLE}\]|【{_OUTPUT_TITLE}】)[ \t]*(?:[:：]|(?=\r?$))'
-    r'|(?:(?:return|respond|reply|output|emit|produce|generate)[ \t]++'
-    r'(?:[^\r\n]*?\b(?:as|in|with)[ \t]++)?|(?:the|your)[ \t]+(?:final[ \t]+)?'
-    r'(?:response|output)[ \t]+must[ \t]+be[ \t]+)'
-    r'(?:only[ \t]+)?(?:an?[ \t]+)?'
-    rf'(?:(?:valid|strict|pure|raw)[ \t]+)?{_FORMAT_NAME}\b'
-    rf'|(?:请)?(?:输出|返回|回复|以)[ \t]*(?:有效的?|纯|严格的?)?[ \t]*{_FORMAT_NAME}(?![A-Za-z0-9_])'
+    rf'|{_OUTPUT_COMMAND}'
     r')', re.IGNORECASE | re.MULTILINE,
+)
+_SCHEMA_DECLARATION = re.compile(
+    r'(?im)^[ \t]*(?:`{3,}|~{3,})[ \t]*json[ _-]?schema(?=[ \t\r\n]|$)'
+    r'|<(?:response|output|json)[_-]schema\b|"\$schema"[ \t]*:'
+    r'|\b(?:response|output)[ \t]+schema\b'
+)
+_JSON_DELIMITER = re.compile(
+    r'(?a:\b)(?:(?:[A-Z0-9]+_){0,4}JSON_(?P<suffix>START|BEGIN|END|STOP)'
+    r'|(?P<prefix>START|BEGIN|END|STOP)_(?:[A-Z0-9]+_){0,4}JSON)(?a:\b)'
 )
 _TEMPLATE_SYNTAX = re.compile(
     r'\{\{[^{}\r\n]*\}\}|\{%[^{}\r\n]*%\}'
@@ -193,6 +212,17 @@ def _technical_spans(text, profile, literal_blocks):
         end = start + len(text[start:end].rstrip('.,;:!?)]}'))
         if end > start:
             yield start, end, False
+
+
+def declares_structured_output(text: str) -> bool:
+    """Recognize a caller-owned output contract without deriving one from an example."""
+    if (_OUTPUT_FORMAT_COMMAND.search(text) or _OUTPUT_DECLARATION.search(text)
+            or _SCHEMA_DECLARATION.search(text)):
+        return True
+    if any(_OUTPUT_HEADING.fullmatch(heading[2].strip(' \t*:：')) for heading in _HEADINGS.finditer(text)):
+        return True
+    markers = {match['prefix'] or match['suffix'] for match in _JSON_DELIMITER.finditer(text)}
+    return bool(markers & {'START', 'BEGIN'} and markers & {'END', 'STOP'})
 
 
 def _protected_spans(text, profile, declared, protect_technical):

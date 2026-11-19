@@ -9,7 +9,8 @@ def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
     monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False})
     for key in ('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED',
-                'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'SYSTEM_PROMPT_APPEND'):
+                'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'SYSTEM_PROMPT_APPEND',
+                'ANTIGRAVITY_WORKFLOW_CONTRACTS_FILE'):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv('SENSITIVE_WORD_REPLACE_ENABLED', 'false')
 
@@ -182,6 +183,10 @@ def test_preview_uses_same_encoder_and_validates_input():
         assert full['client_text'] == 'Vs3 r34d_f1l3 4t /h0m3/vs3r/c0nf1g.js0n.'
         assert full['text'] == '\n'.join(p['text'] for p in protected_system_parts(
             [{'text': text}], [], protect_technical=False))
+        structured = 'Analyze the record. Return only JSON. Use pending review for unresolved items.'
+        preview = client.post('/config/system-obfuscation/preview', json={'text': structured, 'mode': 'protected'})
+        assert preview.json()['client_text'] == structured
+        assert preview.json()['decoder'] == ''
         assert client.post('/config/system-obfuscation/preview', json={'text': 'x' * 20001, 'mode': 'protected'}).status_code == 422
         assert client.post('/config/system-obfuscation/preview', json={'text': text, 'mode': 'bad'}).status_code == 422
 
@@ -256,10 +261,8 @@ async def test_normalization_preserves_bare_output_delimiters_and_json_example(m
         'systemInstruction': {'parts': [{'text': source}]},
     }
     result = await normalize_gemini_request(request, mode='antigravity')
-    guidance = result['systemInstruction']['parts'][-1]['text']
-    assert 'Wr1t3 th3 r3svlt b3tw33n' in guidance
-    for literal in ('FINAL_JSON_START', 'FINAL_JSON_END', example):
-        assert f'<gcli_literal>{literal}</gcli_literal>' in guidance
+    assert result['systemInstruction'] == request['systemInstruction']
+    assert result.workflow_contract is None
 
 
 @pytest.mark.parametrize('mode', ['full', 'protected'])
@@ -321,15 +324,72 @@ def test_prose_only_decoder_does_not_introduce_literal_markup():
     '【输出格式】\n遇到未知项时使用 pending review。\n',
     'Return the result as a CSV record.\nUse pending review for unresolved items.\n',
     'The response must be a JSON object.\nUse pending review for unresolved items.\n',
+    'Analyze the record. Return only a valid JSON object. Use pending review for unresolved items.\n',
+    'Review the record. Return only the JSON result.\n',
+    '分析记录。最终结果必须为可解析的 JSON 对象。\n',
+    '请输出一个 JSON 对象。未知项应使用 pending review。\n',
+    '## Structured Output Compatibility\nFollow the schema for this response.\n',
+    'Use this response schema for each record. Return pending review for unresolved items.\n',
+    '### JSON Schema\n```json\n{"type":"array","items":{"enum":["pending review"]}}\n```\n',
 ])
-async def test_default_preserves_output_contract_without_schema(contract):
+async def test_default_passes_through_unbound_output_contract(contract):
     from src.converter.gemini_fix import normalize_gemini_request
 
     source = f'Compare the records.\n{contract}## Notes\nExplain the result.'
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': source}]}}
     result = await normalize_gemini_request(request, mode='antigravity')
-    guidance = result['systemInstruction']['parts'][-1]['text']
-    assert guidance == f'C0mp4r3 th3 r3c0rds.\n{contract}## N0t3s\n3xpl41n th3 r3svlt.'
+    assert result['systemInstruction'] == request['systemInstruction']
+    assert result.workflow_contract is None
+    assert not {'responseMimeType', 'responseSchema', 'responseJsonSchema'} & result.get('generationConfig', {}).keys()
+
+
+async def test_prompt_only_structured_output_survives_transport_with_fusion_enabled(monkeypatch):
+    from unittest.mock import AsyncMock
+    from src import prompt_fusion
+    from src.api.antigravity import wrap_cli_request
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    config._config_cache['prompt_fusion_enabled'] = True
+    fusion = AsyncMock(side_effect=AssertionError('Structured output instructions must stay intact'))
+    monkeypatch.setattr(prompt_fusion, 'fuse_request', fusion)
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': 'Use pending review for unresolved items.'}]},
+        'contents': [
+            {'role': 'user', 'parts': [{'text': 'Assess the record and return it as JSON.'}]},
+            {'role': 'model', 'parts': [{'functionCall': {'name': 'lookup', 'args': {}}}]},
+            {'role': 'user', 'parts': [{'functionResponse': {'name': 'lookup', 'response': {'status': 'pending'}}}]},
+        ],
+    }
+    prepared = await normalize_gemini_request(request, mode='antigravity', api_key_id='unbound')
+    payload, _ = await wrap_cli_request(
+        prepared.copy(), 'gemini-2.5-flash-lite', 'project',
+        credential_key='example.json', credential_data={'project_id': 'project'},
+    )
+    assert payload['request']['systemInstruction'] == request['systemInstruction']
+    contents = payload['request']['contents']
+    assert contents[0] == request['contents'][0]
+    assert contents[-1] == request['contents'][-1]
+    assert contents[1]['parts'][0]['functionCall'] == request['contents'][1]['parts'][0]['functionCall']
+    assert 'responseSchema' not in payload['request']['generationConfig']
+    fusion.assert_not_awaited()
+
+
+async def test_json_input_and_old_user_turn_do_not_switch_current_prompt_to_passthrough():
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': 'Return a summary of the JSON input.'}]},
+        'contents': [
+            {'role': 'user', 'parts': [{'text': 'Return JSON.'}]},
+            {'role': 'model', 'parts': [{'text': '{"unknowns":[]}'}]},
+            {'role': 'user', 'parts': [{'text': 'Explain the last record in words.'}]},
+        ],
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    assert 'R3tvrn 4 svmm4ry' in result['systemInstruction']['parts'][-1]['text']
+    assert result['contents'] == request['contents']
 
 
 async def test_default_preserves_system_text_in_json_mode_without_schema():

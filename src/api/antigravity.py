@@ -343,6 +343,7 @@ async def wrap_cli_request(
     from src.claude_routing import enforce_key_model
     enforce_key_model(model)
     if (not skip_prompt_fusion and not getattr(gemini_request, 'workflow_contract', None)
+            and not getattr(gemini_request, 'preserve_output_format', False)
             and credential_key and credential_data and not is_antigravity_image_request(model, gemini_request)):
         from src.prompt_fusion import fuse_request
         gemini_request = await fuse_request(gemini_request, model, credential_key, credential_data)
