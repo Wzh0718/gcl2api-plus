@@ -33,22 +33,46 @@
     color: var(--ui-muted, #5f6b7d);
 }
 
-.cred-account-usage select {
-    width: auto;
-    min-height: 26px;
+.cred-account-usage-mode {
     margin-inline-start: auto;
-    padding: 3px 4px;
-    border: 1px solid transparent !important;
-    border-radius: var(--ui-radius-sm, 8px);
-    background: transparent !important;
-    color: var(--ui-ink, #172033);
-    font: inherit;
-    cursor: pointer;
+    color: var(--ui-muted, #5f6b7d);
 }
 
-.cred-account-usage select:hover,
-.cred-account-usage select:focus-visible {
-    border-color: var(--ui-border, #dbe3ed) !important;
+.account-usage-dialog-account {
+    overflow-wrap: anywhere;
+}
+
+.account-usage-dialog-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.account-usage-dialog-fields input {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.account-usage-dialog-off {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    font-size: 13px;
+}
+
+#accountUsageDialog [data-error] {
+    color: var(--ui-danger, #a43b45);
+}
+
+@media (max-width: 380px) {
+    .account-usage-dialog-fields {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 .cred-account-usage .is-at-limit {

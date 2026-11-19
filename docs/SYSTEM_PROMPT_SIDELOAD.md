@@ -1,6 +1,6 @@
 # 客户端 System 侧载选项
 
-在桌面版或手机版控制面板的「客户端提示词」中配置，保存后生效。仅作用于 Antigravity 通道，默认关闭。
+在桌面版或手机版控制面板的「客户端提示词」中配置，保存后生效。仅作用于 Antigravity 通道。未配置混淆方案时默认使用智能保护。基础提示注入和 System 转 User 各自独立配置。
 
 ## 混淆方案（三选一）
 
@@ -8,19 +8,58 @@
 | --- | --- |
 | 关闭（off） | 不混淆 |
 | 全文 Leet（full） | 替换普通文本中的英文元音，附加明文解码说明并保留显式字面值和结构化输出约束 |
-| 智能保护 Leet（protected） | 在全文 Leet 的保护基础上，额外识别代码块、路径、客户端工具和环境章节 |
+| 智能保护 Leet（protected，默认） | 自动识别输出约定、结构化数据、代码、技术字面值及工具和环境章节 |
 
-旧配置 `antigravity_system_vowel_obfuscation_enabled=true` 自动对应全文 Leet，不会自动切换智能方案。新面板保存混淆方案时同时更新旧布尔键；旧客户端只提交布尔值时仍可开启全文或关闭混淆。
+已保存的 `off`、`full` 和 `protected` 继续生效。仅有旧布尔开关时，`true` 对应智能保护，`false` 对应关闭。控制面板同时保存新方案和旧布尔键。
 
 ### 字面值与解码说明
 
-两种模式都会在处理后的提示词前加上元音映射 `a/e/i/o/u → 4/3/1/0/v`，大写对应 `4/3/1/0/V`。同一个字符可能有多个来源，模型结合上下文理解普通说明，逐字使用保留的精确内容。
+两种模式在转换提示词后附加元音映射 `a/e/i/o/u → 4/3/1/0/v`，大写对应 `4/3/1/0/V`。同一个字符可能有多个来源，模型结合上下文理解普通说明，逐字使用保留的内容。
 
-- 两种模式都保留 `Return only…`、`Reply with exactly…` 等显式输出约束，以及行内代码、引号内容、JSON 对象和数组。
-- 两种模式都根据实际工具定义和输出 Schema 保留提示词中的名称、字段和字符串枚举值。精确数据片段用 `<gcli_literal>` 边界包裹，必要时添加后缀。输出约束语句以明文指令保留。
-- 智能保护额外保留 Markdown 代码块（包括未闭合的代码块）、路径、URL、文件名、命名惯例明确的标识符、命令长选项、环境变量和工具或环境章节。
+- 两种模式都保留 `Return only…`、`Reply with exactly…` 等显式输出约束，以及行内代码、引号内容、JSON 对象和数组。`FINAL_JSON_START`、`FINAL_JSON_END` 一类大写下划线分隔标记即使没有加引号也会原样保留。
+- 两种模式都根据实际工具定义和输出 Schema 保留提示词中的名称、字段和字符串枚举值。请求包含停止词时，同样保护提示词中出现的对应字面值。精确数据片段用 `<gcli_literal>` 边界包裹，必要时添加后缀。输出约束语句以明文指令保留。
+- 两种模式都支持在同一段系统提示词中用成对的 `<literal>...</literal>` 标记多行字面值或输出模板，保留块内的大小写、空白和换行。
 
-无标记的普通单词可能被当成自然语言处理。需要精确匹配的内容可用反引号或引号标记。JSON 识别最多尝试 128 个候选起点，每次最多使用 512 个从工具定义和输出 Schema 提取的精确词。
+### 未绑定流程时的自动保护
+
+请求带有 JSON MIME 类型或响应 Schema 时，网关透传已有响应配置。请求只在提示词里约定输出时，网关从系统提示词和最近一轮用户消息识别明显的输出约定，包括中英文输出格式或 Schema 声明、JSON 等格式指令，以及成对的 JSON 起止标记。识别到这类约定后，两种模式都跳过 Leet 与提示词融合，沿用调用方声明的格式。没有绑定的流程沿用原 Key 和请求，示例里的字段、类型和示例值无需另行申报。
+
+网关保留提示词里的 Schema 和示例，由模型按原约定输出。需要服务端强制验收字段类型或补回固定分隔符时，可使用下方的流程绑定。
+
+| 类别 | 智能保护的处理 |
+| --- | --- |
+| 结构与代码 | 保留有效 JSON、Markdown 代码块和工具或环境章节。未闭合的代码块保留至文本末尾。 |
+| 模板和技术字面值 | 保留常见模板变量、单行 XML 标签、路径、URL、文件名、命令长选项、环境变量、标识符和带常见单位的数值。 |
+| 无法安全识别的结构 | JSON 扫描达到上限时保留尚未检查的候选起点之后的文本。从请求提取的字面值超过 512 项或单项超过 256 字符时，两种模式都跳过 Leet 转换。 |
+
+缺少输出约定时，网关按以上规则保护技术字面值。未声明的普通单词仍可能被当作说明文字转换。
+
+### 服务端维护的固定流程
+
+将管理员维护的 JSON 文件挂载进容器，设置 `ANTIGRAVITY_WORKFLOW_CONTRACTS_FILE` 为容器内路径。更新该文件后重启服务以加载新版本。`bindings` 按面板中的专用托管 API Key ID 选择流程版本。同一个 Key 只绑定一个流程版本，通用环境密钥留给通用调用。用户沿用原有协议、提示词和专用密钥即可。
+
+```json
+{
+  "bindings": {"<托管 API Key ID>": "example-v1"},
+  "contracts": {
+    "example-v1": {
+      "response_schema": {
+        "type": "object",
+        "required": ["results"],
+        "properties": {"results": {"type": "array", "items": {"type": "string"}}}
+      },
+      "prose_paragraphs": ["Compare the input records."],
+      "legacy_markers": ["FINAL_JSON_START", "FINAL_JSON_END"]
+    }
+  }
+}
+```
+
+`response_schema` 是该流程用于请求和验收的 JSON Schema。`prose_paragraphs` 是可选的完整段落白名单。启用 Leet 时，只有精确匹配的段落会混淆，空白名单则透传全部业务指导。段落以空行分隔。`legacy_markers` 可省略，只有旧业务解析器需要起止行时才配置。
+
+网关将服务端 Schema 用于已绑定流程的上游请求，并校验完整的模型 JSON。校验通过后按需生成旧起止标记。格式、字段或类型错误返回 HTTP 502，错误码 `invalid_workflow_output`。已绑定流程的流式响应完成校验后再返回，缓冲上限沿用现有非流式收集配置。请求证据中的生产提示词和实际 Schema 应经授权获取，以上字段仅供演示配置格式。
+
+法规检索的 [regulation-search-v1](../src/prompts/workflow-contracts/regulation-search-v1.json) 按实际提示词约定维护 `embedding_query`、`rerank_query`、`policy_axes`。该流程启用 `legacy_markdown_prefix`，网关先校验结构化结果，再输出人工审阅 Markdown 和带起止标记的最终 JSON。仓库文件的绑定为空，管理员按部署环境填入该流程的专用 Key ID 后生效。
 
 ### 客户端识别
 
@@ -48,8 +87,8 @@ DSH、Pi 等规则当前基于显式身份/结构样例，不能声称兼容这�
 
 | 配置键 | 环境变量 | 默认值 |
 | --- | --- | --- |
-| `antigravity_system_obfuscation_mode` | `ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE` | `off` |
-| `antigravity_system_vowel_obfuscation_enabled`（旧键） | `ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED` | `false` |
+| `antigravity_system_obfuscation_mode` | `ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE` | `protected` |
+| `antigravity_system_vowel_obfuscation_enabled`（旧键） | `ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED` | 未设置时使用新方案默认值 |
 | `antigravity_system_as_user_enabled` | `ANTIGRAVITY_SYSTEM_AS_USER_ENABLED` | `false` |
 
-混淆方案读取顺序：新环境变量 → 旧环境变量 → 已保存的新方案 → 已保存的旧布尔值。环境变量控制时界面锁定对应设置。无效的新方案环境变量按关闭处理；面板 API 拒绝无效方案。
+配置按新环境变量、旧环境变量、已保存的新方案、已保存的旧布尔值和默认值的顺序读取。环境变量控制时界面锁定对应设置。无效的新方案环境变量按关闭处理，面板 API 拒绝无效方案。

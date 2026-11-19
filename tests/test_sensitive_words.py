@@ -243,6 +243,7 @@ def _patch_sensitive_word_config(monkeypatch, enabled, rules):
 
 async def test_normalize_applies_filter_in_antigravity_mode(monkeypatch):
     _patch_sensitive_word_config(monkeypatch, True, "Claude Code=>Antigravity")
+    monkeypatch.setenv("ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE", "off")
     request = {
         "model": "gemini-3.1-flash",
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

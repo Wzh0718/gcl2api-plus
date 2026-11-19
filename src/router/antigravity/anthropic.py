@@ -119,7 +119,7 @@ async def messages(
 
     # 规范化 Gemini 请求 (使用 antigravity 模式)
     from src.converter.gemini_fix import normalize_gemini_request
-    gemini_dict = await normalize_gemini_request(gemini_dict, mode="antigravity")
+    gemini_dict = await normalize_gemini_request(gemini_dict, mode="antigravity", api_key_id=principal.api_key_id)
 
     # 准备API请求格式 - 提取model并将其他字段放入request中
     api_request = {

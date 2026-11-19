@@ -92,6 +92,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("tier", "TEXT DEFAULT 'pro'"),
             ("enable_credit", "INTEGER DEFAULT 0"),
             ("usage_limit_disabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_limit_overrides", "TEXT NOT NULL DEFAULT '{}'"),
             ("proxy_mode", "TEXT DEFAULT 'inherit'"),
             ("proxy_url", "TEXT"),
             ("proxy_group_id", "INTEGER"),
@@ -326,6 +327,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 -- 是否启用信用额度模式（仅 antigravity，有效值 0/1）
                 enable_credit INTEGER DEFAULT 0,
                 usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
+                usage_limit_overrides TEXT NOT NULL DEFAULT '{}',
 
                 -- 账号级代理：inherit/custom/direct/group
                 proxy_mode TEXT NOT NULL DEFAULT 'inherit',

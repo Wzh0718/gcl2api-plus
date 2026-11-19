@@ -46,8 +46,15 @@ def validate_usage_settings(value):
     limits.update(value)
     if type(limits["enabled"]) is not bool:
         raise ValueError("账号用量限制开关必须是布尔值")
-    for name, _, _ in RULES:
-        if type(limits[name]) is not int or not 0 <= limits[name] <= 2**53 - 1:
+    validate_account_usage_limits({name: limits[name] for name in DEFAULT_USAGE_LIMITS})
+    return limits
+
+
+def validate_account_usage_limits(limits):
+    if not isinstance(limits, dict) or limits.keys() - DEFAULT_USAGE_LIMITS.keys():
+        raise ValueError("存在未知的账号用量限制字段")
+    for name, value in limits.items():
+        if type(value) is not int or not 0 <= value <= 2**53 - 1:
             raise ValueError(f"{name} 必须是非负安全整数")
     return limits
 
@@ -114,52 +121,68 @@ def _usage_totals(db, accounts: list[str], now: int):
     return totals
 
 
-def _accounts_exempted(db, accounts: list[str]) -> set[str]:
-    exempted = set()
+def _account_policies(db, accounts: list[str]) -> dict:
+    policies = {}
     for offset in range(0, len(accounts), 500):
         batch = accounts[offset:offset + 500]
         placeholders = ", ".join("?" for _ in batch)
         rows = db.execute(f"""
-            SELECT filename FROM antigravity_credentials
-            WHERE filename IN ({placeholders}) AND usage_limit_disabled = 1
+            SELECT filename, usage_limit_disabled, usage_limit_overrides
+            FROM antigravity_credentials WHERE filename IN ({placeholders})
         """, batch)
-        exempted.update(filename for (filename,) in rows)
-    return exempted
+        for filename, disabled, overrides in rows:
+            policies[filename] = bool(disabled), validate_account_usage_limits(json.loads(overrides))
+    return policies
 
 
-def _set_account_usage_mode(path: Path, account: str, *, exempt: bool) -> bool:
+def _should_track(global_limits, overrides):
+    return any(overrides.values()) or (
+        global_limits["enabled"] and any(global_limits[name] for name in DEFAULT_USAGE_LIMITS)
+    )
+
+
+def _effective_limits(global_limits, exempt, overrides):
+    return {
+        name: 0 if exempt else overrides.get(name, global_limits[name] if global_limits["enabled"] else 0)
+        for name in DEFAULT_USAGE_LIMITS
+    }
+
+
+def _set_account_usage_policy(path: Path, account: str, mode: str, limits: dict | None) -> bool:
+    overrides = None if mode == "off" else json.dumps(limits or {})
     with closing(sqlite3.connect(path, timeout=2)) as db, db:
         result = db.execute(
-            "UPDATE antigravity_credentials SET usage_limit_disabled = ? WHERE filename = ?",
-            (int(exempt), account),
+            """UPDATE antigravity_credentials
+               SET usage_limit_disabled = ?, usage_limit_overrides = COALESCE(?, usage_limit_overrides)
+               WHERE filename = ?""",
+            (int(mode == "off"), overrides, account),
         )
         return result.rowcount == 1
 
 
-async def set_account_usage_mode(account: str, *, exempt: bool) -> bool:
-    return await asyncio.to_thread(_set_account_usage_mode, _db_path(), account, exempt=exempt)
+async def set_account_usage_policy(account: str, *, mode: str, limits: dict | None) -> bool:
+    return await asyncio.to_thread(_set_account_usage_policy, _db_path(), account, mode, limits)
 
 
-def _read_usage_state(path: Path, accounts: list[str], now: int, *, tracking: bool):
+def _read_usage_state(path: Path, accounts: list[str], now: int, global_limits: dict):
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
         db.execute("BEGIN")
-        exempted = _accounts_exempted(db, accounts)
-        table_exists = tracking and db.execute(
+        policies = _account_policies(db, accounts)
+        tracked = [account for account in accounts if _should_track(global_limits, policies.get(account, (False, {}))[1])]
+        table_exists = tracked and db.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'account_usage'"
         ).fetchone()
-        return exempted, _usage_totals(db, accounts, now) if table_exists else {}
+        return policies, _usage_totals(db, tracked, now) if table_exists else {}
 
 
-async def get_account_usage_snapshots(accounts: list[str]) -> dict:
+async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bool = False) -> dict:
     if not accounts:
         return {}
     try:
-        limits = await get_usage_settings(for_admission=True)
-        configured = any(limits[name] for name, _, _ in RULES)
-        tracking = limits["enabled"] and configured
+        global_limits = await get_usage_settings(for_admission=True)
         now = int(time.time())
-        exempted, totals = await asyncio.to_thread(
-            _read_usage_state, _db_path(), accounts, now, tracking=tracking,
+        policies, totals = await asyncio.to_thread(
+            _read_usage_state, _db_path(), accounts, now, global_limits,
         )
     except (sqlite3.Error, OSError, ValueError) as exc:
         log.warning(f"[ACCOUNT USAGE] Snapshot unavailable: {type(exc).__name__}")
@@ -167,34 +190,48 @@ async def get_account_usage_snapshots(accounts: list[str]) -> dict:
 
     snapshots = {}
     for account in accounts:
-        exempt = account in exempted
-        mode = "off" if exempt else "inherit"
-        if not tracking:
-            state = "unconfigured" if limits["enabled"] else "disabled"
-            snapshots[account] = {"state": state, "mode": mode}
+        if policy_details and account not in policies:
             continue
+        exempt, overrides = policies.get(account, (False, {}))
+        mode = "off" if exempt else ("custom" if overrides else "inherit")
+        snapshot = snapshots[account] = {"mode": mode}
+        if policy_details:
+            snapshot.update(overrides=overrides, global_limits=global_limits)
+        if not _should_track(global_limits, overrides):
+            snapshot["state"] = "unconfigured" if global_limits["enabled"] or mode == "custom" else "disabled"
+            continue
+        limits = _effective_limits(global_limits, exempt, overrides)
         windows = []
         for seconds, period in WINDOWS.items():
             requests, tokens = totals.get(account, EMPTY_TOTALS)[seconds]
             windows.append({
                 "seconds": seconds,
-                "requests": {"used": requests, "limit": 0 if exempt else limits[f"requests_per_{period}"]},
-                "generated_tokens": {"used": tokens, "limit": 0 if exempt else limits[f"generated_tokens_per_{period}"]},
+                "requests": {"used": requests, "limit": limits[f"requests_per_{period}"]},
+                "generated_tokens": {"used": tokens, "limit": limits[f"generated_tokens_per_{period}"]},
             })
-        snapshots[account] = {
-            "state": "exempt" if exempt else "active", "mode": mode, "as_of": now, "windows": windows,
-        }
+        snapshot.update(state="exempt" if exempt else "active", as_of=now, windows=windows)
     return snapshots
 
 
-def _admit(path: Path, account: str, limits: dict) -> int:
-    _initialize(path)
+def _admit(path: Path, account: str, global_limits: dict) -> int | None:
+    global_tracking = _should_track(global_limits, {})
+    if not global_tracking and not path.is_file():
+        return None
     with closing(sqlite3.connect(path, timeout=2)) as db, db:
+        if not global_tracking:
+            _, overrides = _account_policies(db, [account]).get(account, (False, {}))
+            if not _should_track(global_limits, overrides):
+                return None
+        _initialize(path)
         db.execute("BEGIN IMMEDIATE")
+        exempt, overrides = _account_policies(db, [account]).get(account, (False, {}))
+        if not _should_track(global_limits, overrides):
+            return None
+        limits = _effective_limits(global_limits, exempt, overrides)
         now = int(time.time())
         hour = now - 3600
         blocked = []
-        if not _accounts_exempted(db, [account]):
+        if any(limits.values()):
             totals = _usage_totals(db, [account], now).get(account, EMPTY_TOTALS)
             blocked = [
                 (seconds, column, totals[seconds][column - 1] - limits[name] + 1)
@@ -271,22 +308,21 @@ async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
         return None
     try:
         limits = await get_usage_settings(for_admission=True)
-        if not limits["enabled"] or not any(limits[name] for name, _, _ in RULES):
-            return None
         path = _db_path()
         reservation = asyncio.create_task(asyncio.to_thread(_admit, path, account, limits))
         try:
-            await asyncio.shield(reservation)
+            bucket = await asyncio.shield(reservation)
         except asyncio.CancelledError:
             try:
                 bucket = await reservation
-                await asyncio.to_thread(_undo_admission, path, account, bucket)
+                if bucket is not None:
+                    await asyncio.to_thread(_undo_admission, path, account, bucket)
             except AccountUsageLimitReached:
                 pass
-            except (sqlite3.Error, OSError) as exc:
+            except (sqlite3.Error, OSError, ValueError) as exc:
                 log.error(f"[ACCOUNT USAGE] Failed to cancel admission: {type(exc).__name__}")
             raise
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:
         log.error(f"[ACCOUNT USAGE] Admission store unavailable: {type(exc).__name__}")
         raise AccountUsageLimitReached(1) from exc
-    return AccountUsageAttempt(path, account)
+    return AccountUsageAttempt(path, account) if bucket is not None else None
