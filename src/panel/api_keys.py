@@ -31,6 +31,15 @@ class ApiKeyCreateRequest(BaseModel):
 RequestLimit = Annotated[int, Field(strict=True, gt=0, le=2**53 - 1)]
 
 
+class ApiKeyBatchLimitsRequest(BaseModel):
+    key_ids: list[str] = Field(min_length=1, max_length=100)
+    limit_enabled: bool = Field(strict=True)
+    day_rpm: RequestLimit | None
+    day_total: RequestLimit | None
+    night_rpm: RequestLimit | None
+    night_total: RequestLimit | None
+
+
 class ApiKeyUpdateRequest(BaseModel):
     limit_enabled: bool = Field(default=False, strict=True)
     day_rpm: RequestLimit | None = None
@@ -155,6 +164,16 @@ async def create_api_key(
         status_code=201,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/batch-limits")
+async def set_batch_limits(payload: ApiKeyBatchLimitsRequest, _token: str = Depends(verify_panel_token)):
+    storage = await get_storage_adapter()
+    try:
+        count = await storage.set_api_key_batch_limits(payload.key_ids, payload.model_dump(exclude={"key_ids"}))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"updated": count}
 
 
 @router.patch("/{api_key_id}")

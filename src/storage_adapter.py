@@ -334,6 +334,10 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.update_api_key_record(api_key_id, **updates)
 
+    async def set_api_key_batch_limits(self, key_ids: list[str], limits: dict) -> int:
+        self._ensure_initialized()
+        return await self._backend.set_api_key_batch_limits(key_ids, limits)
+
     async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
         self._ensure_initialized()
         return await self._backend.admit_api_key_request(api_key_id, now)

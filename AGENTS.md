@@ -20,6 +20,10 @@
 - 可选环境变量见 `scripts/build-and-push.sh --help`；
 - GitHub 侧另有 `.github/workflows/ghcr-release.yml`：**仅手动触发**，与脚本等价，详见 `docs/CUSTOMIZATION.md`。
 
+## 更新生产
+
+更新生产环境时，默认不创建备份（包括数据库、数据表和配置文件），也不为镜像打回滚标签。只有用户明确要求时，才执行其指定的备份或打标签操作。
+
 ## 测试
 
 ```bash

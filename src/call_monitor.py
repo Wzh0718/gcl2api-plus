@@ -155,7 +155,8 @@ class CallMonitor:
                 await insert(**row, request_details=details)
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
-        if status_code is not None:
+        agy_upstream_limit = channel == "antigravity" and rate_limit is not None and rate_limit.source == "upstream"
+        if status_code is not None and (status_code != 429 or agy_upstream_limit):
             try:
                 from src.dingtalk_alert import send_status_frequency_alert
 

@@ -2416,9 +2416,66 @@ async function loadApiKeyPolicyModels() {
 }
 
 const apiKeyLimitFields = {
-    day_rpm: '白天每分钟上限', day_total: '白天时段总额度',
-    night_rpm: '晚上每分钟上限', night_total: '晚上时段总额度'
+    day_rpm: '白天每分钟（次/分钟）', day_total: '白天总量（次/时段）',
+    night_rpm: '夜间每分钟（次/分钟）', night_total: '夜间总量（次/时段）'
 };
+
+function apiKeyLimitEditor(item, title) {
+    return `<fieldset class="api-key-limits" data-limit-fields><legend>${title}</legend>
+        <label><input type="checkbox" data-field="limit_enabled" ${item.limit_enabled ? 'checked' : ''}> 启用限流</label>
+        <small>${escapeHtml(item.limit_schedule || '')} · 每把密钥按请求次数独立计数，留空表示该项不限。</small>
+        <div class="api-key-editor">${Object.entries(apiKeyLimitFields).map(([field, label]) =>
+            `<label>${label}<input data-field="${field}" type="number" min="1" step="1"
+                max="9007199254740991" placeholder="不限" value="${escapeHtml(String(item[field] ?? ''))}"></label>`
+        ).join('')}</div></fieldset>`;
+}
+
+function readApiKeyLimits(container) {
+    const limits = {limit_enabled: container.querySelector('[data-field="limit_enabled"]').checked};
+    for (const field of Object.keys(apiKeyLimitFields)) {
+        const input = container.querySelector(`[data-field="${field}"]`);
+        if (!input.reportValidity()) return null;
+        limits[field] = input.value === '' ? null : input.valueAsNumber;
+    }
+    return limits;
+}
+
+function updateApiKeySelection() {
+    const choices = Array.from(document.querySelectorAll('#apiKeyList [data-select-key]'));
+    const count = choices.filter(input => input.checked).length;
+    const batch = document.getElementById('apiKeyBatch');
+    batch.querySelector('[data-selected-count]').textContent = `已选 ${count} 把密钥`;
+    batch.querySelector('button').disabled = count === 0;
+    const all = batch.querySelector('[data-select-all]');
+    all.checked = choices.length > 0 && count === choices.length;
+    all.indeterminate = count > 0 && count < choices.length;
+}
+
+function selectAllApiKeys(checked) {
+    document.querySelectorAll('#apiKeyList [data-select-key]').forEach(input => { input.checked = checked; });
+    updateApiKeySelection();
+}
+
+async function saveBatchKeyLimits(button) {
+    const keyIds = Array.from(document.querySelectorAll('#apiKeyList [data-select-key]:checked'), input => input.value);
+    const batch = button.closest('fieldset[data-batch]');
+    const limits = readApiKeyLimits(batch);
+    if (!keyIds.length || !limits) return;
+    batch.disabled = true;
+    try {
+        const response = await fetch('./api-keys/batch-limits', {
+            method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({key_ids: keyIds, ...limits})
+        });
+        const result = await readJsonResponse(response, '批量保存失败');
+        showStatus(`已保存 ${result.updated} 把密钥的限流设置`, 'success');
+        await loadApiKeys({silent: true});
+    } catch (error) {
+        showStatus(`批量保存失败: ${error.message}`, 'error');
+    } finally {
+        batch.disabled = false;
+    }
+}
 
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
@@ -2427,7 +2484,13 @@ function renderApiKeys(items) {
         list.innerHTML = '<div class="api-key-empty">暂无密钥，创建后即可分发给 Antigravity 调用方。</div>';
         return;
     }
-    list.innerHTML = items.map(item => {
+    const editableKey = items.find(item => item.kind === 'managed' && item.status !== 'revoked');
+    const batch = editableKey ? `<fieldset id="apiKeyBatch" data-batch class="api-key-card"><legend>批量设置</legend>
+        <label><input type="checkbox" data-select-all onchange="selectAllApiKeys(this.checked)"> 全选列表中的可编辑密钥</label>
+        ${apiKeyLimitEditor({limit_enabled: true, limit_schedule: editableKey.limit_schedule}, '批量密钥级限流')}
+        <div class="api-key-actions"><button type="button" class="api-key-primary" disabled onclick="saveBatchKeyLimits(this)">保存到所选密钥</button>
+        <span data-selected-count aria-live="polite">已选 0 把密钥</span></div></fieldset>` : '';
+    list.innerHTML = batch + items.map(item => {
         const managed = item.kind === 'managed';
         const editable = managed && item.status !== 'revoked';
         const quotaAmount = item.quota_amount;
@@ -2440,7 +2503,7 @@ function renderApiKeys(items) {
             <div class="api-key-card-head">
                 <div>
                     <span class="api-key-kind">${managed ? 'MANAGED KEY' : 'LEGACY KEY'}</span>
-                    <h3>${escapeHtml(item.name)}</h3>
+                    <h3>${editable ? `<label><input type="checkbox" data-select-key value="${escapeHtml(item.id)}" onchange="updateApiKeySelection()"> ${escapeHtml(item.name)}</label>` : escapeHtml(item.name)}</h3>
                     <code>${escapeHtml(prefix)}</code>
                 </div>
                 <span class="api-key-status status-${escapeHtml(item.effective_status)}">${escapeHtml(apiKeyStatusLabel(item.effective_status))}</span>
@@ -2465,18 +2528,7 @@ function renderApiKeys(items) {
                 <label>提示词融合<select data-field="prompt_fusion_mode">${apiKeyFusionOptions(item.prompt_fusion_mode || 'inherit')}</select></label>
                 <label>仅允许模型<select data-field="allowed_model"${AppState.apiKeyPolicyModels === null ? ' disabled' : ''}>${apiKeyPolicyModelOptions(item.allowed_model || '')}</select><small>按执行模型限制，不自动降级到其他模型。</small></label>
             </div>
-            <label><input type="checkbox" role="switch" data-field="limit_enabled"
-                onchange="this.closest('article').querySelector('[data-limit-fields]').hidden = !this.checked"
-                ${item.limit_enabled ? 'checked' : ''}> 启用分时限流</label>
-            <div data-limit-fields ${item.limit_enabled ? '' : 'hidden'}>
-                <small>${escapeHtml(item.limit_schedule || '')} · 按请求次数计，留空为不限</small>
-                <div class="api-key-editor">
-                    ${Object.entries(apiKeyLimitFields).map(([field, label]) =>
-                        `<label>${label}<input data-field="${field}" type="number" min="1" step="1"
-                            max="9007199254740991" placeholder="不限" value="${escapeHtml(String(item[field] ?? ''))}"></label>`
-                    ).join('')}
-                </div>
-            </div>
+            ${apiKeyLimitEditor(item, '密钥级限流')}
             <div class="api-key-actions">
                 <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
                 <button type="button" class="api-key-primary" onclick="saveApiKey('${escapeHtml(item.id)}')">保存设置</button>
@@ -2679,14 +2731,8 @@ async function saveApiKey(apiKeyId) {
     if (!card) return;
     const quotaValue = card.querySelector('[data-field="quota_amount"]')?.value.trim() || '';
     try {
-        const limits = {limit_enabled: card.querySelector('[data-field="limit_enabled"]').checked};
-        if (limits.limit_enabled) {
-            for (const field of Object.keys(apiKeyLimitFields)) {
-                const input = card.querySelector(`[data-field="${field}"]`);
-                if (!input.reportValidity()) return;
-                limits[field] = input.value === '' ? null : input.valueAsNumber;
-            }
-        }
+        const limits = readApiKeyLimits(card);
+        if (!limits) return;
         await patchApiKey(apiKeyId, {
             ...limits,
             name: card.querySelector('[data-field="name"]')?.value.trim(),

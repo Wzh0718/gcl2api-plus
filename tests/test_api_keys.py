@@ -585,3 +585,39 @@ async def test_key_schedule_admission(tmp_path, monkeypatch):
     await service.update_key(key_id, limit_enabled=False)
     await admit(day + timedelta(days=1))
     await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_bulk_key_limits_preserve_separate_counters_and_are_atomic(tmp_path, monkeypatch):
+    from src.api_keys import ApiKeyAuthError, ApiKeyService
+    from src.panel.api_keys import ApiKeyBatchLimitsRequest, set_batch_limits
+    from src.storage_adapter import StorageAdapter
+    from fastapi import HTTPException
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    storage = StorageAdapter()
+    await storage.initialize()
+    monkeypatch.setattr("src.panel.api_keys.get_storage_adapter", AsyncMock(return_value=storage))
+    try:
+        service = ApiKeyService(storage)
+        first = await service.create_key(name="first")
+        second = await service.create_key(name="second")
+        ids = [first["item"]["id"], second["item"]["id"]]
+        payload = ApiKeyBatchLimitsRequest(key_ids=ids, limit_enabled=True, day_rpm=1,
+                                           night_rpm=1, day_total=10, night_total=10)
+        assert await set_batch_limits(payload, "test") == {"updated": 2}
+        now = datetime(2026, 11, 19, 12, tzinfo=SHANGHAI)
+        await service.authenticate(first["api_key"], now=now)
+        await set_batch_limits(payload, "test")
+        with pytest.raises(ApiKeyAuthError, match="每分钟"):
+            await service.authenticate(first["api_key"], now=now)
+        await service.authenticate(second["api_key"], now=now)
+
+        invalid = payload.model_copy(update={"key_ids": [ids[0], "missing"], "day_rpm": 5})
+        with pytest.raises(HTTPException) as error:
+            await set_batch_limits(invalid, "test")
+        assert error.value.status_code == 409
+        assert (await storage.get_api_key_record(ids[0]))["day_rpm"] == 1
+    finally:
+        await storage.close()

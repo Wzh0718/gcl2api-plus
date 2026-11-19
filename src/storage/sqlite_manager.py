@@ -2551,6 +2551,23 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             raise KeyError(api_key_id)
         return record
 
+    async def set_api_key_batch_limits(self, key_ids: list[str], limits: dict) -> int:
+        ids = list(dict.fromkeys(key_ids))
+        fields = ("limit_enabled", *LIMIT_FIELDS)
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        placeholders = ", ".join("?" for _ in ids)
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                f"UPDATE api_keys SET {assignments}, updated_at = unixepoch() "
+                f"WHERE id IN ({placeholders}) AND kind = 'managed' AND status <> 'revoked'",
+                [*(limits[field] for field in fields), *ids],
+            )
+            if cursor.rowcount != len(ids):
+                await db.rollback()
+                raise ValueError("所选密钥含只读、已吊销或不存在的密钥，请刷新后重新选择")
+            await db.commit()
+            return cursor.rowcount
+
     async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
         """Serialize admissions across workers sharing the credentials database."""
         async with aiosqlite.connect(self._db_path) as db:
