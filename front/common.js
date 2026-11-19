@@ -2416,14 +2416,14 @@ async function loadApiKeyPolicyModels() {
 }
 
 const apiKeyLimitFields = {
-    day_rpm: '白天每分钟（次/分钟）', day_total: '白天总量（次/时段）',
-    night_rpm: '夜间每分钟（次/分钟）', night_total: '夜间总量（次/时段）'
+    day_rpm: '工作日白天每分钟上限', day_total: '工作日白天时段总额度',
+    night_rpm: '其他时间每分钟上限', night_total: '其他时间时段总额度'
 };
 
 function apiKeyLimitEditor(item, title) {
     return `<fieldset class="api-key-limits" data-limit-fields><legend>${title}</legend>
         <label><input type="checkbox" data-field="limit_enabled" ${item.limit_enabled ? 'checked' : ''}> 启用限流</label>
-        <small>${escapeHtml(item.limit_schedule || '')} · 每把密钥按请求次数独立计数，留空表示该项不限。</small>
+        <small>${escapeHtml(item.limit_schedule || '')} · 每把密钥按请求次数独立计数，每个连续时段独立计算总额度，留空表示该项不限。</small>
         <div class="api-key-editor">${Object.entries(apiKeyLimitFields).map(([field, label]) =>
             `<label>${label}<input data-field="${field}" type="number" min="1" step="1"
                 max="9007199254740991" placeholder="不限" value="${escapeHtml(String(item[field] ?? ''))}"></label>`
