@@ -17,6 +17,7 @@ readonly LATEST_IMAGE="${IMAGE_NAME}:latest"
 readonly PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 # 构建引用，默认为当前分支 HEAD；也可指定任意 commit/分支/tag。
 readonly BUILD_REF="${BUILD_REF:-HEAD}"
+readonly PUBLISH_SHA_ONLY="${PUBLISH_SHA_ONLY:-0}"
 # GitHub Container Registry 包描述；与 Dockerfile 的 description 标签保持一致。
 # 多架构镜像还需写入 manifest index 注释，GHCR 包页面才会显示描述。
 readonly IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION:-gcli2api-plus —— GeminiCLI / Antigravity 反向代理增强镜像：Token 计费看板、账号额度总览、403 自动复检、模型降级链；多架构 amd64 + arm64。Custom multi-arch build of su-kaka/gcli2api.}"
@@ -44,6 +45,7 @@ usage() {
 
 可选环境变量:
   BUILD_REF           构建引用的 commit/分支/tag，默认 HEAD
+  PUBLISH_SHA_ONLY=1  仅推送固定提交标签，供单独验证
   IMAGE_NAME          GitHub Container Registry 镜像名，默认 ghcr.io/wzh0718/gcl2api-plus
   SOURCE_URL          镜像 source 标签指向的仓库，默认 https://github.com/Wzh0718/gcl2api-plus
   RELEASE_DATE        测试/补发日期，格式 YYYYMMDD
@@ -160,13 +162,21 @@ require_command docker
 
 BUILD_COMMIT="$(git -C "${REPO_ROOT}" rev-parse "${BUILD_REF}^{commit}")"
 BUILD_BRANCH="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
+SHA_IMAGE="${IMAGE_NAME}:sha-${BUILD_COMMIT}"
+TARGET_IMAGES=("${SHA_IMAGE}")
+if [[ "${PUBLISH_SHA_ONLY}" != "1" ]]; then
+    TARGET_IMAGES=("${DATE_IMAGE}" "${LATEST_IMAGE}" "${SHA_IMAGE}")
+fi
+TAG_ARGS=()
+for image in "${TARGET_IMAGES[@]}"; do
+    TAG_ARGS+=(-t "${image}")
+done
 
 printf '发布目标:\n'
 printf '  仓库: %s\n' "${REPO_ROOT}"
 printf '  构建引用: %s (%s, 分支 %s)\n' "${BUILD_REF}" "${BUILD_COMMIT}" "${BUILD_BRANCH}"
 printf '  平台: %s\n' "${PLATFORMS}"
-printf '  日期镜像: %s\n' "${DATE_IMAGE}"
-printf '  最新镜像: %s\n' "${LATEST_IMAGE}"
+printf '  镜像: %s\n' "${TARGET_IMAGES[@]}"
 
 printf '\n==> 检查 Docker 服务\n'
 docker info >/dev/null 2>&1 \
@@ -225,7 +235,7 @@ if [[ "${PLATFORMS}" == *,* ]]; then
     ANNOTATION_ARGS+=(--annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}")
 fi
 
-printf '\n==> 使用 Buildx 构建 %s 平台镜像并推送，同时标记 %s 和 latest\n' "${PLATFORMS}" "${VERSION_TAG}"
+printf '\n==> 使用 Buildx 构建并推送 %s 平台镜像\n' "${PLATFORMS}"
 # EXTRA_BUILD_ARGS 用于透传机器特定的构建参数（典型场景：构建容器出网需走
 # 宿主机代理）。按空格分词，勿放含空格的单个参数。
 # shellcheck disable=SC2086
@@ -238,16 +248,13 @@ docker buildx build \
     --label "org.opencontainers.image.source=${SOURCE_URL}" \
     --label "org.opencontainers.image.revision=${BUILD_COMMIT}" \
     --label "org.opencontainers.image.created=${BUILD_CREATED}" \
-    -t "${DATE_IMAGE}" \
-    -t "${LATEST_IMAGE}" \
-    -t "${IMAGE_NAME}:sha-${BUILD_COMMIT}" \
+    "${TAG_ARGS[@]}" \
     --push \
     ${EXTRA_BUILD_ARGS} \
     "${SOURCE_DIR}" \
     || die "多架构镜像构建/推送失败。请先执行 docker login ${IMAGE_REGISTRY}，并确认 ${PLATFORMS} 各平台均可构建。"
 
 printf '\n发布完成:\n'
-printf '  %s (%s)\n' "${DATE_IMAGE}" "${PLATFORMS}"
-printf '  %s (%s)\n' "${LATEST_IMAGE}" "${PLATFORMS}"
+printf '  %s\n' "${TARGET_IMAGES[@]}"
 printf '  构建提交: %s\n' "${BUILD_COMMIT}"
-printf '  固定提交标签: %s:sha-%s\n' "${IMAGE_NAME}" "${BUILD_COMMIT}"
+printf '  固定提交标签: %s\n' "${SHA_IMAGE}"

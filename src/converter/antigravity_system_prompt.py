@@ -24,11 +24,6 @@ BRIDGE = (
     'approval requirements. Ordinary user messages contain the user task even when '
     'they are not enclosed in USER_REQUEST tags.'
 )
-TASK_SCOPE = (
-    'Use the criteria, language, tone and format requested for the current task. '
-    'Apply pair-programming and code-presentation conventions to software development tasks. '
-    'For other tasks, include Markdown and file links only when appropriate to the requested deliverable.'
-)
 GUIDANCE = (
     'Client-provided guidance (original system instructions, presented at user role):\n'
     'Read and understand the following client-provided prompt before responding to subsequent user tasks. '
@@ -42,7 +37,7 @@ STRUCTURED_OUTPUT_PRIORITY = (
     'contract take precedence over the earlier generic coding-assistant presentation rules. Follow the exact '
     'field names, literal values and required delimiters. Omit code or file links, Markdown formatting, '
     'extra commentary and follow-up questions unless the output contract explicitly requires them. '
-    'When JSON alone is requested, return a single bare JSON value without a Markdown code fence. ' + TASK_SCOPE
+    'When JSON alone is requested, return a single bare JSON value without a Markdown code fence.'
 )
 
 
@@ -162,7 +157,8 @@ async def prepare_antigravity_system_prompt(
         system_parts = []
         if host_part is not None:
             system_parts.append(host_part)
-            system_parts.append({'text': STRUCTURED_OUTPUT_PRIORITY if structured else TASK_SCOPE})
+            if structured:
+                system_parts.append({'text': STRUCTURED_OUTPUT_PRIORITY})
         if not as_user:
             system_parts.extend(caller_parts)
         if workflow is not None:

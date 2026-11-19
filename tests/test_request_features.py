@@ -212,3 +212,38 @@ async def test_capture_excludes_panel_and_invalid_json_and_cleans_up(path, body)
             {"type": "http", "method": "POST", "path": path,
              "headers": [(b"content-type", b"application/json")]}, receive, send)
     assert request_content.get() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_original", [False, True])
+async def test_detail_never_displays_comparison_sample(tmp_path, monkeypatch, has_original):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src import request_capture, capture_config
+    from src.panel import call_monitor as panel
+    from src.storage.request_capture_store import CaptureStore
+
+    policy = {"enabled": True, "max_bytes": 1024**2, "retention_hours": 24}
+    store = CaptureStore(tmp_path)
+    monkeypatch.setattr(request_capture, "get_capture_store", lambda: store)
+    monkeypatch.setattr(capture_config, "capture_policies", lambda: dict.fromkeys(
+        ("normal", "errors", "features"), policy))
+    content = {"request_features": {"capture_id": "current"}}
+    backend = SimpleNamespace(get_call_record_content=AsyncMock(return_value=content))
+    monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(return_value=SimpleNamespace(_backend=backend)))
+    original = {"request_id": "current", "attempt_id": "a", "kind": "upstream",
+                "details": {"upstream": {"system": "encoded"}}}
+    if has_original:
+        assert store.write("errors", original, policy)
+    assert store.write("features", {**original, "features": {"upstream": "a"}}, policy)
+    assert store.write("features", {**original, "attempt_id": "b", "features": {"upstream": "b"}}, policy)
+    for _ in range(31):
+        assert store.write("errors", {**original, "kind": "prior_success", "source_request_id": "previous",
+                                      "details": {"upstream": {"system": "plain"}}}, policy)
+    response = json.loads((await panel.call_monitor_content("billing-id", "test")).body)
+    if has_original:
+        assert response["request_details"]["upstream"]["system"] == {"system": "encoded"}
+        assert response["request_features"]["upstream"] == "a"
+    else:
+        assert response["request_details"] == {}
+        assert response["capture_state"] == "not_available"

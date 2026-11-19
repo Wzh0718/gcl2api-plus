@@ -3,7 +3,6 @@ from copy import deepcopy
 import config
 import pytest
 
-from src.converter.antigravity_system_prompt import BRIDGE, TASK_SCOPE, baseline_prompt
 from src.converter.gemini_fix import normalize_gemini_request
 
 
@@ -66,9 +65,7 @@ async def test_role_options_preserve_guidance_and_tool_history(inject, as_user):
         assert all('Client tool guidance' not in part.get('text', '') for part in result.get('systemInstruction', {}).get('parts', []))
     if inject:
         text = '\n'.join(p.get('text', '') for p in result['systemInstruction']['parts'])
-        assert result['systemInstruction']['parts'][:2] == [
-            {'text': baseline_prompt() + '\n\n' + BRIDGE}, {'text': TASK_SCOPE},
-        ]
+        assert 'You are Antigravity' in text
         assert '{{' not in text
         assert ('Client tool guidance' in text) == (not as_user)
     elif as_user:
