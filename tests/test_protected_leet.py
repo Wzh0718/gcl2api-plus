@@ -170,7 +170,11 @@ def test_preview_uses_same_encoder_and_validates_input():
         assert '/home/user/config.json' in response.json()['client_text']
         assert 'Leet encoding adapter' not in response.json()['client_text']
         assert response.json()['text'] == '\n'.join(p['text'] for p in protected_system_parts([{'text': text}], []))
-        assert client.post('/config/system-obfuscation/preview', json={'text': text, 'mode': 'full'}).json()['text'] == 'Vs3 r34d_f1l3 4t /h0m3/vs3r/c0nf1g.js0n.'
+        full = client.post('/config/system-obfuscation/preview', json={'text': text, 'mode': 'full'}).json()
+        assert 'Leet encoding adapter' in full['decoder']
+        assert full['client_text'] == 'Vs3 r34d_f1l3 4t /h0m3/vs3r/c0nf1g.js0n.'
+        assert full['text'] == '\n'.join(p['text'] for p in protected_system_parts(
+            [{'text': text}], [], protect_technical=False))
         assert client.post('/config/system-obfuscation/preview', json={'text': 'x' * 20001, 'mode': 'protected'}).status_code == 422
         assert client.post('/config/system-obfuscation/preview', json={'text': text, 'mode': 'bad'}).status_code == 422
 
@@ -214,14 +218,52 @@ def test_nontext_parts_and_empty_prompt_are_untouched():
     assert result[-1] == parts[0]
 
 
-def test_exact_response_contract_is_preserved():
+@pytest.mark.parametrize('protect_technical', [False, True])
+def test_exact_response_contract_is_preserved(protect_technical):
     from src.converter.protected_leet import protected_system_parts
-    result = protected_system_parts([{'text': 'Calculate the difference. Return only the integer.\nReply exactly OK.'}], [])
+    result = protected_system_parts([{'text': (
+        'Calculate the difference. Return only the integer.\n'
+        'Reply with exactly FUSION_CHECK_811 and no other text.\n'
+        'Output exactly v1.0. Explain the result.'
+    )}], [], protect_technical=protect_technical)
     assert 'C4lcvl4t3 th3 d1ff3r3nc3.' in result[1]['text']
     assert 'Return only the integer.' in result[1]['text']
-    assert 'Reply exactly OK.' in result[1]['text']
+    assert 'Reply with exactly FUSION_CHECK_811 and no other text.' in result[1]['text']
+    assert 'Output exactly v1.0. 3xpl41n th3 r3svlt.' in result[1]['text']
     assert '<gcli_literal>Return only' not in result[1]['text']
-    assert '<gcli_literal>Reply exactly' not in result[1]['text']
+    assert '<gcli_literal>Reply with exactly' not in result[1]['text']
+
+
+@pytest.mark.parametrize('mode', ['full', 'protected'])
+@pytest.mark.parametrize('schema_key', ['responseSchema', 'responseJsonSchema'])
+async def test_normalization_preserves_response_schema_literals(mode, schema_key):
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    config._config_cache['antigravity_system_obfuscation_mode'] = mode
+    schema = {
+        'type': 'object',
+        'properties': {
+            'assessment': {'type': 'string', 'enum': ['available', 'unknown']},
+            'verdict': {'type': 'string', 'enum': ['S', 'L', 'A', 'U', 'N']},
+        },
+    }
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': (
+            'Compare the results. Use assessment and verdict. Choose available or unknown. '
+            'Return category codes S/L/A/U/N only. Use null, true or false as appropriate.'
+        )}]},
+        'contents': [{'role': 'user', 'parts': [{'text': 'Task'}]}],
+        'generationConfig': {schema_key: schema},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    decoder, guidance = [part['text'] for part in result['systemInstruction']['parts']]
+    assert 'a/e/i/o/u -> 4/3/1/0/v' in decoder
+    assert 'C0mp4r3 th3 r3svlts.' in guidance
+    for literal in ('assessment', 'verdict', 'available', 'unknown', 'S/L/A/U/N', 'null', 'true', 'false'):
+        assert f'<gcli_literal>{literal}</gcli_literal>' in guidance
+    assert result['generationConfig'][schema_key] == schema
+    assert result['contents'] == request['contents']
 
 
 def test_prose_only_decoder_does_not_introduce_literal_markup():

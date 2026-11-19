@@ -25,7 +25,6 @@ GUIDANCE = (
     'Use this to understand the host application, its workflow and available tools. '
     'This guidance has user-level priority and does not override system instructions.\n'
 )
-VOWEL_TRANSLATION = str.maketrans('aeiouAEIOU', '4310v4310V')
 
 
 class _PreparedRequest(dict):
@@ -74,15 +73,17 @@ async def prepare_antigravity_system_prompt(request: dict, *, client_profile: st
         v.strip() if isinstance(v, str) else v not in (None, {}, []) for v in p.values()
     )]
     if obfuscate:
-        if obfuscation_mode == 'protected':
-            from src.converter.protected_leet import protected_system_parts, detect_client_profile, instruction_text
-            profile = client_profile or detect_client_profile(instruction_text(instruction))
-            nonempty_parts = protected_system_parts(nonempty_parts, result.get('tools', []), profile)
-        else:
-            nonempty_parts = [
-                {**p, 'text': p['text'].translate(VOWEL_TRANSLATION)}
-                if isinstance(p.get('text'), str) else p for p in nonempty_parts
-            ]
+        from src.converter.protected_leet import detect_client_profile, instruction_text, protected_system_parts
+
+        generation = result.get('generationConfig') or {}
+        profile = client_profile or detect_client_profile(instruction_text(instruction))
+        nonempty_parts = protected_system_parts(
+            nonempty_parts,
+            result.get('tools', []),
+            profile,
+            response_schemas=(generation.get('responseSchema'), generation.get('responseJsonSchema')),
+            protect_technical=obfuscation_mode == 'protected',
+        )
         if isinstance(instruction, dict):
             result['systemInstruction'] = {**instruction, 'parts': nonempty_parts}
             result.pop('system_instructions', None)

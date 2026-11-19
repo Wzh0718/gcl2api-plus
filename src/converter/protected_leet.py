@@ -10,7 +10,9 @@ VOWEL_TRANSLATION = str.maketrans('aeiouAEIOU', '4310v4310V')
 DECODER = (
     'Leet encoding adapter. Client profile: {profile} (heuristic only).\n'
     'The client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. '
-    'Read its natural-language meaning in context; the mapping is ambiguous. '
+    'Read the encoded prose in context; the mapping is ambiguous. '
+    'Do not apply it to user messages or to your response. Use exact output strings and '
+    'response schema field names and enum values as provided. '
     '{literal_guidance}Use the exact declared tool names and literal argument values. '
     'Do not guess missing exact strings. Obey the requested output format exactly; '
     'do not add explanations, decoding notes or acknowledgments unless requested. '
@@ -18,12 +20,18 @@ DECODER = (
 )
 _HEADINGS = re.compile(r'(?m)^(#{1,6})[ \t]+([^\n]+)')
 _FENCES = re.compile(r'(?m)^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*(?:\n|$)')
-_OUTPUT_CONTRACT = re.compile(r'(?im)\b(?:return|respond|reply|output|print)\s+(?:only|exactly)\b[^.\n]*(?:\.|$)')
-_TECHNICAL = re.compile(
+_OUTPUT_CONTRACT = re.compile(
+    r'(?im)\b(?:return|respond|reply|answer|output|print)\s+(?:with\s+)?'
+    r'(?:only|exactly)\b[^\n]*?(?:\.(?=\s|$)|$)'
+)
+_VERBATIM = re.compile(
     r'`+[^`\n]+`+'
     r'|"(?:\\.|[^"\\])*"'
     r"|(?<!\w)'(?:\\.|[^'\\\n])*'(?!\w)"
-    r'|\b[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"\x27`]+'
+    r'|\b(?:[A-Z]/)+[A-Z]\b'
+)
+_TECHNICAL = re.compile(
+    r'\b[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"\x27`]+'
     r'|(?<![\w:/])(?:~?/|\.{1,2}/|[A-Za-z]:[\\/])[^\s<>"\x27`]*'
     r'|(?<!\w)--[A-Za-z][\w-]*(?:=[^\s<>"\x27`]+)?'
     r'|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*'
@@ -67,7 +75,7 @@ def detect_client_profile(text):
     return 'generic'
 
 
-def _tool_literals(tools):
+def _declared_literals(tools, response_schemas):
     found = set()
 
     def visit(node):
@@ -79,31 +87,33 @@ def _tool_literals(tools):
                 found.update(properties)
             if isinstance(node.get('enum'), list):
                 found.update(v for v in node['enum'] if isinstance(v, str))
+            if isinstance(node.get('const'), str):
+                found.add(node['const'])
             for value in node.values():
                 visit(value)
         elif isinstance(node, list):
             for value in node:
                 visit(value)
     visit(tools)
+    for schema in response_schemas:
+        if isinstance(schema, dict):
+            found.update(('null', 'true', 'false'))
+            visit(schema)
     return sorted((s for s in found if 0 < len(s) <= 256), key=lambda s: (-len(s), s))[:512]
 
 
-def _protected_spans(text, profile, tool_literals):
-    spans = []
+def _technical_spans(text, profile):
     # Preserve even an unfinished fenced block rather than corrupt partial code.
     pos = 0
     while match := _FENCES.search(text, pos):
         fence = match['fence']
         close = re.search(r'(?m)^[ \t]*' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}[ \t]*(?:\n|$)', text[match.end():])
         end = match.end() + close.end() if close else len(text)
-        spans.append((match.start(), end))
+        yield match.start(), end
         pos = end
     # Retain common explicit environment blocks and caller-marked literal blocks.
     for match in re.finditer(r'(?s)<(environment_context|env|environment|tools|literal)\b[^>]*>.*?</\1\s*>', text):
-        spans.append(match.span())
-    # These short output contracts are protocol constraints, not disposable prose.
-    for match in _OUTPUT_CONTRACT.finditer(text):
-        spans.append(match.span())
+        yield match.span()
     headings = list(_HEADINGS.finditer(text))
     labels = _PROFILE_HEADINGS['generic'] + _PROFILE_HEADINGS.get(profile, ())
     for index, heading in enumerate(headings):
@@ -111,7 +121,21 @@ def _protected_spans(text, profile, tool_literals):
         if label not in labels:
             continue
         end = next((other.start() for other in headings[index + 1:] if len(other[1]) <= len(heading[1])), len(text))
-        spans.append((heading.start(), end))
+        yield heading.start(), end
+    for match in _TECHNICAL.finditer(text):
+        start, end = match.span()
+        # Sentence punctuation is prose, not part of a bare path or URL.
+        end = start + len(text[start:end].rstrip('.,;:!?)]}'))
+        if end > start:
+            yield start, end
+
+
+def _protected_spans(text, profile, literals, protect_technical):
+    # These spans have to remain exact in both modes.
+    spans = [match.span() for pattern in (_OUTPUT_CONTRACT, _VERBATIM)
+             for match in pattern.finditer(text)]
+    if protect_technical:
+        spans.extend(_technical_spans(text, profile))
     # JSON objects and arrays are exact data, including their original whitespace.
     decoder = json.JSONDecoder()
     pos = 0
@@ -127,15 +151,8 @@ def _protected_spans(text, profile, tool_literals):
         else:
             spans.append((start, start + length))
             pos = start + length
-    for match in _TECHNICAL.finditer(text):
-        start, end = match.span()
-        # Sentence punctuation is prose, not part of a bare path or URL.
-        if not text[start:end].startswith(('`', '"', "'")):
-            end = start + len(text[start:end].rstrip('.,;:!?)]}'))
-        if end > start:
-            spans.append((start, end))
-    if tool_literals:
-        names = re.compile(r'(?<![\w])(?:' + '|'.join(re.escape(s) for s in tool_literals) + r')(?![\w])')
+    if literals:
+        names = re.compile(r'(?<![\w])(?:' + '|'.join(re.escape(s) for s in literals) + r')(?![\w])')
         spans.extend(match.span() for match in names.finditer(text))
     merged = []
     for start, end in sorted(spans):
@@ -146,7 +163,7 @@ def _protected_spans(text, profile, tool_literals):
     return merged
 
 
-def protected_system_parts(parts, tools, profile='generic'):
+def protected_system_parts(parts, tools, profile='generic', *, response_schemas=(), protect_technical=True):
     texts = [p['text'] for p in parts if isinstance(p, dict) and isinstance(p.get('text'), str)]
     if not any(text.strip() for text in texts):
         return list(parts)
@@ -154,7 +171,7 @@ def protected_system_parts(parts, tools, profile='generic'):
     tag = 'gcli_literal'
     while any(tag in text for text in texts):
         tag += '_1'
-    literals = _tool_literals(tools)
+    literals = _declared_literals(tools, response_schemas)
     result = []
     has_literals = False
     for part in parts:
@@ -164,7 +181,7 @@ def protected_system_parts(parts, tools, profile='generic'):
         text = part['text']
         chunks = []
         cursor = 0
-        for start, end in _protected_spans(text, profile, literals):
+        for start, end in _protected_spans(text, profile, literals, protect_technical):
             chunks.append(text[cursor:start].translate(VOWEL_TRANSLATION))
             literal = text[start:end]
             if _OUTPUT_CONTRACT.match(literal):

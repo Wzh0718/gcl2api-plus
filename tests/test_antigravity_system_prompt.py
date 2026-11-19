@@ -203,6 +203,7 @@ async def test_vowel_options_preserve_history_and_server_prompt(inject, as_user,
     parts = result['contents'][0]['parts'] if as_user else result['systemInstruction']['parts']
     expected = '4310v 4310V 中文 xyz https://3x4mpl3.c0m' if obfuscate else text
     assert {'text': expected, 'custom': 'aeiou'} in parts
+    assert sum('a/e/i/o/u -> 4/3/1/0/v' in p.get('text', '') for p in parts) == int(obfuscate)
     assert {'inlineData': {'mimeType': 'image/png', 'data': 'aeiou'}} in parts
     assert result['contents'][int(as_user):] == original['contents']
     assert req == original
@@ -238,5 +239,8 @@ async def test_legacy_text_obfuscation_keeps_gateway_prefix(key):
                                system_prompt_append='Gateway policy\n')
     req = {'model': 'gemini-2.5-flash', key: 'Client guidance', 'contents': []}
     result = await normalize_gemini_request(req, mode='antigravity')
-    assert result['systemInstruction']['parts'][0]['text'] == 'Gateway policy\nCl13nt gv1d4nc3'
+    decoder, guidance = result['systemInstruction']['parts']
+    assert decoder['text'].startswith('Gateway policy\nLeet encoding adapter.')
+    assert 'a/e/i/o/u -> 4/3/1/0/v' in decoder['text']
+    assert guidance['text'] == 'Cl13nt gv1d4nc3'
     assert 'system_instructions' not in result

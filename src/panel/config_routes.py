@@ -33,16 +33,14 @@ class SystemObfuscationPreviewRequest(BaseModel):
 
 @router.post('/system-obfuscation/preview')
 async def preview_system_obfuscation(request: SystemObfuscationPreviewRequest, token: str = Depends(verify_panel_token)):
-    from src.converter.protected_leet import detect_client_profile, protected_system_parts, VOWEL_TRANSLATION
+    from src.converter.protected_leet import detect_client_profile, protected_system_parts
     profile = detect_client_profile(request.text)
     text = request.text
     decoder = ''
     client_text = text
-    if request.mode == 'full':
-        text = text.translate(VOWEL_TRANSLATION)
-        client_text = text
-    elif request.mode == 'protected':
-        parts = protected_system_parts([{'text': text}], [], profile)
+    if request.mode != 'off':
+        parts = protected_system_parts(
+            [{'text': text}], [], profile, protect_technical=request.mode == 'protected')
         text = '\n'.join(part['text'] for part in parts)
         if len(parts) > 1:
             decoder = parts[0]['text']

@@ -3470,13 +3470,13 @@
                                         <pre id="systemVowelPreviewOutput"></pre>
                                         <details id="systemVowelDecoderDetails" class="prompt-decoder" hidden><summary>附加的解码说明</summary><pre id="systemVowelDecoderOutput"></pre></details>
                                     </div>
-                                    <p class="prompt-preview-footnote">仅预览文本转换，不叠加工具定义、敏感词过滤或提示词融合。</p>
+                                    <p class="prompt-preview-footnote">预览仅使用示例文本。实际请求还会读取工具定义和输出 Schema。</p>
                                 </div>
                             </details>
                             <details class="prompt-settings-advanced">
                                 <summary>更多设置与处理说明</summary>
                                 <label class="prompt-setting-row" for="antigravitySystemPromptEnabled"><span><strong>AGY 基础提示</strong><span class="prompt-setting-hint">额外注入 2.31.2 基础模块。</span></span><input type="checkbox" id="antigravitySystemPromptEnabled"></label>
-                                <ul class="prompt-rules"><li>全文 Leet 替换 a/e/i/o/u → 4/3/1/0/v，代码和路径也会改变。</li><li>智能保护识别 Codex、Claude Code、DSH、Pi 结构，保留代码、路径、工具名等精确内容；未匹配时使用通用规则。精确值建议用反引号标记。</li><li>转为 user 后优先级也降为 user；提示词融合成功时优先于这些处理。不保证减少 429 或避免 403。</li></ul>
+                                <ul class="prompt-rules"><li>两种 Leet 模式都附加解码说明，保留明确的输出要求、工具参数和输出 Schema 的字段与枚举。精确值建议用反引号标记。</li><li>智能保护额外识别代码块、路径和工具或环境章节，支持 Codex、Claude Code、DSH、Pi 的常见结构。</li><li>转为 user 后优先级也降为 user；提示词融合成功时优先于这些处理。不保证减少 429 或避免 403。</li></ul>
                             </details>
                         </section>
                         <div class="config-group">

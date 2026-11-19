@@ -7400,8 +7400,8 @@ function syncSystemObfuscationChoice() {
     });
     const descriptions = {
         off: '保留客户端原始文本。',
-        full: '替换全部英文元音，代码和路径也会改变。',
-        protected: '保留代码、路径和工具名，附加解码说明。',
+        full: '替换英文元音并附加解码说明，保留明确的输出要求和已声明的字段、枚举。',
+        protected: '附加解码说明，并额外识别和保留代码块、路径及工具或环境章节。',
     };
     const hint = document.getElementById('systemObfuscationHint');
     if (hint) hint.textContent = descriptions[mode.value] || descriptions.off;
