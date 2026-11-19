@@ -54,7 +54,7 @@ async def test_fusion_preserves_task_tools_and_original(monkeypatch, inject, as_
     assert text.startswith('Gateway policy\nYou are Antigravity')
     assert result['systemInstruction']['parts'][1]['text'].startswith('Leet encoding adapter.')
     assert result['systemInstruction']['parts'][2]['text'] == (
-        '4sk 4ppr0v4l b3f0r3 d3l3t1ng. Vs3 shell 4t runtime/settings.json.'
+        '4sk 4ppr0v4l b3f0r3 d3l3t1ng. Use shell 4t runtime/settings.json.'
     )
     source = json.loads(generate.call_args.args[0])
     assert source['client_guidance'] == raw['systemInstruction']['parts'][0]['text']

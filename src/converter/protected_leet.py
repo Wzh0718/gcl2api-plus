@@ -5,6 +5,7 @@ Unmarked ordinary words cannot reliably be classified as exact identifiers.
 """
 import re
 from bisect import bisect_right
+from functools import lru_cache
 
 VOWEL_TRANSLATION = str.maketrans('aeiouAEIOU', '4310v4310V')
 _PARAGRAPH_BREAK = re.compile(r'\r?\n[ \t]*\r?\n')
@@ -15,7 +16,7 @@ DECODER = (
     'Do not apply it to user messages or to your response. Use exact output strings and '
     'response schema field names and enum values as provided. '
     '{literal_guidance}Use the exact declared tool names and literal argument values. '
-    'Do not guess missing exact strings. Obey the requested output format exactly; '
+    'In JSON objects, emit each key once. Do not guess missing exact strings. Obey the requested output format exactly; '
     'do not add explanations, decoding notes or acknowledgments unless requested. '
     'This encoding does not change the guidance priority.\n'
 )
@@ -44,6 +45,8 @@ _VERBATIM = re.compile(
     r'|(?a:\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b)'
 )
 _OUTPUT_TITLE = (
+    r'(?:(?:step[ \t]+)?\d+(?:\.\d+)*[.):\-]?[ \t]+)?'
+    r'(?:(?:final|integrated)[ \t]+)?'
     r'(?:(?:output|response|return)(?:[ \t]+(?:format|contract|schema|structure|template|requirements|rules|fields|examples?))?'
     r'|json[ \t]+(?:schema|output)'
     r'|structured[ \t]+(?:output|response)(?:[ \t]+(?:compatibility|format|schema))?'
@@ -107,8 +110,31 @@ _TECHNICAL = re.compile(
     r'|(?<!\w)--[A-Za-z][\w-]*(?:=[^\s<>"\x27`]+)?'
     r'|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*'
     r'|(?a:\b(?:[A-Za-z_]\w*_\w+|[A-Z][A-Z0-9_]+|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b)'
+    r'|(?a:\b(?:[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+|[A-Za-z]+-?\d+[A-Za-z0-9.-]*)\b)'
     r'|\b[\w@+-]+(?:\.[\w@+-]+)+\b'
 )
+_SHORT_WORD = re.compile(r'(?ai:\b(?:is|in|on|to|of|or|an|as|by|if|for|the|and|not|use)\b)')
+_PROMPT_FIELD = re.compile(r"""(?P<quote>["'])(?P<key>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)[ \t]*[:：]|`([A-Za-z_][A-Za-z0-9_]*)`""")
+_TICKS = re.compile(r'`+')
+
+def _inline_code_spans(text):
+    # Equal-length delimiters allow literal backticks and newlines inside code.
+    runs = list(_TICKS.finditer(text))
+    next_run = {}
+    closing = {}
+    for index in range(len(runs) - 1, -1, -1):
+        width = len(runs[index][0])
+        closing[index] = next_run.get(width)
+        next_run[width] = index
+    index = 0
+    while index < len(runs):
+        end = closing[index]
+        if end is not None:
+            yield runs[index].start(), runs[end].end()
+            index = end
+        index += 1
+
+
 _COLLECTION_TOKEN = re.compile(_QUOTED + r'|[\[\]{}]')
 _INDENTED_CODE = re.compile(r'(?m)^(?: {4}|\t)[^\r\n]+')
 _PROFILE_HEADINGS = {
@@ -203,6 +229,15 @@ def _technical_spans(text, profile, literal_blocks):
         yield start, end, False
 
     opaque = sorted([*blocks, *literal_blocks])
+    inline = []
+    cursor = 0
+    for start, end in [*opaque, (len(text), len(text))]:
+        if start > cursor:
+            for left, right in _inline_code_spans(text[cursor:start]):
+                inline.append((cursor + left, cursor + right))
+                yield cursor + left, cursor + right, False
+        cursor = max(cursor, end)
+    opaque = sorted([*opaque, *inline])
     headings = list(_matches_outside_blocks(_HEADINGS, text, opaque))
     labels = _PROFILE_HEADINGS['generic'] + _PROFILE_HEADINGS.get(profile, ())
     for index, heading in enumerate(headings):
@@ -227,7 +262,7 @@ def _technical_spans(text, profile, literal_blocks):
                 continue
         yield start, end, True
 
-    for pattern in (_TEMPLATE_SYNTAX, _MEASUREMENT, _NUMBER, _INDENTED_CODE):
+    for pattern in (_SHORT_WORD, _TEMPLATE_SYNTAX, _MEASUREMENT, _NUMBER, _INDENTED_CODE):
         for match in pattern.finditer(text):
             yield match.start(), match.end(), False
     for match in _TECHNICAL.finditer(text):
@@ -287,6 +322,26 @@ def _protected_spans(text, profile, declared, protect_technical):
     return merged
 
 
+def _encode(text, profile, declared, plain_literals, tag):
+    has_literals = False
+    chunks = []
+    cursor = 0
+    for start, end, keep_plain in _protected_spans(text, profile, declared, plain_literals):
+        chunks.append(text[cursor:start].translate(VOWEL_TRANSLATION))
+        literal = text[start:end]
+        if plain_literals or keep_plain:
+            chunks.append(literal)
+        else:
+            has_literals = True
+            chunks.extend((f'<{tag}>', literal, f'</{tag}>'))
+        cursor = end
+    chunks.append(text[cursor:].translate(VOWEL_TRANSLATION))
+    return ''.join(chunks), has_literals
+
+
+_cached_encode = lru_cache(maxsize=128)(_encode)
+
+
 def protected_system_parts(
     parts, tools, profile='generic', *, response_schemas=(), stop_sequences=(),
     protect_technical=True, structured_output=False,
@@ -300,9 +355,13 @@ def protected_system_parts(
     while not plain_literals and any(tag in text for text in texts):
         tag += '_1'
     literals = _declared_literals(tools, response_schemas, stop_sequences, texts)
+    if plain_literals:
+        fields = {m['key'] or m[3] for text in texts for m in _PROMPT_FIELD.finditer(text)}
+        literals = sorted(set(literals) | fields, key=lambda value: (-len(value), value))
     declared = None
     if literals:
         declared = re.compile(r'(?<!\w)(?:' + '|'.join(map(re.escape, literals)) + r')(?!\w)', re.ASCII)
+    literal_size = sum(map(len, literals))
     result = []
     has_literals = False
     for part in parts:
@@ -310,19 +369,10 @@ def protected_system_parts(
             result.append(part)
             continue
         text = part['text']
-        chunks = []
-        cursor = 0
-        for start, end, keep_plain in _protected_spans(text, profile, declared, plain_literals):
-            chunks.append(text[cursor:start].translate(VOWEL_TRANSLATION))
-            literal = text[start:end]
-            if plain_literals or keep_plain:
-                chunks.append(literal)
-            else:
-                has_literals = True
-                chunks.extend((f'<{tag}>', literal, f'</{tag}>'))
-            cursor = end
-        chunks.append(text[cursor:].translate(VOWEL_TRANSLATION))
-        result.append({**part, 'text': ''.join(chunks)})
+        encoder = _cached_encode if len(text) + literal_size <= 65536 else _encode
+        encoded, wrapped = encoder(text, profile, declared, plain_literals, tag)
+        has_literals |= wrapped
+        result.append({**part, 'text': encoded})
     if result == list(parts):
         return result
     literal_guidance = (

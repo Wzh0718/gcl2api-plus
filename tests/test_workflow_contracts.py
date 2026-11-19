@@ -56,8 +56,8 @@ async def test_bound_workflow_encodes_prose_by_format_with_legacy_config(workflo
                'generationConfig': {'responseJsonSchema': {'type': 'string'}}}
     result = await normalize_gemini_request(request, mode='antigravity', api_key_id='risk-key')
     assert result['systemInstruction']['parts'][1]['text'] == (
-        '3v4lv4t3 th3 pr0dvct.\r\n\r\n'
-        'Vs3 p3nd1ng r3v13w th3n FINAL_JSON_END.\nL1t3r4l f13lds mvst svrv1v3: unknowns.'
+        '3v4lv4t3 the pr0dvct.\r\n\r\n'
+        'Use p3nd1ng r3v13w th3n FINAL_JSON_END.\nL1t3r4l f13lds mvst svrv1v3: unknowns.'
     )
     assert result['generationConfig']['responseMimeType'] == 'application/json'
     assert result['generationConfig']['responseSchema']['required'] == ['product_risk_score', 'unknowns']
@@ -82,7 +82,7 @@ async def test_host_priority_keeps_bound_regulation_output_contract(workflow_set
     assert host == baseline_prompt() + '\n\n' + BRIDGE
     assert priority == STRUCTURED_OUTPUT_PRIORITY
     assert decoder.startswith('Leet encoding adapter.')
-    assert client == '4n4lyz3 th3 pr0dvct.\nK33p FINAL_JSON_START 4nd FINAL_JSON_END 3x4ct. Vs3 {"policy_axes": []}.'
+    assert client == '4n4lyz3 the pr0dvct.\nK33p FINAL_JSON_START and FINAL_JSON_END 3x4ct. Use {"policy_axes": []}.'
     assert guidance == get_workflow_contract('search-key').json_guidance
     schema = result['generationConfig']['responseSchema']
     assert schema['required'] == ['analysis_markdown', 'result']
@@ -94,7 +94,7 @@ async def test_unbound_passes_through_native_schema_while_encoding_prose(workflo
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': 'Use pending review.'}]},
                'generationConfig': {'responseMimeType': 'application/json', 'responseSchema': {'type': 'STRING'}}}
     result = await normalize_gemini_request(request, mode='antigravity', api_key_id='unbound-key')
-    assert result['systemInstruction']['parts'][-1]['text'] == 'Vs3 p3nd1ng r3v13w.'
+    assert result['systemInstruction']['parts'][-1]['text'] == 'Use p3nd1ng r3v13w.'
     assert result['generationConfig']['responseSchema'] == request['generationConfig']['responseSchema']
 
 
