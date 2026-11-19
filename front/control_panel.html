@@ -1009,24 +1009,6 @@
             margin: 3px 0;
         }
 
-        .config-hero {
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-between;
-            gap: 16px;
-            margin: 2px 0 16px;
-            padding: 18px 20px;
-            border: 1px solid #d8e4f3;
-            border-radius: 12px;
-            background: #f8fbff;
-        }
-
-        .config-hero h3 { margin: 5px 0 4px; color: #172b4d; font-size: 22px; }
-        .config-hero p { margin: 0; color: #6b7a90; font-size: 12px; }
-        .config-hero-actions { display: flex; gap: 8px; flex-shrink: 0; }
-        .config-hero-actions .btn, .config-hero-actions .refresh-btn { width: auto; margin: 0; }
-        .config-save-note { color: #6b7a90; font-size: 11px; }
-
         .proxy-console {
             border-color: #c8d8ee;
             background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
@@ -2127,9 +2109,9 @@
             .billing-key-filter { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="./front/control_panel.css?v=fixed-config-header-20261117">
+    <link rel="stylesheet" href="./front/control_panel.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
-    <link rel="stylesheet" href="./front/config_tabs.css?v=prompt-settings-20261117">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-inline">
 </head>
@@ -2926,16 +2908,9 @@
 
             <!-- 配置管理标签页 -->
             <div id="configTab" class="tab-content">
-                <div class="config-hero">
-                    <div><span class="proxy-kicker">运行配置</span><h3>配置管理</h3><p>集中管理运行时网络、端点和策略。环境变量覆盖的普通字段会自动锁定；钉钉告警配置以页面保存值优先。</p></div>
-                </div>
-
-                <div class="manage-actions">
-                    <span class="config-save-note">配置保存后按字段类型热更新；端口和目录等字段仍需重启。</span>
-                </div>
-
                 <div id="configSection">
                     <div class="config-toolbar">
+                        <h2 class="config-title">配置管理</h2>
                         <div class="config-category-tabs" role="tablist" aria-label="配置分类">
                             <button type="button" id="config-tab-general" class="config-category-tab" role="tab" aria-selected="true" aria-controls="config-panel-general" tabindex="0" onclick="switchConfigTab('general')" onkeydown="handleConfigTabKeydown(event)">基础设置</button>
                             <button type="button" id="config-tab-network" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-network" tabindex="-1" onclick="switchConfigTab('network')" onkeydown="handleConfigTabKeydown(event)">网络代理</button>
@@ -2945,12 +2920,12 @@
                             <button type="button" id="config-tab-alerts" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-alerts" tabindex="-1" onclick="switchConfigTab('alerts')" onkeydown="handleConfigTabKeydown(event)">保活与告警</button>
                             <button type="button" id="config-tab-monitoring" class="config-category-tab" role="tab" aria-selected="false" aria-controls="config-panel-monitoring" tabindex="-1" onclick="switchConfigTab('monitoring')" onkeydown="handleConfigTabKeydown(event)">监控与采集</button>
                         </div>
-                        <div class="config-toolbar-footer">
-                            <span class="config-tabs-note">切换分类保留未保存的输入，保存更改将保存全部分类。</span>
-                            <div class="config-toolbar-actions"><button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button><button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button></div>
+                        <div class="config-toolbar-actions">
+                            <button type="button" class="refresh-btn btn btn-small" onclick="loadConfig()">刷新</button>
+                            <button type="button" class="btn btn-small" onclick="saveConfig()">保存更改</button>
                         </div>
                     </div>
-                    <div class="loading" id="configLoading">正在加载配置...</div>
+                    <div class="loading" id="configLoading" role="status">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
                         <div class="config-group">
