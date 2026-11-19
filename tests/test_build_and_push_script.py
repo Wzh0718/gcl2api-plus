@@ -131,6 +131,21 @@ def test_release_exports_committed_tree_and_pushes_date_and_latest(tmp_path, unt
 
 
 @requires_git_checkout
+def test_test_build_pushes_only_the_commit_tag(tmp_path):
+    env, log_file = create_fake_toolchain(tmp_path)
+    release_env(env)
+    env["PUBLISH_SHA_ONLY"] = "1"
+    commit = run(["git", "rev-parse", "HEAD"], REPO_ROOT).stdout.strip()
+
+    run([str(SCRIPT)], tmp_path, env=env)
+
+    commands = log_file.read_text(encoding="utf-8")
+    assert re.findall(r" -t ([^ ]+)", commands) == [
+        f"ghcr.io/wzh0718/gcl2api-plus:sha-{commit}"
+    ]
+
+
+@requires_git_checkout
 def test_release_defaults_to_github_container_registry(tmp_path):
     env, log_file = create_fake_toolchain(tmp_path)
     release_env(env)
