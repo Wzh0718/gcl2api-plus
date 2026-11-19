@@ -256,7 +256,7 @@ class CaptureStore:
 
     def query(self, name, policy, *, now=None, request_id=None, credential_name=None,
               since=0, before=None, limit=100, status_code=None, max_result_bytes=8 * 1024**2,
-              with_status=False, complete_only=False):
+              with_status=False, complete_only=False, include_prior_success=True):
         now = time.time() if now is None else now
         cutoff = max(float(since), now - policy["retention_hours"] * 3600)
         result = []
@@ -293,6 +293,9 @@ class CaptureStore:
                                 continue
                             row = json.loads(raw)
                         except (zlib.error, ValueError):
+                            continue
+                        if not include_prior_success and (row.get("kind") == "prior_success" or
+                                                          row.get("source_request_id") not in (None, request_id)):
                             continue
                         if complete_only and row.get("incomplete"):
                             continue
