@@ -49,13 +49,16 @@ def response(text, finish='STOP'):
     }]}})
 
 
-async def test_bound_workflow_uses_server_schema_and_obfuscates_only_allowlisted_prose(workflow_settings):
+async def test_bound_workflow_encodes_prose_by_format_with_legacy_config(workflow_settings):
     prose = 'Evaluate the product.'
     protocol = 'Use pending review then FINAL_JSON_END.\nLiteral fields must survive: unknowns.'
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': f'{prose}\r\n\r\n{protocol}'}]},
                'generationConfig': {'responseJsonSchema': {'type': 'string'}}}
     result = await normalize_gemini_request(request, mode='antigravity', api_key_id='risk-key')
-    assert result['systemInstruction']['parts'][1]['text'] == f'3v4lv4t3 th3 pr0dvct.\r\n\r\n{protocol}'
+    assert result['systemInstruction']['parts'][1]['text'] == (
+        '3v4lv4t3 th3 pr0dvct.\r\n\r\n'
+        'Vs3 p3nd1ng r3v13w th3n FINAL_JSON_END.\nL1t3r4l f13lds mvst svrv1v3: unknowns.'
+    )
     assert result['generationConfig']['responseMimeType'] == 'application/json'
     assert result['generationConfig']['responseSchema']['required'] == ['product_risk_score', 'unknowns']
     assert 'responseJsonSchema' not in result['generationConfig']
@@ -63,13 +66,35 @@ async def test_bound_workflow_uses_server_schema_and_obfuscates_only_allowlisted
     assert request['systemInstruction']['parts'][0]['text'].startswith(prose)
 
 
+async def test_host_priority_keeps_bound_regulation_output_contract(workflow_settings):
+    from src.converter.antigravity_system_prompt import BRIDGE, STRUCTURED_OUTPUT_PRIORITY, baseline_prompt
+
+    config._config_cache['antigravity_system_prompt_enabled'] = True
+    contract_text = 'Keep FINAL_JSON_START and FINAL_JSON_END exact. Use {"policy_axes": []}.'
+    request = {
+        'model': 'gemini-2.5-flash',
+        'systemInstruction': {'parts': [{'text': f'Analyze the product.\n{contract_text}'}]},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity', api_key_id='search-key')
+    host, priority, decoder, client, guidance = [
+        part['text'] for part in result['systemInstruction']['parts']
+    ]
+    assert host == baseline_prompt() + '\n\n' + BRIDGE
+    assert priority == STRUCTURED_OUTPUT_PRIORITY
+    assert decoder.startswith('Leet encoding adapter.')
+    assert client == '4n4lyz3 th3 pr0dvct.\nK33p FINAL_JSON_START 4nd FINAL_JSON_END 3x4ct. Vs3 {"policy_axes": []}.'
+    assert guidance == get_workflow_contract('search-key').json_guidance
+    schema = result['generationConfig']['responseSchema']
+    assert schema['required'] == ['analysis_markdown', 'result']
+
+
 @pytest.mark.parametrize('mode', ['full', 'protected'])
-async def test_unbound_json_passes_through_even_with_schema(workflow_settings, monkeypatch, mode):
+async def test_unbound_passes_through_native_schema_while_encoding_prose(workflow_settings, monkeypatch, mode):
     monkeypatch.setenv('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', mode)
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': 'Use pending review.'}]},
                'generationConfig': {'responseMimeType': 'application/json', 'responseSchema': {'type': 'STRING'}}}
     result = await normalize_gemini_request(request, mode='antigravity', api_key_id='unbound-key')
-    assert result['systemInstruction'] == request['systemInstruction']
+    assert result['systemInstruction']['parts'][-1]['text'] == 'Vs3 p3nd1ng r3v13w.'
     assert result['generationConfig']['responseSchema'] == request['generationConfig']['responseSchema']
 
 

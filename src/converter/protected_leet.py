@@ -3,11 +3,11 @@
 Profiles are heuristics over client guidance, never authentication or authority.
 Unmarked ordinary words cannot reliably be classified as exact identifiers.
 """
-import json
 import re
 from bisect import bisect_right
 
 VOWEL_TRANSLATION = str.maketrans('aeiouAEIOU', '4310v4310V')
+_PARAGRAPH_BREAK = re.compile(r'\r?\n[ \t]*\r?\n')
 DECODER = (
     'Leet encoding adapter. Client profile: {profile} (heuristic only).\n'
     'The client prose below uses a/e/i/o/u -> 4/3/1/0/v and A/E/I/O/U -> 4/3/1/0/V. '
@@ -22,14 +22,23 @@ DECODER = (
 _HEADINGS = re.compile(r'(?m)^(#{1,6})[ \t]+([^\r\n]+)')
 _FENCES = re.compile(r'(?m)^[ \t]*(?P<fence>`{3,}|~{3,})[^\r\n]*(?:\r?\n|$)')
 _LITERAL_BLOCK = re.compile(r'<literal\b[^>]*>.*?</literal\s*>', re.DOTALL)
+_TECHNICAL_BLOCK = re.compile(
+    r'<(environment_context|env|environment|tools|(?:response|output|json)[_-]schema)\b[^>]*>.*?</\1\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
 _OUTPUT_CONTRACT = re.compile(
     r'(?im)\b(?:return|respond|reply|answer|output|print)\s+(?:with\s+)?'
     r'(?:only|exactly)\b[^\n]*?(?:\.(?=\s|$)|$)'
 )
+_QUOTED = (
+    r'"(?:\\.|[^"\\\r\n])*"'
+    r"|(?<!\w)'(?:\\.|[^'\\\r\n])*'(?!\w)"
+    r'|“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』'
+    r'|`+[^`\r\n]+`+'
+)
 _VERBATIM = re.compile(
-    r'`+[^`\n]+`+'
-    r'|"(?:\\.|[^"\\])*"'
-    r"|(?<!\w)'(?:\\.|[^'\\\n])*'(?!\w)"
+    _QUOTED
+    + r'|(?a:\b(?:true|false|null|True|False|None)\b)'
     r'|(?a:\b(?:[A-Z]/)+[A-Z]\b)'
     # Bare protocol markers such as FINAL_JSON_START are matched verbatim by callers.
     r'|(?a:\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b)'
@@ -55,11 +64,14 @@ _OUTPUT_COMMAND = (
     rf'(?:有效的?|纯|严格的?|可解析的?)?[ \t]*[`"\']?{_FORMAT_NAME}(?![A-Za-z0-9_])'
 )
 _OUTPUT_FORMAT_COMMAND = re.compile(_OUTPUT_COMMAND, re.IGNORECASE)
+_OUTPUT_FORMAT_CLAUSE = re.compile(
+    rf'(?:{_OUTPUT_COMMAND})[^\r\n]*?(?:[.!?](?=\s|$)|(?=\r?$))', re.IGNORECASE | re.MULTILINE,
+)
 _OUTPUT_DECLARATION = re.compile(
     r'^[ \t]*+(?:(?:[-*]|\d++[.)])[ \t]++)?(?:'
     rf'(?:\*\*)?{_OUTPUT_TITLE}(?:\*\*)?[ \t]*(?:[:：]|(?=\r?$))'
     rf'|(?:\[{_OUTPUT_TITLE}\]|【{_OUTPUT_TITLE}】)[ \t]*(?:[:：]|(?=\r?$))'
-    rf'|{_OUTPUT_COMMAND}'
+    rf'|(?P<command>{_OUTPUT_COMMAND})'
     r')', re.IGNORECASE | re.MULTILINE,
 )
 _SCHEMA_DECLARATION = re.compile(
@@ -82,18 +94,23 @@ _MEASUREMENT = re.compile(
     r'(?:°[CF]|mm|cm|km|m|µg|μg|mg|g|kg|mL|ml|L|in|ft|oz|lb|mAh|Ah|kWh|Wh|mW|kW|W|mV|V|mA|A|kHz|MHz|GHz|Hz)'
     r'(?:/[A-Za-zµμ]{1,5})?(?![A-Za-z0-9_])'
 )
+_NUMBER = re.compile(
+    r'(?<![A-Za-z0-9_.])[+-]?'
+    r'(?:0[xX][0-9A-Fa-f_]+|0[bB][01_]+|0[oO][0-7_]+|'
+    r'(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d[\d_]*)?)'
+    r'(?![A-Za-z0-9_]|\.\d)'
+)
 _TECHNICAL = re.compile(
     r'(?a:\b)[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"\x27`，。！？；：、]*'
-    r'|(?<![A-Za-z0-9_:/])(?:~?/|\.{1,2}/|[A-Za-z]:[\\/])[^\s<>"\x27`，。！？；：、]*'
+    r'|(?<![A-Za-z0-9_:/\\])(?:~?/|\.{1,2}/|[A-Za-z]:[\\/]|\\\\|[A-Za-z0-9_.-]+[\\/])'
+    r'[^\s<>"\x27`，。！？；：、]+'
     r'|(?<!\w)--[A-Za-z][\w-]*(?:=[^\s<>"\x27`]+)?'
     r'|\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*'
     r'|(?a:\b(?:[A-Za-z_]\w*_\w+|[A-Z][A-Z0-9_]+|[a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b)'
     r'|\b[\w@+-]+(?:\.[\w@+-]+)+\b'
 )
-_JSON_START = re.compile(r'[\[{]')
-_JSON_SCAN_LIMIT = 128
-_DECLARED_LITERAL_LIMIT = 512
-_DECLARED_LITERAL_LENGTH_LIMIT = 256
+_COLLECTION_TOKEN = re.compile(_QUOTED + r'|[\[\]{}]')
+_INDENTED_CODE = re.compile(r'(?m)^(?: {4}|\t)[^\r\n]+')
 _PROFILE_HEADINGS = {
     'generic': ('tools', 'available tools', 'tool definitions', 'environment', 'execution environment'),
     'codex': ('workspace', 'workspace dependencies', 'repository instructions', 'permissions instructions'),
@@ -129,7 +146,7 @@ def detect_client_profile(text):
     return 'generic'
 
 
-def _declared_literals(tools, response_schemas, stop_sequences):
+def _declared_literals(tools, response_schemas, stop_sequences, texts):
     schemas = [schema for schema in response_schemas if isinstance(schema, dict)]
     found = {value for value in stop_sequences if isinstance(value, str)}
     if schemas:
@@ -152,9 +169,10 @@ def _declared_literals(tools, response_schemas, stop_sequences):
         elif isinstance(node, list):
             pending.extend(node)
     found.discard('')
-    if len(found) > _DECLARED_LITERAL_LIMIT or any(len(value) > _DECLARED_LITERAL_LENGTH_LIMIT for value in found):
-        return None
-    return sorted(found, key=lambda value: (-len(value), value))
+    return sorted(
+        (value for value in found if any(value in text for text in texts)),
+        key=lambda value: (-len(value), value),
+    )
 
 
 def _fenced_spans(text):
@@ -180,9 +198,7 @@ def _matches_outside_blocks(pattern, text, blocks):
 
 def _technical_spans(text, profile, literal_blocks):
     blocks = list(_fenced_spans(text))
-    # Retain common explicit environment blocks.
-    blocks.extend(match.span() for match in re.finditer(
-        r'(?s)<(environment_context|env|environment|tools)\b[^>]*>.*?</\1\s*>', text))
+    blocks.extend(match.span() for match in _TECHNICAL_BLOCK.finditer(text))
     for start, end in blocks:
         yield start, end, False
 
@@ -200,10 +216,18 @@ def _technical_spans(text, profile, literal_blocks):
     # A standalone format directive can define unmarked enum values or examples on the following lines.
     heading_starts = [heading.start() for heading in headings] + [len(text)]
     for match in _matches_outside_blocks(_OUTPUT_DECLARATION, text, opaque):
+        start = match.start()
         end = heading_starts[bisect_right(heading_starts, match.start())]
-        yield match.start(), end, True
+        if match['command']:
+            if blank_line := _PARAGRAPH_BREAK.search(text, match.end(), end):
+                end = blank_line.start()
+            # The command itself is covered by _OUTPUT_FORMAT_CLAUSE.
+            start = text.find('\n', match.end(), end)
+            if start == -1:
+                continue
+        yield start, end, True
 
-    for pattern in (_TEMPLATE_SYNTAX, _MEASUREMENT):
+    for pattern in (_TEMPLATE_SYNTAX, _MEASUREMENT, _NUMBER, _INDENTED_CODE):
         for match in pattern.finditer(text):
             yield match.start(), match.end(), False
     for match in _TECHNICAL.finditer(text):
@@ -225,33 +249,32 @@ def declares_structured_output(text: str) -> bool:
     return bool(markers & {'START', 'BEGIN'} and markers & {'END', 'STOP'})
 
 
+def _collection_spans(text):
+    """Preserve bracketed data, including Python literals and JSON examples."""
+    openings = []
+    matching_open = {']': '[', '}': '{'}
+    for token in _COLLECTION_TOKEN.finditer(text):
+        character = token[0]
+        if character in ('[', '{'):
+            openings.append((character, token.start()))
+        elif character in matching_open:
+            if openings and openings[-1][0] == matching_open[character]:
+                _, start = openings.pop()
+                yield start, token.end(), False
+            else:
+                openings.clear()
+
+
 def _protected_spans(text, profile, declared, protect_technical):
     # These spans have to remain exact in both modes.
     literal_blocks = [match.span() for match in _LITERAL_BLOCK.finditer(text)]
     spans = [(start, end, False) for start, end in literal_blocks]
-    spans.extend((*match.span(), False) for pattern in (_OUTPUT_CONTRACT, _VERBATIM)
+    spans.extend((*match.span(), True) for pattern in (_OUTPUT_CONTRACT, _OUTPUT_FORMAT_CLAUSE)
                  for match in pattern.finditer(text))
+    spans.extend((*match.span(), False) for match in _VERBATIM.finditer(text))
+    spans.extend(_collection_spans(text))
     if protect_technical:
         spans.extend(_technical_spans(text, profile, literal_blocks))
-    # JSON objects and arrays are exact data, including their original whitespace.
-    decoder = json.JSONDecoder()
-    pos = 0
-    for _ in range(_JSON_SCAN_LIMIT):
-        match = _JSON_START.search(text, pos)
-        if not match:
-            break
-        start = match.start()
-        try:
-            _, end = decoder.raw_decode(text, start)
-        except (ValueError, RecursionError):
-            pos = start + 1
-        else:
-            spans.append((start, end, False))
-            pos = end
-    else:
-        if match := _JSON_START.search(text, pos):
-            # There may be structured data past the inspection budget.
-            spans.append((match.start(), len(text), True))
     if declared:
         spans.extend((*match.span(), False) for match in declared.finditer(text))
     merged = []
@@ -264,18 +287,19 @@ def _protected_spans(text, profile, declared, protect_technical):
     return merged
 
 
-def protected_system_parts(parts, tools, profile='generic', *, response_schemas=(), stop_sequences=(), protect_technical=True):
+def protected_system_parts(
+    parts, tools, profile='generic', *, response_schemas=(), stop_sequences=(),
+    protect_technical=True, structured_output=False,
+):
     texts = [p['text'] for p in parts if isinstance(p, dict) and isinstance(p.get('text'), str)]
     if not any(text.strip() for text in texts):
         return list(parts)
     profile = profile if profile in _PROFILE_HEADINGS else 'generic'
+    plain_literals = protect_technical or structured_output
     tag = 'gcli_literal'
-    while any(tag in text for text in texts):
+    while not plain_literals and any(tag in text for text in texts):
         tag += '_1'
-    literals = _declared_literals(tools, response_schemas, stop_sequences)
-    if literals is None:
-        # Partial protection could transform a field or enum beyond the matching budget.
-        return list(parts)
+    literals = _declared_literals(tools, response_schemas, stop_sequences, texts)
     declared = None
     if literals:
         declared = re.compile(r'(?<!\w)(?:' + '|'.join(map(re.escape, literals)) + r')(?!\w)', re.ASCII)
@@ -288,11 +312,10 @@ def protected_system_parts(parts, tools, profile='generic', *, response_schemas=
         text = part['text']
         chunks = []
         cursor = 0
-        for start, end, keep_plain in _protected_spans(text, profile, declared, protect_technical):
+        for start, end, keep_plain in _protected_spans(text, profile, declared, plain_literals):
             chunks.append(text[cursor:start].translate(VOWEL_TRANSLATION))
             literal = text[start:end]
-            if keep_plain or _OUTPUT_CONTRACT.match(literal):
-                # A format instruction must remain an instruction, not quoted data.
+            if plain_literals or keep_plain:
                 chunks.append(literal)
             else:
                 has_literals = True

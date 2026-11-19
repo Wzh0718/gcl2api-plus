@@ -185,8 +185,8 @@ def test_preview_uses_same_encoder_and_validates_input():
             [{'text': text}], [], protect_technical=False))
         structured = 'Analyze the record. Return only JSON. Use pending review for unresolved items.'
         preview = client.post('/config/system-obfuscation/preview', json={'text': structured, 'mode': 'protected'})
-        assert preview.json()['client_text'] == structured
-        assert preview.json()['decoder'] == ''
+        assert preview.json()['client_text'] == '4n4lyz3 th3 r3c0rd. Return only JSON. Vs3 p3nd1ng r3v13w f0r vnr3s0lv3d 1t3ms.'
+        assert 'Leet encoding adapter' in preview.json()['decoder']
         assert client.post('/config/system-obfuscation/preview', json={'text': 'x' * 20001, 'mode': 'protected'}).status_code == 422
         assert client.post('/config/system-obfuscation/preview', json={'text': text, 'mode': 'bad'}).status_code == 422
 
@@ -261,7 +261,10 @@ async def test_normalization_preserves_bare_output_delimiters_and_json_example(m
         'systemInstruction': {'parts': [{'text': source}]},
     }
     result = await normalize_gemini_request(request, mode='antigravity')
-    assert result['systemInstruction'] == request['systemInstruction']
+    assert result['systemInstruction']['parts'][-1]['text'] == (
+        'Wr1t3 th3 r3svlt b3tw33n FINAL_JSON_START 4nd FINAL_JSON_END.\n'
+        f'Vs3 th1s 3x4mpl3 wh3n n0th1ng 1s f0vnd: {example}'
+    )
     assert result.workflow_contract is None
 
 
@@ -278,14 +281,13 @@ async def test_normalization_preserves_explicit_multiline_literals(mode):
     }
     result = await normalize_gemini_request(request, mode='antigravity')
     guidance = result['systemInstruction']['parts'][-1]['text']
-    assert guidance == (
-        f'F0ll0w th1s f0rm4t.\n<gcli_literal>{block}</gcli_literal>\n3xpl41n th3 r3svlt.'
-    )
+    literal = block if mode == 'protected' else f'<gcli_literal>{block}</gcli_literal>'
+    assert guidance == f'F0ll0w th1s f0rm4t.\n{literal}\n3xpl41n th3 r3svlt.'
 
 
 @pytest.mark.parametrize('mode', ['full', 'protected'])
 @pytest.mark.parametrize('schema_key', ['responseSchema', 'responseJsonSchema'])
-async def test_normalization_passes_through_generic_schema_requests(mode, schema_key):
+async def test_generic_schema_requests_encode_prose_and_preserve_literals(mode, schema_key):
     from src.converter.gemini_fix import normalize_gemini_request
 
     config._config_cache['antigravity_system_obfuscation_mode'] = mode
@@ -306,7 +308,12 @@ async def test_normalization_passes_through_generic_schema_requests(mode, schema
         'generationConfig': {schema_key: schema},
     }
     result = await normalize_gemini_request(request, mode='antigravity')
-    assert result['systemInstruction'] == request['systemInstruction']
+    parts = result['systemInstruction']['parts']
+    assert parts[0]['text'].startswith('Leet encoding adapter.')
+    assert parts[1]['text'] == (
+        'C0mp4r3 th3 r3svlts. Vs3 assessment 4nd verdict. Ch00s3 available 0r unknown. '
+        'R3tvrn c4t3g0ry c0d3s S/L/A/U/N 0nly. Vs3 null, true 0r false 4s 4ppr0pr14t3.'
+    )
     assert result['generationConfig'][schema_key] == schema
     assert result['contents'] == request['contents']
 
@@ -318,29 +325,137 @@ def test_prose_only_decoder_does_not_introduce_literal_markup():
     assert 'a/e/i/o/u -> 4/3/1/0/v' in parts[0]['text']
 
 
-@pytest.mark.parametrize('contract', [
-    '## Output Format\nUse the value pending review.\n```yaml\n# Example\nstatus: pending review\n```\nEnd with done.\n',
-    '返回格式：\r\n遇到未知项时使用 pending review。\r\n',
-    '【输出格式】\n遇到未知项时使用 pending review。\n',
-    'Return the result as a CSV record.\nUse pending review for unresolved items.\n',
-    'The response must be a JSON object.\nUse pending review for unresolved items.\n',
-    'Analyze the record. Return only a valid JSON object. Use pending review for unresolved items.\n',
-    'Review the record. Return only the JSON result.\n',
-    '分析记录。最终结果必须为可解析的 JSON 对象。\n',
-    '请输出一个 JSON 对象。未知项应使用 pending review。\n',
-    '## Structured Output Compatibility\nFollow the schema for this response.\n',
-    'Use this response schema for each record. Return pending review for unresolved items.\n',
-    '### JSON Schema\n```json\n{"type":"array","items":{"enum":["pending review"]}}\n```\n',
+@pytest.mark.parametrize(('contract', 'expected'), [
+    ('## Output Format\nUse the value pending review.\n```yaml\n# Example\nstatus: pending review\n```\nEnd with done.\n', None),
+    ('返回格式：\r\n遇到未知项时使用 pending review。\r\n', None),
+    ('【输出格式】\n遇到未知项时使用 pending review。\n', None),
+    ('Return the result as a CSV record.\nUse pending review for unresolved items.\n', None),
+    ('The response must be a JSON object.\nUse pending review for unresolved items.\n', None),
+    ('Analyze the record. Return only a valid JSON object. Use "pending review" for unresolved items.\n',
+     '4n4lyz3 th3 r3c0rd. Return only a valid JSON object. Vs3 "pending review" f0r vnr3s0lv3d 1t3ms.\n'),
+    ('Review the record. Return only the JSON result.\n', 'R3v13w th3 r3c0rd. Return only the JSON result.\n'),
+    ('分析记录。最终结果必须为可解析的 JSON 对象。\n', None),
+    ('请输出一个 JSON 对象。未知项应使用 pending review。\n', None),
+    ('## Structured Output Compatibility\nFollow the schema for this response.\n', None),
+    ('Use this response schema for each record. Return "pending review" for unresolved items.\n',
+     'Vs3 th1s r3sp0ns3 sch3m4 f0r 34ch r3c0rd. R3tvrn "pending review" f0r vnr3s0lv3d 1t3ms.\n'),
+    ('### JSON Schema\n```json\n{"type":"array","items":{"enum":["pending review"]}}\n```\n', None),
 ])
-async def test_default_passes_through_unbound_output_contract(contract):
+async def test_default_preserves_unbound_output_contract_while_encoding_other_prose(contract, expected):
     from src.converter.gemini_fix import normalize_gemini_request
 
     source = f'Compare the records.\n{contract}## Notes\nExplain the result.'
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': source}]}}
     result = await normalize_gemini_request(request, mode='antigravity')
-    assert result['systemInstruction'] == request['systemInstruction']
+    assert result['systemInstruction']['parts'][0]['text'].startswith('Leet encoding adapter.')
+    assert result['systemInstruction']['parts'][1]['text'] == (
+        f'C0mp4r3 th3 r3c0rds.\n{expected or contract}## N0t3s\n3xpl41n th3 r3svlt.'
+    )
     assert result.workflow_contract is None
     assert not {'responseMimeType', 'responseSchema', 'responseJsonSchema'} & result.get('generationConfig', {}).keys()
+
+
+@pytest.mark.parametrize('as_user', [False, True])
+@pytest.mark.parametrize('native_schema', [False, True])
+async def test_structured_host_priority_and_selective_leet(as_user, native_schema):
+    from src.api.antigravity import wrap_cli_request
+    from src.converter.antigravity_system_prompt import BRIDGE, baseline_prompt
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    config._config_cache.update(
+        antigravity_system_prompt_enabled=True,
+        antigravity_system_as_user_enabled=as_user,
+        antigravity_system_obfuscation_mode='protected',
+    )
+    protocol = '# Output Requirements\r\nReturn JSON with unknowns and pending review.\r\n{"unknowns": []}\r\nFINAL_JSON_START\r\nFINAL_JSON_END'
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': '# Role\r\nYou are an IP analyst. Use "pending review".\r\n\r\n' + protocol}]},
+        'contents': [{'role': 'user', 'parts': [{'text': 'Evaluate the input.'}]}],
+    }
+    if native_schema:
+        request['generationConfig'] = {
+            'responseMimeType': 'application/json',
+            'responseSchema': {'type': 'OBJECT', 'properties': {'unknowns': {'type': 'ARRAY'}}},
+        }
+    prepared = await normalize_gemini_request(request, mode='antigravity', api_key_id='unbound')
+    payload, _ = await wrap_cli_request(prepared, request['model'], 'project')
+    upstream = payload['request']
+    parts = upstream['systemInstruction']['parts']
+    assert parts[0]['text'] == baseline_prompt() + '\n\n' + BRIDGE
+    priority = parts[1]['text']
+    assert priority.startswith('Structured response priority.')
+    assert 'file links' in priority and 'Markdown' in priority and 'follow-up questions' in priority
+    assert 'bare JSON' in priority and 'schema' in priority
+    guidance = upstream['contents'][0]['parts'][1:] if as_user else parts[2:]
+    assert guidance[0]['text'].startswith('Leet encoding adapter.')
+    assert guidance[1]['text'] == '# R0l3\r\nY0v 4r3 4n IP 4n4lyst. Vs3 "pending review".\r\n\r\n' + protocol
+    assert upstream['contents'][int(as_user):] == request['contents']
+    assert upstream['generationConfig'].get('responseSchema') == request.get('generationConfig', {}).get('responseSchema')
+
+
+async def test_already_supplied_agy_host_stays_ahead_of_structured_priority():
+    from src.converter.antigravity_system_prompt import BRIDGE, baseline_prompt
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    host = {'text': baseline_prompt() + '\n\n' + BRIDGE}
+    client = {'text': 'Analyze the record. Return only JSON.'}
+    request = {'model': 'gemini-2.5-flash-lite', 'systemInstruction': {'parts': [host, client]}}
+    result = await normalize_gemini_request(request, mode='antigravity')
+    parts = result['systemInstruction']['parts']
+    assert parts[0] == host
+    assert parts[1]['text'].startswith('Structured response priority.')
+    assert parts[2]['text'].startswith('Leet encoding adapter.')
+    assert parts[3]['text'] == '4n4lyz3 th3 r3c0rd. Return only JSON.'
+
+
+def test_smart_protects_indented_code_and_declared_literals():
+    from src.converter.protected_leet import protected_system_parts
+
+    literal = 'Compare the records.'
+    code = [{'text': f'    {literal}\nReturn only JSON.'}]
+    assert protected_system_parts(code, [], structured_output=True) == code
+    parts = [{'text': f'{literal} Return only JSON.'}]
+    schemas = ({'type': 'string', 'enum': [literal]},)
+    assert protected_system_parts(parts, [], response_schemas=schemas, structured_output=True) == parts
+
+
+def test_smart_mode_encodes_prose_everywhere_around_structured_data():
+    from src.converter.protected_leet import protected_system_parts
+
+    prose = 'Load the record and use status pending review.'
+    fenced = f'```text\r\nExample\r\n\r\n{prose}\r\n\r\n```'
+    data = "{'unknowns': [], 'active': True, 'value': None}"
+    source = (
+        f'{prose}\r\n\r\n{fenced}\r\n\r\n'
+        f'Compare src/data/input.json with {data} and apply 1.5e-3 or 0xdead.\r\n'
+        'Return JSON with status and unknowns.\r\n'
+        '\r\nExplain the evidence.'
+    )
+    result = protected_system_parts(
+        [{'text': source}], [],
+        response_schemas=({'properties': {'status': {'enum': ['pending review']}}},),
+    )
+    assert result[0]['text'].startswith('Leet encoding adapter.')
+    assert result[1]['text'] == (
+        f'L04d th3 r3c0rd 4nd vs3 status pending review.\r\n\r\n{fenced}\r\n\r\n'
+        f'C0mp4r3 src/data/input.json w1th {data} 4nd 4pply 1.5e-3 0r 0xdead.\r\n'
+        'Return JSON with status and unknowns.\r\n'
+        '\r\n3xpl41n th3 3v1d3nc3.'
+    )
+
+
+def test_role_description_without_schema_gets_selective_leet():
+    from src.converter.protected_leet import protected_system_parts
+
+    role = "You understand the buyer's needs and purchase decisions."
+    protocol = 'Return JSON between FINAL_JSON_START and FINAL_JSON_END. Use {"unknowns": []}.'
+    result = protected_system_parts([{'text': f'## Role\n{role}\n\n{protocol}'}], [], structured_output=True)
+    assert result[0]['text'].startswith('Leet encoding adapter.')
+    assert result[1]['text'] == (
+        "## R0l3\nY0v vnd3rst4nd th3 bvy3r's n33ds 4nd pvrch4s3 d3c1s10ns.\n\n"
+        'Return JSON between FINAL_JSON_START and FINAL_JSON_END. Vs3 {"unknowns": []}.'
+    )
 
 
 async def test_prompt_only_structured_output_survives_transport_with_fusion_enabled(monkeypatch):
@@ -366,7 +481,7 @@ async def test_prompt_only_structured_output_survives_transport_with_fusion_enab
         prepared.copy(), 'gemini-2.5-flash-lite', 'project',
         credential_key='example.json', credential_data={'project_id': 'project'},
     )
-    assert payload['request']['systemInstruction'] == request['systemInstruction']
+    assert payload['request']['systemInstruction']['parts'][-1]['text'] == 'Vs3 p3nd1ng r3v13w f0r vnr3s0lv3d 1t3ms.'
     contents = payload['request']['contents']
     assert contents[0] == request['contents'][0]
     assert contents[-1] == request['contents'][-1]
@@ -392,7 +507,7 @@ async def test_json_input_and_old_user_turn_do_not_switch_current_prompt_to_pass
     assert result['contents'] == request['contents']
 
 
-async def test_default_preserves_system_text_in_json_mode_without_schema():
+async def test_default_encodes_system_text_in_json_mode_without_schema():
     from src.converter.gemini_fix import normalize_gemini_request
 
     request = {
@@ -401,7 +516,7 @@ async def test_default_preserves_system_text_in_json_mode_without_schema():
         'generationConfig': {'responseMimeType': 'application/json'},
     }
     result = await normalize_gemini_request(request, mode='antigravity')
-    assert result['systemInstruction'] == request['systemInstruction']
+    assert result['systemInstruction']['parts'][-1]['text'] == 'Vs3 p3nd1ng r3v13w f0r vnr3s0lv3d 1t3ms.'
     assert result['generationConfig']['responseMimeType'] == 'application/json'
 
 
@@ -415,18 +530,21 @@ async def test_default_preserves_declared_stop_text_without_schema():
     }
     result = await normalize_gemini_request(request, mode='antigravity')
     guidance = result['systemInstruction']['parts'][-1]['text']
-    assert guidance == 'Vs3 th3 d3l1m1t3r <gcli_literal>finished now</gcli_literal> wh3n d0n3.'
+    assert guidance == 'Vs3 th3 d3l1m1t3r finished now wh3n d0n3.'
 
 
 @pytest.mark.parametrize('literal', [
     '{{ product_title }}', '{customer.name!r}', '%(status)s', '%APP_HOME%',
     '<result data-mode="raw">', '</result>', 'file://', '12.5 mg/mL',
+    '0o755', '-6.02E+23', '1_000.25e-2', 'https://example.com?format=raw',
+    r'src\settings\file.toml', r'\\server\share\file.txt', 'relative/path/config.ini',
+    '“pending review”', '<response_schema>\nstatus: pending review\n</response_schema>',
 ])
 def test_protected_preserves_technical_literals_without_schema(literal):
     from src.converter.protected_leet import protected_system_parts
 
     parts = protected_system_parts([{'text': f'Compare {literal} carefully.'}], [])
-    assert parts[-1]['text'] == f'C0mp4r3 <gcli_literal>{literal}</gcli_literal> c4r3fvlly.'
+    assert parts[-1]['text'] == f'C0mp4r3 {literal} c4r3fvlly.'
 
 
 def test_protected_preserves_technical_literals_adjacent_to_chinese_prose():
@@ -434,8 +552,7 @@ def test_protected_preserves_technical_literals_adjacent_to_chinese_prose():
 
     source = '请记录chunk_id及riskScore，容量20oz，查询https://example.com/api，并用FINAL_JSON_START开头。'
     parts = protected_system_parts([{'text': source}], [])
-    for literal in ('chunk_id', 'riskScore', '20oz', 'https://example.com/api', 'FINAL_JSON_START'):
-        assert f'<gcli_literal>{literal}</gcli_literal>' in parts[-1]['text']
+    assert parts == [{'text': source}]
 
 
 def test_protected_does_not_treat_prose_about_input_format_as_output_contract():
@@ -445,20 +562,21 @@ def test_protected_does_not_treat_prose_about_input_format_as_output_contract():
     assert parts[-1]['text'].endswith('\n3xpl41n th3 r3svlt.')
 
 
-def test_protected_keeps_uninspected_structured_text_at_json_scan_limit():
+def test_protected_keeps_structured_data_after_many_bracketed_spans():
     from src.converter.protected_leet import protected_system_parts
 
     example = '{"checks": [true, false, null], "unknowns": []}'
     source = 'Compare the records.\n' + '[annotation] ' * 140 + '\nExample: ' + example
     parts = protected_system_parts([{'text': source}], [])
     assert parts[-1]['text'].startswith('C0mp4r3 th3 r3c0rds.')
-    assert example in parts[-1]['text']
+    assert parts[-1]['text'].endswith('\n3x4mpl3: ' + example)
 
 
-def test_preserves_system_text_when_declared_literal_limit_is_exceeded():
+def test_smart_mode_encodes_prose_with_a_large_enum():
     from src.converter.protected_leet import protected_system_parts
 
     parts = [{'text': 'Use pending review for unresolved items.'}]
     values = [f'longer configured state {index}' for index in range(512)] + ['pending review']
     schema = {'type': 'string', 'enum': values}
-    assert protected_system_parts(parts, [], response_schemas=(schema,)) == parts
+    result = protected_system_parts(parts, [], response_schemas=(schema,))
+    assert result[-1]['text'] == 'Vs3 pending review f0r vnr3s0lv3d 1t3ms.'

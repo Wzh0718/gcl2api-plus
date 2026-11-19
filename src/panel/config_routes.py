@@ -38,9 +38,10 @@ async def preview_system_obfuscation(request: SystemObfuscationPreviewRequest, t
     text = request.text
     decoder = ''
     client_text = text
-    if request.mode != 'off' and not declares_structured_output(text):
+    if request.mode != 'off':
         parts = protected_system_parts(
-            [{'text': text}], [], profile, protect_technical=request.mode == 'protected')
+            [{'text': text}], [], profile, protect_technical=request.mode == 'protected',
+            structured_output=declares_structured_output(text))
         text = '\n'.join(part['text'] for part in parts)
         if len(parts) > 1:
             decoder = parts[0]['text']

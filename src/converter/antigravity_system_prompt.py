@@ -32,6 +32,13 @@ GUIDANCE = (
     'Use this to understand the host application, its workflow and available tools. '
     'This guidance has user-level priority and does not override system instructions.\n'
 )
+STRUCTURED_OUTPUT_PRIORITY = (
+    'Structured response priority. For this task, the effective response schema and the applicable output '
+    'contract take precedence over the earlier generic coding-assistant presentation rules. Follow the exact '
+    'field names, literal values and required delimiters. Omit code or file links, Markdown formatting, '
+    'extra commentary and follow-up questions unless the output contract explicitly requires them. '
+    'When JSON alone is requested, return a single bare JSON value without a Markdown code fence.'
+)
 
 
 class _PreparedRequest(dict):
@@ -75,7 +82,7 @@ async def prepare_antigravity_system_prompt(
 
     if isinstance(request, _PreparedRequest):
         return request
-    from src.workflow_contracts import encode_workflow_prose, get_workflow_contract
+    from src.workflow_contracts import get_workflow_contract
 
     workflow = get_workflow_contract(api_key_id)
     if workflow is not None:
@@ -87,6 +94,7 @@ async def prepare_antigravity_system_prompt(
     obfuscation_mode = await get_antigravity_system_obfuscation_mode()
     result = _PreparedRequest(request)
     result.workflow_contract = workflow
+    result.system_obfuscation_mode = obfuscation_mode
     if workflow is not None:
         workflow.apply_generation_config(result)
     original_instruction = request.get("systemInstruction")
@@ -99,8 +107,9 @@ async def prepare_antigravity_system_prompt(
     result.preserve_output_format = workflow is None and _caller_controls_output(
         generation, system_text, result.get('contents'),
     )
-    obfuscate = obfuscation_mode != 'off' and not result.preserve_output_format
-    if not inject and not as_user and not obfuscate and workflow is None:
+    structured = workflow is not None or result.preserve_output_format
+    obfuscate = obfuscation_mode != 'off'
+    if not inject and not as_user and not obfuscate and not structured:
         return result
     instruction = original_instruction
     if isinstance(instruction, str):
@@ -108,43 +117,53 @@ async def prepare_antigravity_system_prompt(
     parts = instruction.get('parts', []) if isinstance(instruction, dict) else []
     if not isinstance(parts, list):
         parts = []
-    nonempty_parts = [p for p in parts if isinstance(p, dict) and any(
+    caller_parts = [p for p in parts if isinstance(p, dict) and any(
         v.strip() if isinstance(v, str) else v not in (None, {}, []) for v in p.values()
     )]
-    if obfuscate or workflow is not None:
+    host_part = None
+    if caller_parts:
+        first_text = caller_parts[0].get('text')
+        if isinstance(first_text, str) and first_text.startswith(baseline_prompt().partition('\n')[0]):
+            host_part, *caller_parts = caller_parts
+    if inject and host_part is None:
+        host_part = {'text': baseline_prompt() + '\n\n' + BRIDGE}
+
+    if obfuscate:
         profile = client_profile or detect_client_profile(system_text)
+        schemas = [generation.get('responseSchema'), generation.get('responseJsonSchema')]
+        stops = generation.get('stopSequences')
+        stop_sequences = list(stops) if isinstance(stops, list) else []
         if workflow is not None:
-            if obfuscate:
-                nonempty_parts = encode_workflow_prose(nonempty_parts, workflow, profile)
-        else:
-            stops = generation.get('stopSequences')
-            nonempty_parts = protected_system_parts(
-                nonempty_parts, result.get('tools', []), profile,
-                stop_sequences=stops if isinstance(stops, list) else (),
-                protect_technical=obfuscation_mode == 'protected',
-            )
-        if isinstance(instruction, dict):
-            result['systemInstruction'] = {**instruction, 'parts': nonempty_parts}
-            result.pop('system_instructions', None)
+            schemas.append(workflow.response_schema)
+            stop_sequences.extend(workflow.legacy_markers or ())
+        caller_parts = protected_system_parts(
+            caller_parts, result.get('tools', []), profile,
+            response_schemas=schemas, stop_sequences=stop_sequences,
+            protect_technical=obfuscation_mode == 'protected',
+            structured_output=structured,
+        )
 
     if as_user:
-        if nonempty_parts:
+        if caller_parts:
             result.fusion_moved_guidance = True
             result['contents'] = [
-                {'role': 'user', 'parts': [{'text': GUIDANCE}, *nonempty_parts]},
+                {'role': 'user', 'parts': [{'text': GUIDANCE}, *caller_parts]},
                 *(result.get('contents') or []),
             ]
         result.pop('systemInstruction', None)
         result.pop('system_instructions', None)
-    if inject:
-        system_parts = [{'text': baseline_prompt() + '\n\n' + BRIDGE}]
+
+    if host_part is not None or workflow is not None or (not as_user and obfuscate and caller_parts != parts):
+        system_parts = []
+        if host_part is not None:
+            system_parts.append(host_part)
+            if structured:
+                system_parts.append({'text': STRUCTURED_OUTPUT_PRIORITY})
         if not as_user:
-            system_parts.extend(nonempty_parts)
-        result['systemInstruction'] = {'parts': system_parts}
+            system_parts.extend(caller_parts)
+        if workflow is not None:
+            system_parts.append({'text': workflow.json_guidance})
+        system = instruction if not inject and not as_user and isinstance(instruction, dict) else {}
+        result['systemInstruction'] = {**system, 'parts': system_parts}
         result.pop('system_instructions', None)
-    if workflow is not None:
-        system = result.get('systemInstruction') or {}
-        result['systemInstruction'] = {**system, 'parts': [
-            *system.get('parts', []), {'text': workflow.json_guidance},
-        ]}
     return result

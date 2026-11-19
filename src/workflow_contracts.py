@@ -3,7 +3,6 @@
 import json
 import math
 import os
-import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,8 +13,6 @@ from referencing import Registry
 from referencing.exceptions import Unresolvable
 from starlette.responses import JSONResponse, Response
 
-
-_PARAGRAPH_BREAK = re.compile(r'(\r?\n(?:[ \t]*\r?\n)+)')
 WORKFLOW_JSON_GUIDANCE = (
     'Return only the JSON value specified by the server response schema. '
     'Omit Markdown fences and text delimiters. The gateway adds any required delimiters after validation.'
@@ -31,15 +28,14 @@ class WorkflowContract(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     response_schema: dict = Field(min_length=1)
-    prose_paragraphs: frozenset[str] = frozenset()
+    # Accept existing config files. Format protection no longer uses a paragraph list.
+    prose_paragraphs: frozenset[str] = Field(default_factory=frozenset, exclude=True)
     legacy_markers: tuple[str, str] | None = None
     legacy_markdown_prefix: bool = False
 
     @model_validator(mode='after')
     def check_config(self):
         Draft202012Validator.check_schema(self.response_schema)
-        if any(not paragraph.strip() or _PARAGRAPH_BREAK.search(paragraph) for paragraph in self.prose_paragraphs):
-            raise ValueError('prose_paragraphs must contain individual nonempty paragraphs')
         if self.legacy_markers:
             start, end = self.legacy_markers
             if start == end or any(not marker.strip() or marker.splitlines() != [marker] for marker in (start, end)):
@@ -97,27 +93,6 @@ def get_workflow_contract(api_key_id: str | None) -> WorkflowContract | None:
     except (OSError, ValueError, SchemaError) as exc:
         raise HTTPException(503, 'Workflow contract configuration is unavailable') from exc
     return config.contracts.get(config.bindings.get(api_key_id))
-
-
-def encode_workflow_prose(parts, contract, profile):
-    from src.converter.protected_leet import DECODER, VOWEL_TRANSLATION
-
-    result = []
-    for part in parts:
-        text = part.get('text')
-        if not isinstance(text, str):
-            result.append(part)
-            continue
-        # The allowlist matches complete paragraphs and never moves other guidance.
-        paragraphs = _PARAGRAPH_BREAK.split(text)
-        for index in range(0, len(paragraphs), 2):
-            paragraph = paragraphs[index]
-            if paragraph in contract.prose_paragraphs:
-                paragraphs[index] = paragraph.translate(VOWEL_TRANSLATION)
-        result.append({**part, 'text': ''.join(paragraphs)})
-    if result != parts:
-        result.insert(0, {'text': DECODER.format(profile=profile, literal_guidance='')})
-    return result
 
 
 def _unique_fields(pairs):

@@ -316,7 +316,18 @@ async def fuse_request(request, model, account, credential):
         return request
     result = deepcopy(dict(request))
     result.pop('system_instructions', None)
-    result['systemInstruction'] = {'parts': [{'text': prefix + baseline_prompt() + '\n\n' + BRIDGE + '\n\nClient runtime guidance:\n' + guidance}]}
+    host = prefix + baseline_prompt() + '\n\n' + BRIDGE + '\n\nClient runtime guidance:'
+    if getattr(request, 'system_obfuscation_mode', None) == 'protected':
+        from src.converter.protected_leet import detect_client_profile, protected_system_parts
+
+        stops = (request.get('generationConfig') or {}).get('stopSequences')
+        client_parts = protected_system_parts(
+            [{'text': guidance}], request.get('tools', []), detect_client_profile(text),
+            stop_sequences=stops if isinstance(stops, list) else (),
+        )
+        result['systemInstruction'] = {'parts': [{'text': host}, *client_parts]}
+    else:
+        result['systemInstruction'] = {'parts': [{'text': host + '\n' + guidance}]}
     if getattr(request, 'fusion_moved_guidance', False):
         result['contents'] = result.get('contents', [])[1:]
     return result

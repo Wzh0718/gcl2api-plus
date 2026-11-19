@@ -154,5 +154,9 @@ async def test_gateway_chat_route_with_simulated_upstream(channel, stream, monke
         assert data['usage']['total_tokens'] == 3
     assert len(seen) == 1
     system = seen[0]['request']['systemInstruction']['parts']
-    assert system == [{'text': guidance}]
+    if channel == 'antigravity':
+        assert system[0]['text'].startswith('Leet encoding adapter.')
+        assert system[1:] == [{'text': f'K33p 4ctv4l t00l sch3m4s.\n{contract}'}]
+    else:
+        assert system == [{'text': guidance}]
     assert all(c['role'] in ('user', 'model') for c in seen[0]['request']['contents'])
