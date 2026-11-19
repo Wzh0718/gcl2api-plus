@@ -795,7 +795,9 @@ def map_antigravity_gemini_model(model_name: str, thinking_level: Optional[str],
 
 async def normalize_gemini_request(
     request: Dict[str, Any],
-    mode: str = "geminicli"
+    mode: str = "geminicli",
+    *,
+    api_key_id: str | None = None,
 ) -> Dict[str, Any]:
     """
     规范化 Gemini 请求
@@ -834,7 +836,7 @@ async def normalize_gemini_request(
         await filter_request_system_instruction(result, mode=mode)
     if mode == "antigravity":
         from src.converter.antigravity_system_prompt import prepare_antigravity_system_prompt
-        result = await prepare_antigravity_system_prompt(result, client_profile=client_profile)
+        result = await prepare_antigravity_system_prompt(result, client_profile=client_profile, api_key_id=api_key_id)
     from src.converter.system_prompt import append_configured_system_prompt
     await append_configured_system_prompt(result)
     from src.converter.remote_images import inline_remote_gemini_images

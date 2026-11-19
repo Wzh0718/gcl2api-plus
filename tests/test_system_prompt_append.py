@@ -24,7 +24,8 @@ async def test_append_priority_and_empty_override(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["antigravity", "geminicli", "vertex"])
-async def test_append_preserves_original_and_does_not_duplicate(mode):
+async def test_append_preserves_original_and_does_not_duplicate(mode, monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE", "off")
     config._config_cache["system_prompt_append"] = "custom text\nsecond line"
     req = {"model": "gemini-2.5-flash", "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
            "systemInstruction": {"role": "system", "parts": [{"text": "original"}]}}

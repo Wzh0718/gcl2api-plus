@@ -6311,7 +6311,7 @@ function populateConfigForm() {
     }
     const obfuscationMode = document.getElementById('antigravitySystemObfuscationMode');
     if (obfuscationMode) {
-        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled ? 'full' : 'off');
+        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled === false ? 'off' : 'protected');
         obfuscationMode.disabled = AppState.envLockedFields.has('antigravity_system_obfuscation_mode') || AppState.envLockedFields.has('antigravity_system_vowel_obfuscation_enabled');
         obfuscationMode.classList.toggle('env-locked', obfuscationMode.disabled);
         obfuscationMode.title = obfuscationMode.disabled ? '由环境变量控制' : '';
@@ -7401,7 +7401,7 @@ function syncSystemObfuscationChoice() {
     const descriptions = {
         off: '保留客户端原始文本。',
         full: '替换英文元音并附加解码说明，保留明确的输出要求和已声明的字段、枚举。',
-        protected: '附加解码说明，并额外识别和保留代码块、路径及工具或环境章节。',
+        protected: '自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。',
     };
     const hint = document.getElementById('systemObfuscationHint');
     if (hint) hint.textContent = descriptions[mode.value] || descriptions.off;

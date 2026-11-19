@@ -342,7 +342,8 @@ async def wrap_cli_request(
     """
     from src.claude_routing import enforce_key_model
     enforce_key_model(model)
-    if not skip_prompt_fusion and credential_key and credential_data and not is_antigravity_image_request(model, gemini_request):
+    if (not skip_prompt_fusion and not getattr(gemini_request, 'workflow_contract', None)
+            and credential_key and credential_data and not is_antigravity_image_request(model, gemini_request)):
         from src.prompt_fusion import fuse_request
         gemini_request = await fuse_request(gemini_request, model, credential_key, credential_data)
     inner = dict(gemini_request)
@@ -1651,6 +1652,15 @@ async def stream_request(
         request_model=request_model,
     )
     try:
+        workflow = getattr(body.get('request', body), 'workflow_contract', None)
+        if workflow is not None:
+            from src.workflow_contracts import validate_workflow_response
+            response = validate_workflow_response(await collect_streaming_response(inner), workflow)
+            if response.status_code != 200:
+                yield response
+                return
+            yield b'data: ' + response.body + b'\n\n'
+            return
         async for item in inner:
             yield item
     except UnknownAntigravityModelError as exc:
@@ -2285,11 +2295,16 @@ async def non_stream_request(
                         gateway_seconds=time.monotonic() - gateway_started
                     )
                     await record_billing_once(True, _safe_response_json(response) if response.content else None, status_code=200)
-                    return Response(
+                    downstream = Response(
                         content=response.content,
                         status_code=200,
                         headers=get_decoded_response_headers(response.headers)
                     )
+                    workflow = getattr(inner_request, 'workflow_contract', None)
+                    if workflow is not None:
+                        from src.workflow_contracts import validate_workflow_response
+                        return validate_workflow_response(downstream, workflow)
+                    return downstream
 
             # 失败 - 记录最后一次错误
             if status_code != 200:

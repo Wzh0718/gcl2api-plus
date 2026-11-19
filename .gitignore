@@ -3,6 +3,7 @@
 !package.json
 !package-lock.json
 !tsconfig.json
+!src/prompts/workflow-contracts/regulation-search-v1.json
 *.toml
 !pyproject.toml
 creds/

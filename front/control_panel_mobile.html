@@ -2664,12 +2664,12 @@
                             <fieldset class="prompt-mode-fieldset" aria-describedby="systemObfuscationHint">
                                 <legend>文本处理</legend>
                                 <div class="prompt-mode-options">
-                                    <label><input type="radio" name="systemObfuscationChoice" value="off" checked onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="off" onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
                                     <label><input type="radio" name="systemObfuscationChoice" value="full" onchange="selectSystemObfuscationMode(this.value)"><span>全文 Leet</span></label>
-                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" checked onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
                                 </div>
-                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected">智能保护 Leet</option></select>
-                                <p id="systemObfuscationHint" class="prompt-setting-hint">保留客户端原始文本。</p>
+                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected" selected>智能保护 Leet</option></select>
+                                <p id="systemObfuscationHint" class="prompt-setting-hint">自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。</p>
                                 <p id="systemObfuscationLock" class="prompt-setting-lock" hidden>由环境变量控制</p>
                             </fieldset>
                             <label class="prompt-setting-row" for="antigravitySystemAsUserEnabled">
@@ -2908,7 +2908,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-usage-inline"></script>
+    <script src="./front/common.js?v=workflow-protection"></script>
 </body>
 
 </html>

@@ -98,9 +98,14 @@ async def test_client_detection_precedes_sensitive_word_filter(monkeypatch):
 
 
 async def test_config_legacy_and_environment_priority(monkeypatch):
+    assert await config.get_antigravity_system_obfuscation_mode() == 'protected'
+    config._config_cache['antigravity_system_vowel_obfuscation_enabled'] = False
+    assert await config.get_antigravity_system_obfuscation_mode() == 'off'
     config._config_cache['antigravity_system_vowel_obfuscation_enabled'] = True
+    assert await config.get_antigravity_system_obfuscation_mode() == 'protected'
+    config._config_cache['antigravity_system_obfuscation_mode'] = 'full'
     assert await config.get_antigravity_system_obfuscation_mode() == 'full'
-    config._config_cache['antigravity_system_obfuscation_mode'] = 'protected'
+    monkeypatch.setenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED', 'true')
     assert await config.get_antigravity_system_obfuscation_mode() == 'protected'
     monkeypatch.setenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED', 'false')
     assert await config.get_antigravity_system_obfuscation_mode() == 'off'
@@ -139,6 +144,8 @@ async def test_panel_mode_save_reload(tmp_path, monkeypatch, mode):
             # An older panel can still turn the feature off.
             await config_routes.save_config(ConfigSaveRequest(config={'antigravity_system_vowel_obfuscation_enabled': False}), token='test')
             assert await config.get_antigravity_system_obfuscation_mode() == 'off'
+            await config_routes.save_config(ConfigSaveRequest(config={'antigravity_system_vowel_obfuscation_enabled': True}), token='test')
+            assert await config.get_antigravity_system_obfuscation_mode() == 'protected'
     finally:
         await adapter.close()
 
@@ -235,8 +242,47 @@ def test_exact_response_contract_is_preserved(protect_technical):
 
 
 @pytest.mark.parametrize('mode', ['full', 'protected'])
+async def test_normalization_preserves_bare_output_delimiters_and_json_example(mode):
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    config._config_cache['antigravity_system_obfuscation_mode'] = mode
+    example = '{"chunk_id": 1, "violation_signal": [], "unknowns": []}'
+    source = (
+        'Write the result between FINAL_JSON_START and FINAL_JSON_END.\n'
+        f'Use this example when nothing is found: {example}'
+    )
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': source}]},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    guidance = result['systemInstruction']['parts'][-1]['text']
+    assert 'Wr1t3 th3 r3svlt b3tw33n' in guidance
+    for literal in ('FINAL_JSON_START', 'FINAL_JSON_END', example):
+        assert f'<gcli_literal>{literal}</gcli_literal>' in guidance
+
+
+@pytest.mark.parametrize('mode', ['full', 'protected'])
+async def test_normalization_preserves_explicit_multiline_literals(mode):
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    config._config_cache['antigravity_system_obfuscation_mode'] = mode
+    block = '<literal>\nopen payload v1.0\n  {"unknowns": []}\nclose payload\n</literal>'
+    source = f'Follow this format.\n{block}\nExplain the result.'
+    request = {
+        'model': 'gemini-2.5-flash-lite',
+        'systemInstruction': {'parts': [{'text': source}]},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    guidance = result['systemInstruction']['parts'][-1]['text']
+    assert guidance == (
+        f'F0ll0w th1s f0rm4t.\n<gcli_literal>{block}</gcli_literal>\n3xpl41n th3 r3svlt.'
+    )
+
+
+@pytest.mark.parametrize('mode', ['full', 'protected'])
 @pytest.mark.parametrize('schema_key', ['responseSchema', 'responseJsonSchema'])
-async def test_normalization_preserves_response_schema_literals(mode, schema_key):
+async def test_normalization_passes_through_generic_schema_requests(mode, schema_key):
     from src.converter.gemini_fix import normalize_gemini_request
 
     config._config_cache['antigravity_system_obfuscation_mode'] = mode
@@ -257,11 +303,7 @@ async def test_normalization_preserves_response_schema_literals(mode, schema_key
         'generationConfig': {schema_key: schema},
     }
     result = await normalize_gemini_request(request, mode='antigravity')
-    decoder, guidance = [part['text'] for part in result['systemInstruction']['parts']]
-    assert 'a/e/i/o/u -> 4/3/1/0/v' in decoder
-    assert 'C0mp4r3 th3 r3svlts.' in guidance
-    for literal in ('assessment', 'verdict', 'available', 'unknown', 'S/L/A/U/N', 'null', 'true', 'false'):
-        assert f'<gcli_literal>{literal}</gcli_literal>' in guidance
+    assert result['systemInstruction'] == request['systemInstruction']
     assert result['generationConfig'][schema_key] == schema
     assert result['contents'] == request['contents']
 
@@ -271,3 +313,92 @@ def test_prose_only_decoder_does_not_introduce_literal_markup():
     parts = protected_system_parts([{'text': 'Compare the numbers. Explain in Chinese.'}], [])
     assert 'gcli_literal' not in '\n'.join(p['text'] for p in parts)
     assert 'a/e/i/o/u -> 4/3/1/0/v' in parts[0]['text']
+
+
+@pytest.mark.parametrize('contract', [
+    '## Output Format\nUse the value pending review.\n```yaml\n# Example\nstatus: pending review\n```\nEnd with done.\n',
+    '返回格式：\r\n遇到未知项时使用 pending review。\r\n',
+    '【输出格式】\n遇到未知项时使用 pending review。\n',
+    'Return the result as a CSV record.\nUse pending review for unresolved items.\n',
+    'The response must be a JSON object.\nUse pending review for unresolved items.\n',
+])
+async def test_default_preserves_output_contract_without_schema(contract):
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    source = f'Compare the records.\n{contract}## Notes\nExplain the result.'
+    request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': source}]}}
+    result = await normalize_gemini_request(request, mode='antigravity')
+    guidance = result['systemInstruction']['parts'][-1]['text']
+    assert guidance == f'C0mp4r3 th3 r3c0rds.\n{contract}## N0t3s\n3xpl41n th3 r3svlt.'
+
+
+async def test_default_preserves_system_text_in_json_mode_without_schema():
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    request = {
+        'model': 'gemini-2.5-flash',
+        'systemInstruction': {'parts': [{'text': 'Use pending review for unresolved items.'}]},
+        'generationConfig': {'responseMimeType': 'application/json'},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    assert result['systemInstruction'] == request['systemInstruction']
+    assert result['generationConfig']['responseMimeType'] == 'application/json'
+
+
+async def test_default_preserves_declared_stop_text_without_schema():
+    from src.converter.gemini_fix import normalize_gemini_request
+
+    request = {
+        'model': 'gemini-2.5-flash',
+        'systemInstruction': {'parts': [{'text': 'Use the delimiter finished now when done.'}]},
+        'generationConfig': {'stopSequences': ['finished now']},
+    }
+    result = await normalize_gemini_request(request, mode='antigravity')
+    guidance = result['systemInstruction']['parts'][-1]['text']
+    assert guidance == 'Vs3 th3 d3l1m1t3r <gcli_literal>finished now</gcli_literal> wh3n d0n3.'
+
+
+@pytest.mark.parametrize('literal', [
+    '{{ product_title }}', '{customer.name!r}', '%(status)s', '%APP_HOME%',
+    '<result data-mode="raw">', '</result>', 'file://', '12.5 mg/mL',
+])
+def test_protected_preserves_technical_literals_without_schema(literal):
+    from src.converter.protected_leet import protected_system_parts
+
+    parts = protected_system_parts([{'text': f'Compare {literal} carefully.'}], [])
+    assert parts[-1]['text'] == f'C0mp4r3 <gcli_literal>{literal}</gcli_literal> c4r3fvlly.'
+
+
+def test_protected_preserves_technical_literals_adjacent_to_chinese_prose():
+    from src.converter.protected_leet import protected_system_parts
+
+    source = '请记录chunk_id及riskScore，容量20oz，查询https://example.com/api，并用FINAL_JSON_START开头。'
+    parts = protected_system_parts([{'text': source}], [])
+    for literal in ('chunk_id', 'riskScore', '20oz', 'https://example.com/api', 'FINAL_JSON_START'):
+        assert f'<gcli_literal>{literal}</gcli_literal>' in parts[-1]['text']
+
+
+def test_protected_does_not_treat_prose_about_input_format_as_output_contract():
+    from src.converter.protected_leet import protected_system_parts
+
+    parts = protected_system_parts([{'text': 'Return a summary of the JSON input.\nExplain the result.'}], [])
+    assert parts[-1]['text'].endswith('\n3xpl41n th3 r3svlt.')
+
+
+def test_protected_keeps_uninspected_structured_text_at_json_scan_limit():
+    from src.converter.protected_leet import protected_system_parts
+
+    example = '{"checks": [true, false, null], "unknowns": []}'
+    source = 'Compare the records.\n' + '[annotation] ' * 140 + '\nExample: ' + example
+    parts = protected_system_parts([{'text': source}], [])
+    assert parts[-1]['text'].startswith('C0mp4r3 th3 r3c0rds.')
+    assert example in parts[-1]['text']
+
+
+def test_preserves_system_text_when_declared_literal_limit_is_exceeded():
+    from src.converter.protected_leet import protected_system_parts
+
+    parts = [{'text': 'Use pending review for unresolved items.'}]
+    values = [f'longer configured state {index}' for index in range(512)] + ['pending review']
+    schema = {'type': 'string', 'enum': values}
+    assert protected_system_parts(parts, [], response_schemas=(schema,)) == parts

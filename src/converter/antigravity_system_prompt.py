@@ -40,7 +40,9 @@ def baseline_prompt() -> str:
     return PROMPT_PATH.read_text(encoding='utf-8').strip()
 
 
-async def prepare_antigravity_system_prompt(request: dict, *, client_profile: str | None = None) -> dict:
+async def prepare_antigravity_system_prompt(
+    request: dict, *, client_profile: str | None = None, api_key_id: str | None = None,
+) -> dict:
     from config import (
         get_antigravity_system_prompt_enabled,
         get_antigravity_system_as_user_enabled,
@@ -49,17 +51,27 @@ async def prepare_antigravity_system_prompt(request: dict, *, client_profile: st
 
     if isinstance(request, _PreparedRequest):
         return request
+    from src.workflow_contracts import encode_workflow_prose, get_workflow_contract
+
+    workflow = get_workflow_contract(api_key_id)
+    if workflow is not None:
+        from src.api.antigravity import is_antigravity_image_request
+        if is_antigravity_image_request(request.get('model', ''), request):
+            workflow = None
     inject = await get_antigravity_system_prompt_enabled()
     as_user = await get_antigravity_system_as_user_enabled()
     obfuscation_mode = await get_antigravity_system_obfuscation_mode()
     obfuscate = obfuscation_mode != 'off'
     result = _PreparedRequest(request)
+    result.workflow_contract = workflow
+    if workflow is not None:
+        workflow.apply_generation_config(result)
     original_instruction = request.get("systemInstruction")
     if original_instruction is None:
         original_instruction = request.get("system_instructions")
     result.fusion_instruction = deepcopy(original_instruction)
     result.fusion_moved_guidance = False
-    if not inject and not as_user and not obfuscate:
+    if not inject and not as_user and not obfuscate and workflow is None:
         return result
     instruction = result.get('systemInstruction')
     if instruction is None:
@@ -72,18 +84,24 @@ async def prepare_antigravity_system_prompt(request: dict, *, client_profile: st
     nonempty_parts = [p for p in parts if isinstance(p, dict) and any(
         v.strip() if isinstance(v, str) else v not in (None, {}, []) for v in p.values()
     )]
-    if obfuscate:
+    if obfuscate or workflow is not None:
         from src.converter.protected_leet import detect_client_profile, instruction_text, protected_system_parts
 
         generation = result.get('generationConfig') or {}
         profile = client_profile or detect_client_profile(instruction_text(instruction))
-        nonempty_parts = protected_system_parts(
-            nonempty_parts,
-            result.get('tools', []),
-            profile,
-            response_schemas=(generation.get('responseSchema'), generation.get('responseJsonSchema')),
-            protect_technical=obfuscation_mode == 'protected',
-        )
+        schemas = (generation.get('responseSchema'), generation.get('responseJsonSchema'))
+        protect_technical = obfuscation_mode == 'protected'
+        json_output = generation.get('responseMimeType') == 'application/json' or any(schemas)
+        if workflow is not None:
+            if obfuscate:
+                nonempty_parts = encode_workflow_prose(nonempty_parts, workflow, profile)
+        elif not json_output:
+            stops = generation.get('stopSequences')
+            nonempty_parts = protected_system_parts(
+                nonempty_parts, result.get('tools', []), profile,
+                response_schemas=schemas, stop_sequences=stops if isinstance(stops, list) else (),
+                protect_technical=protect_technical,
+            )
         if isinstance(instruction, dict):
             result['systemInstruction'] = {**instruction, 'parts': nonempty_parts}
             result.pop('system_instructions', None)
@@ -103,4 +121,9 @@ async def prepare_antigravity_system_prompt(request: dict, *, client_profile: st
             system_parts.extend(nonempty_parts)
         result['systemInstruction'] = {'parts': system_parts}
         result.pop('system_instructions', None)
+    if workflow is not None:
+        system = result.get('systemInstruction') or {}
+        result['systemInstruction'] = {**system, 'parts': [
+            *system.get('parts', []), {'text': workflow.json_guidance},
+        ]}
     return result

@@ -1169,18 +1169,18 @@ async def get_antigravity_system_vowel_obfuscation_enabled() -> bool:
     return await get_antigravity_system_obfuscation_mode() != 'off'
 
 
+DEFAULT_SYSTEM_OBFUSCATION_MODE = 'protected'
+
+
 async def get_antigravity_system_obfuscation_mode() -> str:
-    """New mode ENV > legacy ENV > stored mode > stored legacy boolean."""
+    """New mode ENV > legacy ENV > stored mode > stored legacy boolean > protected."""
     value = os.getenv('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE')
+    legacy = os.getenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED')
+    if value is None and legacy is None:
+        value = await get_config_value('antigravity_system_obfuscation_mode')
+        if value is None:
+            legacy = await get_config_value('antigravity_system_vowel_obfuscation_enabled')
     if value is not None:
         return value if value in ('off', 'full', 'protected') else 'off'
-    legacy_env = os.getenv('ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED')
-    if legacy_env is not None:
-        return 'full' if legacy_env.lower() in ('true', '1', 'yes', 'on') else 'off'
-    value = await get_config_value('antigravity_system_obfuscation_mode', None)
-    if value is not None:
-        return value if value in ('off', 'full', 'protected') else 'off'
-    value = await get_config_value('antigravity_system_vowel_obfuscation_enabled', False,
-                                   env_var='ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED')
-    enabled = value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
-    return 'full' if enabled else 'off'
+    enabled = legacy.lower() in ('true', '1', 'yes', 'on') if isinstance(legacy, str) else legacy
+    return DEFAULT_SYSTEM_OBFUSCATION_MODE if enabled is None or enabled else 'off'
