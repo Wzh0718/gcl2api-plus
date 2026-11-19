@@ -14,7 +14,7 @@ from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from log import log
 from src.credential_manager import credential_manager
@@ -958,7 +958,43 @@ class AccountConcurrencyRequest(BaseModel):
 
 
 class AccountUsagePolicyRequest(BaseModel):
-    mode: Literal["inherit", "off"]
+    mode: Literal["inherit", "off", "custom"]
+    limits: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_limits(self):
+        from src.antigravity_usage import validate_account_usage_limits
+
+        if self.mode == "custom":
+            if not self.limits:
+                raise ValueError("至少填写一项账号上限")
+            validate_account_usage_limits(self.limits)
+        elif self.limits:
+            raise ValueError("仅账号自定义模式可填写上限")
+        return self
+
+
+def _validate_usage_policy_filename(filename: str):
+    if not filename.endswith(".json") or os.path.basename(filename) != filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+
+
+async def _account_usage_policy_snapshot(filename: str):
+    from src.antigravity_usage import get_account_usage_snapshots
+
+    snapshot = (await get_account_usage_snapshots([filename], policy_details=True)).get(filename)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Antigravity 凭证文件不存在")
+    return snapshot
+
+
+@router.get("/{filename}/usage-policy")
+async def get_account_usage_policy(filename: str, token: str = Depends(verify_panel_token)):
+    _validate_usage_policy_filename(filename)
+    snapshot = await _account_usage_policy_snapshot(filename)
+    if snapshot["state"] == "unavailable":
+        raise HTTPException(status_code=503, detail="账号用量策略暂时无法读取")
+    return {"account_usage": snapshot}
 
 
 @router.patch("/{filename}/usage-policy")
@@ -967,19 +1003,17 @@ async def update_account_usage_policy(
     request: AccountUsagePolicyRequest,
     token: str = Depends(verify_panel_token),
 ):
-    from src.antigravity_usage import get_account_usage_snapshots, set_account_usage_mode
+    from src.antigravity_usage import set_account_usage_policy
 
-    if not filename.endswith(".json") or os.path.basename(filename) != filename:
-        raise HTTPException(status_code=400, detail="无效的文件名")
+    _validate_usage_policy_filename(filename)
     try:
-        saved = await set_account_usage_mode(filename, exempt=request.mode == "off")
+        saved = await set_account_usage_policy(filename, mode=request.mode, limits=request.limits)
     except (sqlite3.Error, OSError) as exc:
         log.error(f"[ACCOUNT USAGE] Policy save failed: {type(exc).__name__}")
         raise HTTPException(status_code=503, detail="账号用量策略暂时无法保存") from exc
     if not saved:
         raise HTTPException(status_code=404, detail="Antigravity 凭证文件不存在")
-    snapshots = await get_account_usage_snapshots([filename])
-    snapshot = snapshots[filename]
+    snapshot = await _account_usage_policy_snapshot(filename)
     snapshot.setdefault("mode", request.mode)
     return {"account_usage": snapshot}
 

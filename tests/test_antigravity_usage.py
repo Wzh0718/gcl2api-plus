@@ -21,7 +21,8 @@ def settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_config_cache", {usage.CONFIG_KEY: policy})
     with sqlite3.connect(usage._db_path()) as db:
         db.execute("""CREATE TABLE antigravity_credentials (
-            filename TEXT PRIMARY KEY, usage_limit_disabled INTEGER NOT NULL DEFAULT 0
+            filename TEXT PRIMARY KEY, usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
+            usage_limit_overrides TEXT NOT NULL DEFAULT '{}'
         )""")
     return policy
 
@@ -249,6 +250,59 @@ async def test_account_override_is_persistent_scoped_and_keeps_measuring(tmp_pat
         assert response.json()["account_usage"]["windows"][0]["requests"] == {"used": 2, "limit": 1}
         with pytest.raises(usage.AccountUsageLimitReached):
             await usage.begin_account_usage(first)
+    await storage.close()
+
+
+async def test_account_limits_override_each_field_without_changing_other_accounts(tmp_path, monkeypatch):
+    from src.panel import creds
+    from src.storage.sqlite_manager import SQLiteManager
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKERS", "2")
+    clock = SimpleNamespace(now=10000)
+    monkeypatch.setattr(usage, "time", SimpleNamespace(time=lambda: clock.now, monotonic=lambda: clock.now))
+    storage = SQLiteManager()
+    await storage.initialize()
+    first, second = "first.json", "second.json"
+    for account in (first, second):
+        assert await storage.store_credential(account, {"refresh_token": account}, mode="antigravity")
+    await storage.set_config(usage.CONFIG_KEY, {"enabled": True, "requests_per_minute": 1,
+                                               "requests_per_hour": 5, "generated_tokens_per_hour": 10})
+
+    app = FastAPI()
+    app.include_router(creds.router)
+    app.dependency_overrides[creds.verify_panel_token] = lambda: "test-token"
+    endpoint = f"/creds/{first}/usage-policy"
+    limits = {"requests_per_minute": 2, "generated_tokens_per_hour": 0}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/creds/missing.json/usage-policy")).status_code == 404
+        for invalid in ({"requests_per_minute": True}, {"unknown": 1}, {"requests_per_minute": 2**53}):
+            assert (await client.patch(endpoint, json={"mode": "custom", "limits": invalid})).status_code == 422
+        saved = await client.patch(endpoint, json={"mode": "custom", "limits": limits})
+        assert saved.status_code == 200
+        policy = (await client.get(endpoint)).json()["account_usage"]
+        assert policy["mode"] == "custom" and policy["overrides"] == limits
+        assert policy["global_limits"]["generated_tokens_per_hour"] == 10
+        assert policy["windows"][1]["requests"]["limit"] == 5
+        first_attempt = await usage.begin_account_usage(first)
+        await first_attempt.confirm({"candidatesTokenCount": 12})
+        assert await usage.begin_account_usage(first)
+        with pytest.raises(usage.AccountUsageLimitReached):
+            await usage.begin_account_usage(first)
+        assert await usage.begin_account_usage(second)
+        with pytest.raises(usage.AccountUsageLimitReached):
+            await usage.begin_account_usage(second)
+
+        await storage.set_config(usage.CONFIG_KEY, {"enabled": False})
+        clock.now += 1
+        with pytest.raises(usage.AccountUsageLimitReached):
+            await usage.begin_account_usage(first)
+        assert await usage.begin_account_usage(second) is None
+        assert (await client.patch(endpoint, json={"mode": "off"})).json()["account_usage"]["overrides"] == limits
+        assert await usage.begin_account_usage(first)
+        restored = (await client.patch(endpoint, json={"mode": "inherit"})).json()["account_usage"]
+        assert restored["overrides"] == {} and restored["mode"] == "inherit"
+        assert await usage.begin_account_usage(first) is None
     await storage.close()
 
 

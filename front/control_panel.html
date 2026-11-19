@@ -2131,7 +2131,7 @@
     <link rel="stylesheet" href="./front/call_monitor.css?v=latency-tooltip-20261106">
     <link rel="stylesheet" href="./front/config_tabs.css?v=prompt-settings-20261117">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
-    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-inline">
+    <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
 </head>
 
 <body>
@@ -3320,9 +3320,9 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityAccountUsageEnabled" class="config-checkbox" />
-                                    启用账号用量限制
+                                    启用全局用量限制
                                 </label>
-                                <small class="config-note">上限默认应用到每个 Antigravity 账号，可在凭证卡片单独关闭。同一账号的所有 Key 与模型共用计数。生成 Token 以回执中的输出与思考 Token 为准。任一窗口达限时暂停向该账号派发新请求，0 表示该项不限。</small>
+                                <small class="config-note">全局上限用于账号未单独设置的项目。关闭全局后，账号自定义上限仍生效。同一账号的所有 Key 与模型共用计数。生成 Token 以回执中的输出与思考 Token 为准。任一窗口达限时暂停派发，0 表示该项不限。</small>
                                 <button type="button" id="accountUsagePreset" class="btn btn-small" onclick="applyAccountUsageDefaults()" disabled>填入推荐值</button>
                             </div>
 
@@ -3702,7 +3702,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=workflow-protection"></script>
+    <script src="./front/common.js?v=account-usage-dialog"></script>
 
 </body>
 

@@ -1281,17 +1281,14 @@ function buildCredStatusBadges(credInfo, manager) {
 // =====================================================================
 function renderAntigravityAccountUsage(snapshot) {
     if (!snapshot) return '';
+    const modeLabel = { custom: '账号自定义', off: '单独关闭' }[snapshot.mode];
     return `
         <div class="cred-account-usage">
             <strong>账号用量</strong>
             <div class="cred-account-usage-content" aria-live="polite">
                 ${renderAntigravityAccountUsageDetails(snapshot)}
             </div>
-            <select aria-label="账号用量限制" data-account-usage-mode ${snapshot.mode ? '' : 'disabled'}>
-                <option value="inherit" ${snapshot.mode === 'inherit' ? 'selected' : ''}>继承全局</option>
-                <option value="off" ${snapshot.mode === 'off' ? 'selected' : ''}>单独关闭</option>
-                ${snapshot.mode ? '' : '<option value="" selected>暂不可用</option>'}
-            </select>
+            ${modeLabel ? `<span class="cred-account-usage-mode">${modeLabel}</span>` : ''}
         </div>`;
 }
 
@@ -1319,29 +1316,6 @@ function renderAntigravityAccountUsageDetails(snapshot) {
                 ${renderMetric(window.generated_tokens, 'Token')}
             </span>
         </span>`).join('');
-}
-
-async function saveAntigravityAccountUsageMode(select, card, credInfo) {
-    const previousMode = credInfo.account_usage.mode;
-    select.disabled = true;
-    try {
-        const response = await fetch(`./creds/${encodeURIComponent(credInfo.filename)}/usage-policy`, {
-            method: 'PATCH',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({ mode: select.value }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '账号用量策略保存失败');
-        credInfo.account_usage = data.account_usage;
-        select.value = data.account_usage.mode;
-        card.querySelector('.cred-account-usage-content').innerHTML = renderAntigravityAccountUsageDetails(data.account_usage);
-        showStatus('账号用量策略已保存', 'success');
-    } catch (error) {
-        select.value = previousMode;
-        showStatus(escapeHtml(error.message), 'error');
-    } finally {
-        select.disabled = false;
-    }
 }
 
 function createCredCard(credInfo, manager) {
@@ -1387,6 +1361,7 @@ function createCredCard(credInfo, manager) {
         <button class="cred-btn" onclick="test${managerType === 'antigravity' ? 'Antigravity' : ''}Credential('${filename}')" title="测试凭证是否可用">消息测试</button>
         <button class="cred-btn" onclick="toggle${managerType === 'antigravity' ? 'Antigravity' : ''}ErrorDetails('${pathId}')" title="查看该凭证的详细报错信息">查看报错</button>
         <button class="cred-btn delete" data-filename="${filename}" data-action="delete">删除</button>
+        ${managerType === 'antigravity' ? '<button type="button" class="cred-btn" data-adjust-account-usage>调整用量</button>' : ''}
     `;
 
     // 邮箱信息
@@ -1442,10 +1417,7 @@ function createCredCard(credInfo, manager) {
     div.querySelectorAll('[data-concurrency-account]').forEach(button => {
         button.addEventListener('click', () => openAccountConcurrencyDialog(button.dataset.concurrencyAccount));
     });
-    const usageSelect = div.querySelector('[data-account-usage-mode]');
-    if (usageSelect) {
-        usageSelect.addEventListener('change', () => saveAntigravityAccountUsageMode(usageSelect, div, credInfo));
-    }
+    div.querySelector('[data-adjust-account-usage]')?.addEventListener('click', () => openAccountUsageDialog(div, credInfo));
     div.querySelectorAll('[data-telemetry-account]').forEach(button => {
         button.addEventListener('click', () => openAccountTelemetryDialog(button.dataset.telemetryAccount));
     });
@@ -1586,6 +1558,131 @@ function openAccountConcurrencyDialog(filename) {
     document.body.appendChild(dialog);
     dialog.showModal();
     form.elements.requestConcurrency.focus();
+}
+
+const accountUsageEditorFields = {
+    requests_per_minute: '每分钟请求次数',
+    requests_per_hour: '每小时请求次数',
+    generated_tokens_per_minute: '每分钟生成 Token',
+    generated_tokens_per_hour: '每小时生成 Token',
+};
+
+async function openAccountUsageDialog(card, credInfo) {
+    if (document.getElementById('accountUsageDialog')) return;
+    const dialog = document.createElement('dialog');
+    dialog.id = 'accountUsageDialog';
+    dialog.className = 'proxy-policy-dialog';
+    dialog.setAttribute('aria-labelledby', 'accountUsageDialogTitle');
+    dialog.setAttribute('aria-describedby', 'accountUsageDialogHint');
+    dialog.innerHTML = `<form class="proxy-policy-form">
+        <div class="proxy-dialog-head"><h3 id="accountUsageDialogTitle">调整用量</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
+        <p class="proxy-dialog-copy account-usage-dialog-account" data-account></p>
+        <p id="accountUsageDialogHint" class="proxy-dialog-copy">账号值优先，留空继承全局，填 0 表示该项不限。</p>
+        <fieldset class="account-usage-dialog-fields" aria-label="账号用量上限" disabled>
+            ${Object.entries(accountUsageEditorFields).map(([name, label]) => `<label class="proxy-dialog-field">
+                <span>${label}</span><input name="${name}" type="number" min="0" max="${Number.MAX_SAFE_INTEGER}" step="1" inputmode="numeric">
+            </label>`).join('')}
+        </fieldset>
+        <label class="account-usage-dialog-off"><input name="off" type="checkbox" disabled> 单独关闭此账号的用量限制</label>
+        <p class="proxy-dialog-copy" data-loading role="status">正在加载账号用量设置…</p>
+        <p class="proxy-dialog-copy" data-error role="alert" hidden></p>
+        <div class="proxy-dialog-actions">
+            <button type="button" data-inherit class="secondary" disabled>恢复继承</button>
+            <button type="button" data-close class="secondary">取消</button>
+            <button type="submit" disabled>保存</button>
+        </div>
+    </form>`;
+    dialog.querySelector('[data-account]').textContent = credInfo.user_email || credInfo.filename;
+    const form = dialog.querySelector('form');
+    const fields = form.querySelector('fieldset');
+    const off = form.elements.off;
+    const reset = form.querySelector('[data-inherit]');
+    const save = form.querySelector('[type="submit"]');
+    const loading = dialog.querySelector('[data-loading]');
+    const errorLabel = dialog.querySelector('[data-error]');
+    const closeButtons = dialog.querySelectorAll('[data-close]');
+    const inputs = Object.keys(accountUsageEditorFields).map(name => form.elements[name]);
+    const endpoint = `./creds/${encodeURIComponent(credInfo.filename)}/usage-policy`;
+    const controller = new AbortController();
+    let loaded = false;
+    let saving = false;
+
+    function updateControls() {
+        off.disabled = reset.disabled = save.disabled = !loaded || saving;
+        fields.disabled = off.disabled || off.checked;
+        closeButtons.forEach(button => { button.disabled = saving; });
+    }
+    function showError(message) {
+        errorLabel.textContent = message;
+        errorLabel.hidden = !message;
+    }
+
+    off.addEventListener('change', updateControls);
+    reset.addEventListener('click', () => {
+        off.checked = false;
+        inputs.forEach(input => { input.value = ''; });
+        updateControls();
+        inputs[0].focus();
+    });
+    closeButtons.forEach(button => button.addEventListener('click', () => dialog.close()));
+    dialog.addEventListener('cancel', event => { if (saving) event.preventDefault(); });
+    dialog.addEventListener('close', () => {
+        controller.abort();
+        dialog.remove();
+    });
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (!loaded || saving || !form.reportValidity()) return;
+        const limits = Object.fromEntries(inputs.filter(input => input.value !== '').map(input => [input.name, input.valueAsNumber]));
+        const payload = off.checked ? { mode: 'off' } : Object.keys(limits).length ? { mode: 'custom', limits } : { mode: 'inherit' };
+        saving = true;
+        updateControls();
+        showError('');
+        try {
+            const response = await fetch(endpoint, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify(payload),
+            });
+            const data = await readJsonResponse(response, '账号用量设置保存失败');
+            credInfo.account_usage = data.account_usage;
+            const usageRow = card.querySelector('.cred-account-usage');
+            const usageHtml = renderAntigravityAccountUsage(data.account_usage);
+            if (usageRow) usageRow.outerHTML = usageHtml;
+            else card.querySelector('.cred-actions')?.insertAdjacentHTML('beforebegin', usageHtml);
+            dialog.close();
+            showStatus('账号用量设置已保存', 'success');
+        } catch (error) {
+            showError(error.message);
+        } finally {
+            saving = false;
+            updateControls();
+        }
+    });
+
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    try {
+        const response = await fetch(endpoint, { headers: getAuthHeaders(), signal: controller.signal });
+        const data = await readJsonResponse(response, '账号用量设置加载失败');
+        if (!dialog.open) return;
+        const { mode, overrides, global_limits: globalLimits } = data.account_usage;
+        const format = new Intl.NumberFormat('zh-CN');
+        inputs.forEach(input => {
+            input.value = overrides[input.name] ?? '';
+            const globalValue = globalLimits[input.name];
+            input.placeholder = !globalLimits.enabled ? '全局未启用'
+                : (globalValue === 0 ? '全局不限' : `全局 ${format.format(globalValue)}`);
+        });
+        off.checked = mode === 'off';
+        loaded = true;
+        updateControls();
+        if (document.activeElement === closeButtons[0]) (off.checked ? off : inputs[0]).focus();
+    } catch (error) {
+        if (dialog.open) showError(error.message);
+    } finally {
+        loading.hidden = true;
+    }
 }
 
 const ANTIGRAVITY_WARMUP_CONFIG_FIELDS = [
