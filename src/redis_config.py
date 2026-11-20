@@ -11,6 +11,31 @@ class RedisConfigurationError(ValueError):
     """Raised for invalid or ambiguous Redis environment configuration."""
 
 
+# 客户端超时默认 3 秒。写死 1 秒在高并发下会误判：连接前要先做一次阻塞
+# DNS 解析（asyncio 默认线程池），号池打满时排队本身就超过 1 秒，于是
+# 「DNS 慢」被报成「Redis 不可用」。3 秒仍远低于任何用户可感知的等待。
+DEFAULT_REDIS_TIMEOUT_SECONDS = 3.0
+MAX_REDIS_TIMEOUT_SECONDS = 60.0
+
+
+def _read_timeout(name: str) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return DEFAULT_REDIS_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_REDIS_TIMEOUT_SECONDS
+    if not 0 < value <= MAX_REDIS_TIMEOUT_SECONDS:
+        return DEFAULT_REDIS_TIMEOUT_SECONDS
+    return value
+
+
+def redis_socket_timeouts() -> tuple[float, float]:
+    """连接超时与读写超时（秒），可用 REDIS_SOCKET_CONNECT_TIMEOUT / REDIS_SOCKET_TIMEOUT 覆盖。"""
+    return _read_timeout("REDIS_SOCKET_CONNECT_TIMEOUT"), _read_timeout("REDIS_SOCKET_TIMEOUT")
+
+
 def create_redis_client_from_env(redis_module: Any = None, **kwargs: Any) -> Any:
     """Create a Redis client without concatenating credentials into the URL."""
     redis_url = os.getenv("REDIS_URL", "").strip()

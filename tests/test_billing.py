@@ -387,6 +387,36 @@ async def test_redis_mirror_uses_integer_counters_and_never_blocks_sqlite_on_fai
 
 
 @pytest.mark.asyncio
+async def test_redis_mirror_client_uses_configurable_socket_timeouts(monkeypatch):
+    from src import billing as billing_module
+
+    captured = {}
+
+    class FakeClient:
+        async def ping(self):
+            return True
+
+        async def aclose(self):
+            return None
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.setenv("REDIS_SOCKET_CONNECT_TIMEOUT", "7")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT", "9")
+    monkeypatch.setattr(billing_module, "create_redis_client_from_env", fake_create)
+
+    client = await billing_module._RedisBillingMirror()._get_client()
+
+    assert client is not None
+    # 1 秒超时会把高并发下的 DNS 排队误报成 Redis 不可用，必须可配。
+    assert captured["socket_connect_timeout"] == 7.0
+    assert captured["socket_timeout"] == 9.0
+    assert captured["decode_responses"] is True
+
+
 async def test_without_redis_url_no_redis_client_is_created(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
     from src.billing import _RedisBillingMirror
