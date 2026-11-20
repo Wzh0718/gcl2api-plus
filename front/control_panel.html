@@ -3373,26 +3373,6 @@
                                 <small class="config-note">账号某模型剩余额度比例低于该值时本轮不用它（默认 0.05 = 5%）；快照 15 分钟内有效，全部低于阈值时自动回退不避让</small>
                             </div>
 
-                            <div class="form-group">
-                                <label>AGY CLI 版本（自动追踪）:</label>
-                                <div class="config-info"
-                                    style="background-color: #e8f5e9; border: 1px solid #66bb6a; color: #1b5e20;">
-                                    <div>当前生效版本：<strong id="cliVersionCurrent">-</strong>（<span
-                                            id="cliVersionSource">-</span>）</div>
-                                    <div>官方最新版本：<span id="cliVersionLatest">-</span></div>
-                                    <div>上次检查：<span id="cliVersionLastCheck">-</span></div>
-                                    <div>上次探测：<span id="cliVersionLastProbe">-</span></div>
-                                    <div style="margin-top: 8px;">
-                                        <button type="button" class="btn" id="cliVersionCheckBtn"
-                                            onclick="checkCliVersion()">立即检查</button>
-                                        <button type="button" class="btn" id="cliVersionResetBtn"
-                                            style="margin-left: 8px;" onclick="resetCliVersion()">重置为保底版本</button>
-                                    </div>
-                                </div>
-                                <small class="config-note">自动追踪官方 auto-updater
-                                    manifest；发现新版本后先用真实凭证探测验证，通过才切换 User-Agent，验证失败保持现状。保底版本由环境变量
-                                    ANTIGRAVITY_CLI_VERSION 提供（只托底不封顶）。</small>
-                            </div>
                         </div>
                         <div class="config-group">
                             <h4>抗截断配置</h4>
