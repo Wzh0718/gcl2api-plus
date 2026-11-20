@@ -175,7 +175,7 @@ async def check_antigravity_account_health(
             eligibility_checked_at=timestamp,
         )
 
-    previous_ip = current.get("egress_ip")
+    previous_ip = network.get("fixed_proxy_ip") or current.get("egress_ip")
     if previous_ip and previous_ip != egress_ip:
         return await storage.update_antigravity_account_health(
             credential_name,

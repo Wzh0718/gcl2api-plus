@@ -2369,11 +2369,12 @@
                     style="margin: 20px 0; padding: 15px; border: 2px solid #e8f4fd; border-radius: 8px; background: #f8fcff;">
                     <div style="font-weight: bold; color: #0066cc; margin-bottom: 10px;">🔑 Refresh Token 导入</div>
                     <div style="color: #666; font-size: 13px; margin-bottom: 12px; line-height: 1.6;">
-                        直接粘贴 refresh_token 导入 Antigravity 账号，无需浏览器授权流程。
+                        支持批量粘贴凭证 JSON。选择代理组时，每个账号固定绑定一个空闲出口。无可用出口的条目会标为「已禁用」，可在巡查时检查并启用。
                     </div>
                     <div class="input-group">
-                        <textarea id="antigravityRefreshTokenInput" rows="3"
-                            placeholder="粘贴 refresh_token..."
+                        <textarea id="antigravityRefreshTokenInput" rows="5" spellcheck="false" autocomplete="off"
+                            aria-label="Refresh Token 或凭证 JSON"
+                            placeholder='[{"refresh_token":"…"}, {"refresh_token":"…"}]'
                             style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;"></textarea>
                     </div>
                     <div class="input-group" style="margin-top: 10px;">
@@ -2389,10 +2390,39 @@
                             placeholder="自定义代理地址，例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
                             style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;">
                     </div>
-                    <button class="btn" style="margin-top: 10px;" onclick="importAntigravityByRefreshToken()">
+                    <button class="btn" id="antigravityImportBtn" type="button" style="margin-top: 10px;"
+                        onclick="importAntigravityByRefreshToken()">
                         导入凭证
                     </button>
+                    <div id="antigravityImportHistory" style="margin-top: 12px;" hidden>
+                        <label for="antigravityImportBatch">导入批次</label>
+                        <select id="antigravityImportBatch" onchange="refreshAntigravityImportProgress()"></select>
+                        <ol id="antigravityImportResults" style="margin: 12px 0 0; padding-left: 1.5rem;"
+                            aria-live="polite" aria-label="逐条导入结果"></ol>
+                    </div>
                 </div>
+
+                <dialog id="antigravityImportEditDialog" aria-labelledby="antigravityImportEditTitle"
+                    style="width: min(32rem, 90vw); padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+                    <form>
+                        <h3 id="antigravityImportEditTitle">编辑导入条目</h3>
+                        <label class="form-group">
+                            新的 refresh_token
+                            <input name="refresh_token" type="password" placeholder="留空保留原凭证" autocomplete="off">
+                        </label>
+                        <label class="form-group">
+                            代理方式
+                            <select name="proxy_mode"></select>
+                        </label>
+                        <label class="form-group" hidden>
+                            自定义代理地址
+                            <input name="proxy_url" type="password" placeholder="留空保留已设置的地址" autocomplete="off">
+                        </label>
+                        <p role="status"></p>
+                        <button class="btn" type="submit">保存并检查</button>
+                        <button class="btn" type="button" onclick="this.closest('dialog').close()">取消</button>
+                    </form>
+                </dialog>
 
                 <div id="antigravityAuthUrlSection" class="hidden">
                     <h3>Antigravity 认证链接：</h3>
@@ -2772,6 +2802,8 @@
                             onclick="batchAntigravityWarmup('cancel')" disabled>批量取消养号</button>
                         <button class="batch-btn batch-email" onclick="refreshAllAntigravityEmails()">刷新所有邮箱</button>
                         <button class="batch-btn" onclick="deduplicateAntigravityByEmail()">凭证一键去重</button>
+                        <button type="button" class="batch-btn" id="antigravityBatchMessageTestBtn"
+                            onclick="batchTestAntigravityCredentials(this)" disabled>批量消息测试</button>
                     </div>
                 </div>
 

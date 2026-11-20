@@ -32,6 +32,7 @@ from src.router.vertex.openai import router as vertex_openai_router
 from src.router.vertex.model_list import router as vertex_model_list_router
 from src.task_manager import shutdown_all_tasks
 from src.panel import router as panel_router
+from src.panel.auth import refresh_import_worker
 from src.request_features import RequestContentMiddleware
 from src.request_timing import RequestTimingMiddleware
 from src.keeplive import keepalive_service
@@ -190,7 +191,12 @@ async def lifespan(app: FastAPI):
     from src.request_capture import capture_maintenance_loop
     capture_task = asyncio.create_task(capture_maintenance_loop(), name="request_capture_cleanup")
 
-    yield
+    import_task = asyncio.create_task(refresh_import_worker(), name="refresh_import_worker")
+    try:
+        yield
+    finally:
+        import_task.cancel()
+        await asyncio.gather(import_task, return_exceptions=True)
 
     capture_task.cancel()
     try:

@@ -21,7 +21,7 @@ def settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_config_cache", {usage.CONFIG_KEY: policy})
     with sqlite3.connect(usage._db_path()) as db:
         db.execute("""CREATE TABLE antigravity_credentials (
-            filename TEXT PRIMARY KEY, usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
+            filename TEXT PRIMARY KEY, usage_resume_at INTEGER NOT NULL DEFAULT 0, usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
             usage_limit_overrides TEXT NOT NULL DEFAULT '{}'
         )""")
     return policy
@@ -323,3 +323,47 @@ async def test_image_retry_rechecks_limit_before_sending(settings, monkeypatch):
             headers={}, json_body={"requestType": "image_gen"}, credential_name="shared",
         )
     upstream.assert_awaited_once()
+
+
+async def test_usage_isolation_shared_by_selectors_and_expires_at_deadline(tmp_path, monkeypatch):
+    from src.api.antigravity import _account_pool_429
+    from src.storage import sqlite_manager
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("WORKERS", "1")
+    policy = {"enabled": True, "requests_per_minute": 1}
+    monkeypatch.setattr(config, "_config_initialized", True)
+    monkeypatch.setattr(config, "_config_cache", {usage.CONFIG_KEY: policy})
+    storage = sqlite_manager.SQLiteManager()
+    await storage.initialize()
+    reader = sqlite_manager.SQLiteManager()
+    await reader.initialize()
+    clock = SimpleNamespace(now=int(usage.time.time()))
+    timer = SimpleNamespace(time=lambda: clock.now)
+    monkeypatch.setattr(usage, "time", timer)
+    monkeypatch.setattr(sqlite_manager, "time", timer)
+    for account in ("first", "second"):
+        assert await storage.store_credential(account, {"refresh_token": account}, mode="antigravity")
+
+    assert await usage.begin_account_usage("first")
+    with pytest.raises(usage.AccountUsageLimitReached) as limited:
+        await usage.begin_account_usage("first")
+    deadline = clock.now + limited.value.retry_after
+    choose = reader.get_next_available_credential
+    assert (await choose("antigravity", "other-model"))[0] == "second"
+    assert await choose("antigravity", credential_name="first") is None
+    blocked = _account_pool_429()
+    assert blocked.rate_limit.reason == "account_usage_limit"
+    assert not await reader.mark_credential_selected("first")
+    states = await reader.get_all_credential_states("antigravity")
+    assert states["first"]["usage_resume_at"] == deadline
+
+    clock.now = deadline - 1
+    with pytest.raises(usage.AccountUsageLimitReached) as queued:
+        await usage.begin_account_usage("first")
+    assert queued.value.retry_after == 1
+    clock.now = deadline
+    assert (await choose("antigravity", credential_name="first"))[0] == "first"
+    assert await usage.begin_account_usage("first")
+    await reader.close()
+    await storage.close()

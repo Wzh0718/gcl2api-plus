@@ -15,12 +15,14 @@ import aiosqlite
 
 from log import log
 from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
+from src.rate_limits import selection_usage_resume_at
 import inspect
 from src.operational_audit import make_event, reference
 from src.credential_revision import credential_snapshot, next_credential_revision, checked_state_updates
 from src.storage.antigravity_warmup_store import AntigravityWarmupStore
 from src.storage.antigravity_telemetry_store import AntigravityTelemetryStore
 from src.storage.call_record_content import decode_details, encode_details
+from src.storage.refresh_import_queue import RefreshImportQueue
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
@@ -93,11 +95,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("tier", "TEXT DEFAULT 'pro'"),
             ("enable_credit", "INTEGER DEFAULT 0"),
             ("usage_limit_disabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("usage_resume_at", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_limit_overrides", "TEXT NOT NULL DEFAULT '{}'"),
             ("proxy_mode", "TEXT DEFAULT 'inherit'"),
             ("proxy_url", "TEXT"),
             ("proxy_group_id", "INTEGER"),
             ("bound_proxy_node_id", "INTEGER"),
+            ("fixed_proxy_ip", "TEXT"),
             ("proxy_bound_at", "REAL"),
             ("rotation_order", "INTEGER DEFAULT 0"),
             ("call_count", "INTEGER DEFAULT 0"),
@@ -154,6 +158,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 # 获取凭证目录
                 self._credentials_dir = os.getenv("CREDENTIALS_DIR", "./creds")
                 self._db_path = os.path.join(self._credentials_dir, "credentials.db")
+                self.refresh_import_queue = RefreshImportQueue(self._db_path, self._credentials_dir)
 
                 # 确保目录存在
                 os.makedirs(self._credentials_dir, exist_ok=True)
@@ -169,6 +174,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
                     # 创建表
                     await self._create_tables(db)
+                    await self.refresh_import_queue.create_schema(db)
                     await self._migrate_proxy_group_exclusive_default(db)
 
                     # 旧版托管密钥只有不可逆哈希；新增密文字段后，新建密钥可在
@@ -329,6 +335,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 -- 是否启用信用额度模式（仅 antigravity，有效值 0/1）
                 enable_credit INTEGER DEFAULT 0,
                 usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
+                usage_resume_at INTEGER NOT NULL DEFAULT 0,
                 usage_limit_overrides TEXT NOT NULL DEFAULT '{}',
 
                 -- 账号级代理：inherit/custom/direct/group
@@ -336,6 +343,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 proxy_url TEXT,
                 proxy_group_id INTEGER,
                 bound_proxy_node_id INTEGER,
+                fixed_proxy_ip TEXT,
                 proxy_bound_at REAL,
 
                 -- 轮换相关
@@ -460,6 +468,18 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_proxy_group_nodes_group
             ON proxy_group_nodes(group_id, enabled, id)
+        """)
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ag_fixed_proxy_ip
+            ON antigravity_credentials(fixed_proxy_ip) WHERE fixed_proxy_ip IS NOT NULL
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_proxy_import_leases (
+                lease_id TEXT PRIMARY KEY,
+                node_id INTEGER NOT NULL UNIQUE,
+                egress_ip TEXT NOT NULL UNIQUE,
+                expires_at REAL NOT NULL
+            )
         """)
 
         await db.execute("""
@@ -1192,6 +1212,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         credential_name: Optional[str] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Atomically take an eligible account from the queue and move it to the tail."""
+        selection_usage_resume_at.set(0)
         attempted = set(excluded)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
@@ -1208,6 +1229,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                             WHERE pg.id = proxy_group_id
                               AND pg.enabled = 1
                               AND pn.enabled = 1
+                              AND (fixed_proxy_ip IS NULL OR pn.id = bound_proxy_node_id)
                               AND (pn.cooldown_until IS NULL OR pn.cooldown_until <= ?)
                               AND (pn.expires_at IS NULL OR pn.expires_at > ?)
                         )
@@ -1237,14 +1259,20 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                enable_credit, proxy_mode, proxy_url,
                                proxy_group_id
                         FROM antigravity_credentials
-                        WHERE {where_sql}
+                        WHERE {where_sql} AND usage_resume_at <= ?
                         ORDER BY COALESCE(routing_turn, 0) ASC,
                                  COALESCE(rotation_order, 0) ASC,
                                  filename ASC
                         LIMIT 1
-                    """, params) as cursor:
+                    """, [*params, current_time]) as cursor:
                         row = await cursor.fetchone()
                     if not row:
+                        async with db.execute(f"""
+                            SELECT MIN(usage_resume_at) FROM antigravity_credentials
+                            WHERE {where_sql} AND usage_resume_at > ?
+                        """, [*params, current_time]) as cursor:
+                            resume_at, = await cursor.fetchone()
+                        selection_usage_resume_at.set(resume_at or 0)
                         await db.rollback()
                         return None
                     filename = row[0]
@@ -1312,6 +1340,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if mode == "antigravity":
             current_time = time.time()
             routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
+            where_sql += " AND usage_resume_at <= unixepoch()"
             routing_sql = """ , routing_turn = (
                                     SELECT COALESCE(MAX(routing_turn), 0) + 1
                                     FROM antigravity_credentials
@@ -1387,7 +1416,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         await db.execute("DELETE FROM credential_audit_events WHERE created_at < ?", (time.time()-30*86400,))
         await db.execute("DELETE FROM credential_audit_events WHERE id <= (SELECT MAX(id)-100000 FROM credential_audit_events)")
 
-    async def store_credential(self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:
+    async def store_credential(
+        self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli",
+        *, import_network: Optional[Dict[str, str]] = None,
+    ) -> bool:
         """存储或更新凭证"""
         self._ensure_initialized()
 
@@ -1413,6 +1445,18 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     FROM {table_name} WHERE filename = ?
                 """, (filename,)) as cursor:
                     existing = await cursor.fetchone()
+
+                if import_network is not None:
+                    if mode != "antigravity" or existing:
+                        return False
+                    async with db.execute(
+                        """SELECT 1 FROM antigravity_credentials
+                           WHERE json_extract(credential_data, '$.refresh_token') IN (?, ?)
+                           LIMIT 1""",
+                        (import_network.get("refresh_token"), persisted_credential_data.get("refresh_token")),
+                    ) as cursor:
+                        if await cursor.fetchone():
+                            raise ValueError("凭证已导入")
 
                 if existing:
                     # 更新现有凭证（保留状态）
@@ -1455,6 +1499,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         initial_call_count,
                         time.time(),
                     ))
+
+                if import_network is not None:
+                    egress_ip = await self._apply_import_network(db, filename, import_network)
+                    if import_network.get("queue_item_id"):
+                        await self.refresh_import_queue.finish_success(
+                            db, int(import_network["queue_item_id"]), import_network["queue_lease_id"],
+                            filename, import_network.get("email"), egress_ip,
+                        )
 
                 await self._audit_credential(db, filename, mode, "store",
                                              json.loads(existing[6]) if existing else None,
@@ -1613,10 +1665,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
                           a.bound_proxy_node_id, n.name, n.proxy_url,
-                          COALESCE(g.exclusive_assignment, 0),
-                          COALESCE(n.enabled = 1 AND n.group_id = a.proxy_group_id
+                          a.fixed_proxy_ip IS NOT NULL OR COALESCE(g.exclusive_assignment, 0),
+                          COALESCE(g.enabled = 1 AND n.enabled = 1 AND n.group_id = a.proxy_group_id
                             AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
-                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), 0)
+                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), 0),
+                          a.fixed_proxy_ip
                    FROM antigravity_credentials a
                    LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                    LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
@@ -1640,6 +1693,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "bound_proxy_url": row[5],
             "exclusive_assignment": bool(row[6]),
             "bound_proxy_available": bool(row[7]),
+            "fixed_proxy_ip": row[8],
         }
 
     async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
@@ -1649,6 +1703,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         network = await self.get_credential_network(filename, mode=mode)
         if mode != "antigravity":
             return network
+        if network.get("fixed_proxy_ip"):
+            available = network["bound_proxy_available"]
+            return {
+                **network,
+                "proxy_url": network["bound_proxy_url"] if available else None,
+                "proxy_node_id": network["bound_proxy_node_id"] if available else None,
+                "proxy_node_name": network["bound_proxy_node_name"] if available else None,
+            }
         if network["proxy_mode"] == "group" and network.get("proxy_group_id"):
             async with aiosqlite.connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
@@ -1771,17 +1833,27 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         filename = os.path.basename(filename)
         async with aiosqlite.connect(self._db_path) as db:
-            async with db.execute(
-                """SELECT 1 FROM antigravity_account_health h
-                   JOIN antigravity_credentials a ON a.filename = h.credential_name
-                   WHERE h.egress_ip = ? AND h.credential_name <> ?
-                   UNION ALL
-                   SELECT 1 FROM antigravity_egress_reservations
-                   WHERE egress_ip = ? AND credential_name <> ? AND expires_at > ?
-                   LIMIT 1""",
-                (egress_ip, filename, egress_ip, filename, time.time()),
-            ) as cursor:
-                return await cursor.fetchone() is not None
+            return await self._egress_ip_in_use(db, egress_ip, filename)
+
+    async def _egress_ip_in_use(
+        self, db: aiosqlite.Connection, egress_ip: str, filename: str,
+        *, exclude_lease: str = "",
+    ) -> bool:
+        now = time.time()
+        async with db.execute(
+            """SELECT 1 FROM antigravity_credentials a
+               LEFT JOIN antigravity_account_health h ON h.credential_name = a.filename
+               WHERE a.filename <> ? AND (a.fixed_proxy_ip = ? OR h.egress_ip = ?)
+               UNION ALL
+               SELECT 1 FROM antigravity_egress_reservations
+               WHERE egress_ip = ? AND credential_name <> ? AND expires_at > ?
+               UNION ALL
+               SELECT 1 FROM antigravity_proxy_import_leases
+               WHERE egress_ip = ? AND lease_id <> ? AND expires_at > ?
+               LIMIT 1""",
+            (filename, egress_ip, egress_ip, egress_ip, filename, now, egress_ip, exclude_lease, now),
+        ) as cursor:
+            return await cursor.fetchone() is not None
 
     async def update_antigravity_account_health(
         self, filename: str, **updates: Any
@@ -1857,12 +1929,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                """SELECT proxy_mode, bound_proxy_node_id, proxy_group_id
+                """SELECT proxy_mode, bound_proxy_node_id, proxy_group_id, fixed_proxy_ip
                    FROM antigravity_credentials WHERE filename = ?""",
                 (filename,),
             ) as cursor:
                 row = await cursor.fetchone()
-            if not row or row[0] != "group" or not row[1]:
+            if not row or row[0] != "group" or not row[1] or row[3]:
                 await db.rollback()
                 return False
             node_id = int(row[1])
@@ -2164,11 +2236,29 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if not nodes:
             raise ValueError("至少提供一个代理节点")
         async with aiosqlite.connect(self._db_path) as db:
+            if replace:
+                await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT id FROM proxy_groups WHERE id = ?", (int(group_id),)) as cursor:
                 if not await cursor.fetchone():
                     raise ValueError("代理组不存在")
             if replace:
-                await db.execute("DELETE FROM proxy_group_nodes WHERE group_id = ?", (int(group_id),))
+                async with db.execute(
+                    """SELECT n.proxy_url FROM proxy_group_nodes n
+                       JOIN antigravity_credentials a ON a.bound_proxy_node_id = n.id
+                       WHERE n.group_id = ? AND a.fixed_proxy_ip IS NOT NULL""",
+                    (int(group_id),),
+                ) as cursor:
+                    fixed_urls = {row[0] for row in await cursor.fetchall()}
+                if not fixed_urls.issubset({node["proxy_url"] for node in nodes}):
+                    raise ValueError("不能移除仍有账号固定绑定的节点")
+                await db.execute(
+                    """DELETE FROM proxy_group_nodes
+                       WHERE group_id = ? AND id NOT IN (
+                           SELECT bound_proxy_node_id FROM antigravity_credentials
+                           WHERE fixed_proxy_ip IS NOT NULL AND bound_proxy_node_id IS NOT NULL
+                       )""",
+                    (int(group_id),),
+                )
             imported_count = 0
             updated_count = 0
             for node in nodes:
@@ -2219,6 +2309,110 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 db, int(group_id), advance=advance, commit=True
             )
 
+    _FREE_IMPORT_NODES = """
+        FROM proxy_group_nodes n
+        JOIN proxy_groups g ON g.id = n.group_id
+        WHERE g.enabled = 1 AND n.enabled = 1
+          AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
+          AND (n.expires_at IS NULL OR n.expires_at > unixepoch())
+          AND NOT EXISTS (
+              SELECT 1 FROM antigravity_credentials a
+              LEFT JOIN proxy_group_nodes bound ON bound.id = a.bound_proxy_node_id
+              WHERE bound.proxy_url = n.proxy_url
+                 OR (a.proxy_mode = 'custom' AND a.proxy_url = n.proxy_url)
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM antigravity_proxy_import_leases lease
+              JOIN proxy_group_nodes reserved ON reserved.id = lease.node_id
+              WHERE reserved.proxy_url = n.proxy_url AND lease.expires_at > unixepoch()
+          )
+    """
+
+    async def list_free_proxy_import_nodes(self, group_id: int) -> List[Tuple[int, str]]:
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                f"""SELECT n.id, n.proxy_url {self._FREE_IMPORT_NODES}
+                    AND n.group_id = ? ORDER BY RANDOM()""",
+                (group_id,),
+            ) as cursor:
+                return await cursor.fetchall()
+
+    async def reserve_proxy_import_node(
+        self, group_id: int, node_id: int, proxy_url: str, egress_ip: str, lease_id: str,
+    ) -> bool:
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                f"""SELECT 1 {self._FREE_IMPORT_NODES}
+                    AND n.group_id = ? AND n.id = ? AND n.proxy_url = ?""",
+                (group_id, node_id, proxy_url),
+            ) as cursor:
+                if not await cursor.fetchone():
+                    return False
+            if await self._egress_ip_in_use(db, egress_ip, ""):
+                return False
+            await db.execute("DELETE FROM antigravity_proxy_import_leases WHERE expires_at <= unixepoch()")
+            await db.execute(
+                """INSERT INTO antigravity_proxy_import_leases (lease_id, node_id, egress_ip, expires_at)
+                   VALUES (?, ?, ?, unixepoch() + 180)""",
+                (lease_id, node_id, egress_ip),
+            )
+            await db.commit()
+            return True
+
+    async def release_proxy_import_node(self, lease_id: str) -> None:
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("DELETE FROM antigravity_proxy_import_leases WHERE lease_id = ?", (lease_id,))
+            await db.commit()
+
+    async def _apply_import_network(
+        self, db: aiosqlite.Connection, filename: str, network: Dict[str, str],
+    ) -> Optional[str]:
+        lease_id = network.get("lease_id")
+        if not lease_id:
+            proxy_url = network.get("proxy_url")
+            await db.execute(
+                """UPDATE antigravity_credentials SET proxy_mode = ?, proxy_url = ?, user_email = ?
+                   WHERE filename = ?""",
+                ("custom" if proxy_url else "inherit", proxy_url, network.get("email"), filename),
+            )
+            return None
+
+        async with db.execute(
+            """SELECT n.group_id, n.id, lease.egress_ip
+               FROM antigravity_proxy_import_leases lease
+               JOIN proxy_group_nodes n ON n.id = lease.node_id
+               JOIN proxy_groups g ON g.id = n.group_id
+               WHERE lease.lease_id = ? AND lease.expires_at > unixepoch()
+                 AND n.enabled = 1 AND g.enabled = 1
+                 AND (n.expires_at IS NULL OR n.expires_at > unixepoch())
+                 AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())""",
+            (lease_id,),
+        ) as cursor:
+            binding = await cursor.fetchone()
+        if not binding:
+            raise ValueError("出口预留已失效")
+        group_id, node_id, egress_ip = binding
+        if await self._egress_ip_in_use(db, egress_ip, filename, exclude_lease=lease_id):
+            raise ValueError("出口 IP 已被分配")
+        await db.execute(
+            """UPDATE antigravity_credentials
+               SET proxy_mode = 'group', proxy_group_id = ?, bound_proxy_node_id = ?,
+                   fixed_proxy_ip = ?, proxy_bound_at = unixepoch(), user_email = ?
+               WHERE filename = ?""",
+            (group_id, node_id, egress_ip, network.get("email"), filename),
+        )
+        await db.execute(
+            """INSERT INTO antigravity_account_health (credential_name, egress_ip)
+               VALUES (?, ?)""",
+            (filename, egress_ip),
+        )
+        await db.execute("DELETE FROM antigravity_proxy_import_leases WHERE lease_id = ?", (lease_id,))
+        return egress_ip
+
     async def _select_proxy_group_node(
         self, db: aiosqlite.Connection, group_id: int, advance: bool = True,
         commit: bool = True, credential_name: str = "",
@@ -2251,6 +2445,17 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             f"""SELECT id, name, proxy_url, expires_at FROM proxy_group_nodes
                WHERE group_id = ? AND enabled = 1
                  AND (cooldown_until IS NULL OR cooldown_until <= ?)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM antigravity_proxy_import_leases lease
+                     JOIN proxy_group_nodes reserved ON reserved.id = lease.node_id
+                     WHERE reserved.proxy_url = proxy_group_nodes.proxy_url
+                       AND lease.expires_at > unixepoch()
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM antigravity_credentials a
+                     JOIN proxy_group_nodes bound ON bound.id = a.bound_proxy_node_id
+                     WHERE a.fixed_proxy_ip IS NOT NULL AND bound.proxy_url = proxy_group_nodes.proxy_url
+                 )
                  {expiry_sql}
                  {occupied_sql}
                ORDER BY id""",
@@ -2313,7 +2518,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             result = await db.execute(
                 """UPDATE antigravity_credentials
                    SET proxy_mode = ?, proxy_url = ?, proxy_group_id = ?,
-                       bound_proxy_node_id = NULL, updated_at = unixepoch()
+                       bound_proxy_node_id = NULL, fixed_proxy_ip = NULL, updated_at = unixepoch()
                    WHERE filename = ?""",
                 (proxy_mode, proxy_url, proxy_group_id, filename),
             )
@@ -2378,7 +2583,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await db.execute(
                     f"""UPDATE antigravity_credentials
                         SET proxy_mode = ?, proxy_url = ?, proxy_group_id = ?,
-                            bound_proxy_node_id = NULL, updated_at = unixepoch()
+                            bound_proxy_node_id = NULL, fixed_proxy_ip = NULL, updated_at = unixepoch()
                         WHERE filename IN ({placeholders})""",
                     [proxy_mode, proxy_url, proxy_group_id, *chunk],
                 )
@@ -3696,6 +3901,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(f"SELECT credential_data FROM {table_name} WHERE filename=?", (filename,)) as cursor:
                     old_row = await cursor.fetchone()
+                deleted_at = time.time()
+                if mode == "antigravity" and old_row:
+                    await db.execute("""
+                        INSERT OR REPLACE INTO antigravity_egress_reservations
+                            (credential_name, egress_ip, deleted_at, expires_at)
+                        SELECT filename, fixed_proxy_ip, ?, ? FROM antigravity_credentials
+                        WHERE filename = ? AND fixed_proxy_ip IS NOT NULL
+                    """, (deleted_at, deleted_at + 7 * 86400, filename))
                 # 精确匹配删除
                 result = await db.execute(f"""
                     DELETE FROM {table_name} WHERE filename = ?
@@ -3703,7 +3916,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 deleted_count = result.rowcount
 
                 if mode == "antigravity" and deleted_count:
-                    deleted_at = time.time()
                     await db.execute("""
                         INSERT OR REPLACE INTO antigravity_egress_reservations
                             (credential_name, egress_ip, deleted_at, expires_at)
@@ -3937,7 +4149,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
                                c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
-                               c.routing_window_started_at, c.routing_window_count, c.routing_turn
+                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at
                         FROM {table_name} c
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
@@ -3970,6 +4182,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                 "call_count": max(int(row[8] or 0), 0),
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
+                                "usage_resume_at": row[14],
                                 "routing_turn": max(int(row[13] or 0), 0),
                                 "routing_count": (
                                     max(int(row[12] or 0), 0)
@@ -4324,6 +4537,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             async with aiosqlite.connect(self._db_path) as db:
+                if key == "antigravity_account_usage":
+                    await db.execute("BEGIN IMMEDIATE")
+                    async with db.execute("SELECT value FROM config WHERE key = ?", (key,)) as cursor:
+                        previous = await cursor.fetchone()
+                    if previous is None or json.loads(previous[0]) != value:
+                        await db.execute("UPDATE antigravity_credentials SET usage_resume_at = 0 WHERE usage_resume_at > 0")
                 await db.execute("""
                     INSERT INTO config (key, value, updated_at)
                     VALUES (?, ?, unixepoch())

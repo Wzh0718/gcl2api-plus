@@ -1,5 +1,6 @@
 """RT 登录（refresh_token 直接导入 Antigravity 账号）的测试"""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
@@ -269,3 +270,202 @@ async def test_project_verification_requires_project_even_with_tier(monkeypatch,
         assert "年龄验证" in json.loads(result.body)["message"]
     storage.store_credential.assert_not_awaited()
     storage.update_credential_state.assert_not_awaited()
+
+
+@pytest.fixture
+async def fixed_import(tmp_path, monkeypatch):
+    from src import auth
+    from src.panel import auth as panel
+    from src.storage.sqlite_manager import SQLiteManager
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    storage = SQLiteManager()
+    await storage.initialize()
+    group = await storage.create_proxy_group(name="fixed")
+    monkeypatch.setattr(auth, "get_storage_adapter", AsyncMock(return_value=storage))
+    monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(return_value=storage))
+    monkeypatch.setattr(panel, "get_antigravity_egress_ip_check_url", AsyncMock(return_value="https://echo.example"))
+    monkeypatch.setattr(auth, "get_antigravity_api_url", AsyncMock(return_value="https://api.example"))
+    monkeypatch.setattr(auth, "get_user_info", AsyncMock(return_value={"email": "account@example.com"}))
+    monkeypatch.setattr(auth, "fetch_project_id_and_tier", AsyncMock(return_value=("project", "pro")))
+    refresh = AsyncMock(return_value=({"access_token": "test-access-token", "expires_in": 3600}, "test-client"))
+    monkeypatch.setattr(auth, "refresh_access_token_with_clients", refresh)
+    yield storage, group["id"], refresh
+    await storage.close()
+
+
+async def test_fixed_batch_import_deduplicates_exit_ip_across_nodes(fixed_import, monkeypatch):
+    from src.panel import auth as panel
+
+    storage, group_id, refresh = fixed_import
+    await storage.import_proxy_group_nodes(group_id, [
+        {"name": "first", "proxy_url": "http://first.example:8080"},
+        {"name": "alias", "proxy_url": "http://alias.example:8080"},
+        {"name": "unhealthy", "proxy_url": "http://unhealthy.example:8080"},
+    ])
+
+    async def observe(_url, proxy_url, _fetch, _parse):
+        if "unhealthy" in proxy_url:
+            return SimpleNamespace(status=503, ip=None)
+        if "spare" in proxy_url:
+            return SimpleNamespace(status=200, ip="192.0.2.9")
+        return SimpleNamespace(status=200, ip="192.0.2.1")
+
+    monkeypatch.setattr(panel, "observe_egress", observe)
+    requests = [
+        panel.RefreshTokenImportRequest(refresh_token=token, proxy_group_id=group_id)
+        for token in ("test-refresh-one", "test-refresh-two")
+    ]
+    results = await asyncio.gather(*(panel.import_refresh_token(request, "test") for request in requests))
+    assert {item["status"] for item in results} == {"imported", "waiting_for_egress"}
+    refresh.assert_awaited_once()
+    imported = next(item for item in results if item["status"] == "imported")
+    assert imported["egress_ip"] == "192.0.2.1"
+    assert set(imported) == {"status", "email", "file_path", "egress_ip"}
+    filename = imported["file_path"]
+    before = await storage.resolve_credential_network(filename)
+    assert before["proxy_url"] == refresh.await_args.kwargs["proxy_url"]
+    assert before["fixed_proxy_ip"] == imported["egress_ip"]
+    assert not await storage.invalidate_antigravity_proxy_binding(filename, require_replacement=True)
+    assert await storage.resolve_credential_network(filename) == before
+    assert await storage.list_credentials(mode="antigravity") == [filename]
+
+    await storage.update_proxy_group(group_id, enabled=False)
+    unavailable = await storage.resolve_credential_network(filename)
+    assert unavailable["proxy_url"] is None
+    assert unavailable["bound_proxy_node_id"] == before["bound_proxy_node_id"]
+    await storage.update_proxy_group(group_id, enabled=True)
+    assert await storage.resolve_credential_network(filename) == before
+
+    await storage.import_proxy_group_nodes(group_id, [
+        {"name": "spare", "proxy_url": "http://spare.example:8080"},
+    ])
+    retry_request = requests[next(
+        index for index, item in enumerate(results) if item["status"] == "waiting_for_egress"
+    )]
+    retried = await panel.import_refresh_token(retry_request, "test")
+    assert retried["status"] == "imported"
+    assert retried["egress_ip"] == "192.0.2.9"
+    assert retried["file_path"] != filename
+    assert await storage.resolve_credential_network(filename) == before
+
+
+async def test_fixed_import_releases_failed_reservation(fixed_import, monkeypatch):
+    from src.panel import auth as panel
+
+    storage, group_id, refresh = fixed_import
+    await storage.import_proxy_group_nodes(group_id, [
+        {"name": "fixed", "proxy_url": "http://fixed.example:8080"},
+    ])
+    monkeypatch.setattr(
+        panel, "observe_egress", AsyncMock(return_value=SimpleNamespace(status=200, ip="192.0.2.2"))
+    )
+    success = refresh.return_value
+    refresh.side_effect = [TokenError("test-upstream-secret"), success]
+    request = panel.RefreshTokenImportRequest(refresh_token="test-refresh-token", proxy_group_id=group_id)
+
+    failed = await panel.import_refresh_token(request, "test")
+    assert failed["status"] == "failed"
+    assert "test-upstream-secret" not in str(failed)
+    assert await storage.list_credentials(mode="antigravity") == []
+    imported = await panel.import_refresh_token(request, "test")
+    assert imported["status"] == "imported"
+    assert imported["egress_ip"] == "192.0.2.2"
+
+
+async def test_import_batch_persists_disabled_until_manual_enable(fixed_import, monkeypatch):
+    from src.panel import auth as panel
+    from src.storage.sqlite_manager import SQLiteManager
+
+    storage, group_id, refresh = fixed_import
+    result = await panel.create_refresh_import_batch(
+        panel.RefreshImportBatchRequest(
+            refresh_tokens=["mock-first", "mock-second", "mock-first"],
+            proxy_mode="group", proxy_group_id=group_id,
+        ),
+        "test",
+    )
+    batch_id = result["batch_id"]
+    queue = storage.refresh_import_queue
+    await storage.import_proxy_group_nodes(group_id, [
+        {"name": "first", "proxy_url": "http://first.example:8080"},
+    ])
+
+    async def observe(_url, proxy_url, _fetch, _parse):
+        address = "192.0.2.1" if "first" in proxy_url else "192.0.2.2"
+        return SimpleNamespace(status=200, ip=address)
+
+    monkeypatch.setattr(panel, "observe_egress", observe)
+    for _position in range(3):
+        assert await panel.process_next_refresh_import(queue)
+
+    reopened = SQLiteManager()
+    await reopened.initialize()
+    monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(return_value=reopened))
+    queue = reopened.refresh_import_queue
+    try:
+        assert (await panel.list_refresh_import_batches("test"))["batches"][0]["batch_id"] == batch_id
+        items = (await panel.get_refresh_import_batch(batch_id, "test"))["items"]
+        assert [item["status"] for item in items] == ["imported", "disabled", "imported"]
+        assert items[0]["file_path"] == items[2]["file_path"]
+        assert "mock-first" not in str(items) and "mock-second" not in str(items)
+        disabled = items[1]["id"]
+        assert "出口 IP" in items[1]["message"]
+
+        await panel.enable_refresh_import_item(disabled, "test")
+        assert await panel.process_next_refresh_import(queue)
+        assert (await queue.list_items(batch_id))[1]["status"] == "disabled"
+        refresh.assert_awaited_once()
+
+        await storage.import_proxy_group_nodes(group_id, [
+            {"name": "spare", "proxy_url": "http://spare.example:8080"},
+        ])
+        assert not await panel.process_next_refresh_import(queue)
+        await panel.enable_refresh_import_item(disabled, "test")
+        assert await panel.process_next_refresh_import(queue)
+
+        final = await queue.list_items(batch_id)
+        assert [item["status"] for item in final] == ["imported", "imported", "imported"]
+        assert final[1]["egress_ip"] == "192.0.2.2"
+        assert final[0] == items[0]
+        assert refresh.await_count == 2
+    finally:
+        await reopened.close()
+
+
+async def test_import_batch_edits_failed_item_and_rejects_stale_claim(fixed_import):
+    from fastapi import HTTPException
+    from src.panel import auth as panel
+
+    storage, _, refresh = fixed_import
+    queue = storage.refresh_import_queue
+    batch_id = await queue.create_batch(["", "mock-next"], None, None)
+    invalid, _queued = await queue.list_items(batch_id)
+    assert invalid["status"] == "failed"
+    await panel.edit_refresh_import_item(
+        invalid["id"], panel.RefreshImportEditRequest(
+            refresh_token="mock-corrected", proxy_mode="custom", proxy_url="http://proxy.example:8080",
+        ),
+        "test",
+    )
+    claims = await asyncio.gather(queue.claim_next(), queue.claim_next())
+    claim, = [item for item in claims if item]
+    assert claim["id"] == invalid["id"]
+    assert "mock-corrected" not in claim["payload_ciphertext"]
+    await queue.finish(claim, "queued")
+    assert not await storage.store_credential(
+        "stale.json", {"refresh_token": "mock-stale"}, mode="antigravity",
+        import_network={"queue_item_id": str(claim["id"]), "queue_lease_id": claim["lease_id"]},
+    )
+    assert await storage.get_credential("stale.json", mode="antigravity") is None
+
+    assert await panel.process_next_refresh_import(queue)
+    imported = (await queue.list_items(batch_id))[0]
+    assert imported["status"] == "imported"
+    assert (await storage.get_credential_network(imported["file_path"]))["proxy_url"] == "http://proxy.example:8080"
+    refresh.assert_awaited_once_with("mock-corrected", proxy_url="http://proxy.example:8080")
+    with pytest.raises(HTTPException) as caught:
+        await panel.edit_refresh_import_item(
+            invalid["id"], panel.RefreshImportEditRequest(refresh_token="mock-change"), "test",
+        )
+    assert caught.value.status_code == 409

@@ -12,6 +12,7 @@ import time
 
 from log import log
 from src.billing import calculate_usage_metrics, extract_usage_metadata
+from src.rate_limits import RateLimit
 
 
 CONFIG_KEY = "antigravity_account_usage"
@@ -32,9 +33,10 @@ RULES = (
 
 
 class AccountUsageLimitReached(Exception):
-    def __init__(self, retry_after: int):
-        super().__init__("Upstream account usage limit reached")
+    def __init__(self, retry_after: int, *, rules: tuple[str, ...] = (), store_unavailable: bool = False):
+        super().__init__("Gateway account usage check unavailable" if store_unavailable else "Gateway account usage limit reached")
         self.retry_after = retry_after
+        self.rate_limit = RateLimit("gateway", "usage_store_unavailable" if store_unavailable else "account_usage_limit", rules)
 
 
 def validate_usage_settings(value):
@@ -153,7 +155,7 @@ def _set_account_usage_policy(path: Path, account: str, mode: str, limits: dict 
     with closing(sqlite3.connect(path, timeout=2)) as db, db:
         result = db.execute(
             """UPDATE antigravity_credentials
-               SET usage_limit_disabled = ?, usage_limit_overrides = COALESCE(?, usage_limit_overrides)
+               SET usage_resume_at = 0, usage_limit_disabled = ?, usage_limit_overrides = COALESCE(?, usage_limit_overrides)
                WHERE filename = ?""",
             (int(mode == "off"), overrides, account),
         )
@@ -232,9 +234,14 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
         hour = now - 3600
         blocked = []
         if any(limits.values()):
+            row = db.execute(
+                "SELECT usage_resume_at FROM antigravity_credentials WHERE filename = ?", (account,)
+            ).fetchone()
+            if row and row[0] > now:
+                raise AccountUsageLimitReached(row[0] - now)
             totals = _usage_totals(db, [account], now).get(account, EMPTY_TOTALS)
             blocked = [
-                (seconds, column, totals[seconds][column - 1] - limits[name] + 1)
+                (name, seconds, column, totals[seconds][column - 1] - limits[name] + 1)
                 for name, seconds, column in RULES
                 if limits[name] and totals[seconds][column - 1] >= limits[name]
             ]
@@ -244,7 +251,7 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
                 WHERE account = ? AND bucket > ? ORDER BY bucket
             """, (account, hour)))
             retry_after = 1
-            for seconds, column, excess in blocked:
+            for _, seconds, column, excess in blocked:
                 for row in rows:
                     if row[0] <= now - seconds:
                         continue
@@ -252,7 +259,10 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
                     if excess <= 0:
                         retry_after = max(retry_after, row[0] + seconds - now)
                         break
-            raise AccountUsageLimitReached(retry_after)
+            db.execute("UPDATE antigravity_credentials SET usage_resume_at = ? WHERE filename = ?",
+                       (now + retry_after, account))
+            db.commit()  # Persist isolation before the exception exits the transaction.
+            raise AccountUsageLimitReached(retry_after, rules=tuple(name for name, *_ in blocked))
         db.execute("DELETE FROM account_usage WHERE bucket <= ?", (hour,))
         _add(db, account, now, 1, 0)
     return now
@@ -324,5 +334,5 @@ async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
             raise
     except (sqlite3.Error, OSError, ValueError) as exc:
         log.error(f"[ACCOUNT USAGE] Admission store unavailable: {type(exc).__name__}")
-        raise AccountUsageLimitReached(1) from exc
+        raise AccountUsageLimitReached(1, store_unavailable=True) from exc
     return AccountUsageAttempt(path, account) if bucket is not None else None

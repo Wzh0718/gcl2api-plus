@@ -2,10 +2,17 @@
 认证路由模块 - 处理 /auth/* 相关的HTTP请求
 """
 
+import asyncio
+from typing import Literal
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, SecretStr
 
+from config import get_antigravity_egress_ip_check_url
 from log import log
+from src.antigravity_account_health import parse_egress_identity
 from src.auth import (
     add_antigravity_account_by_refresh_token,
     asyncio_complete_auth_flow,
@@ -21,6 +28,10 @@ from src.models import (
     AuthCallbackUrlRequest,
     AuthAddByRefreshTokenRequest,
 )
+from src.egress_probe import observe_egress
+from src.httpx_client import get_async
+from src.proxy_groups import normalize_proxy_url
+from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
 
 
@@ -237,6 +248,230 @@ async def add_by_refresh_token(request: AuthAddByRefreshTokenRequest, token: str
     except Exception as e:
         log.error(f"RT 登录失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class RefreshTokenImportRequest(BaseModel):
+    refresh_token: SecretStr
+    proxy_url: SecretStr | None = None
+    proxy_group_id: int | None = Field(default=None, gt=0)
+
+
+class RefreshImportProxy(BaseModel):
+    proxy_mode: Literal["inherit", "custom", "group"] = "inherit"
+    proxy_group_id: int | None = Field(default=None, gt=0)
+    proxy_url: SecretStr | None = None
+
+    def get_network(self):
+        if self.proxy_mode == "group":
+            if not self.proxy_group_id:
+                raise HTTPException(status_code=400, detail="请选择代理组")
+            return self.proxy_group_id, None
+        if self.proxy_mode == "custom" and self.proxy_url:
+            try:
+                return None, normalize_proxy_url(self.proxy_url.get_secret_value())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="自定义代理地址无效") from exc
+        return None, None
+
+
+class RefreshImportBatchRequest(RefreshImportProxy):
+    refresh_tokens: list[SecretStr] = Field(min_length=1, max_length=100)
+
+
+class RefreshImportEditRequest(RefreshImportProxy):
+    refresh_token: SecretStr | None = None
+
+
+async def _reserve_fixed_import_exit(storage, group_id: int, check_url: str, lease_id: str):
+    async def fetch_echo(proxy_url):
+        return await get_async(check_url, timeout=8.0, proxy_url=proxy_url, trust_env=False)
+
+    for node_id, proxy_url in await storage.list_free_proxy_import_nodes(group_id):
+        observation = await observe_egress(
+            check_url, proxy_url, fetch_echo,
+            lambda response: parse_egress_identity(response.json()),
+        )
+        if observation.status != 200 or not observation.ip:
+            continue
+        if await storage.reserve_proxy_import_node(
+            group_id, node_id, proxy_url, observation.ip, lease_id,
+        ):
+            return proxy_url, observation.ip
+    return None
+
+
+@router.post("/import-refresh-token")
+async def import_refresh_token(
+    request: RefreshTokenImportRequest,
+    _token: str = Depends(verify_panel_token),
+):
+    return await _run_refresh_import(request)
+
+
+async def _run_refresh_import(request: RefreshTokenImportRequest, claim=None):
+    refresh_token = request.refresh_token.get_secret_value().strip()
+    if not refresh_token or len(refresh_token) > 8192:
+        raise HTTPException(status_code=400, detail="refresh_token 长度无效")
+    group_id = request.proxy_group_id
+    storage = None
+    network = (
+        {"queue_item_id": str(claim["id"]), "queue_lease_id": claim["lease_id"]}
+        if claim is not None else {}
+    )
+    proxy_url = ...
+    egress_ip = None
+    lease_id = None
+    try:
+        if request.proxy_url and group_id:
+            raise HTTPException(status_code=400, detail="请选择一种代理方式")
+        if request.proxy_url:
+            try:
+                proxy_url = normalize_proxy_url(request.proxy_url.get_secret_value())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="自定义代理地址无效") from exc
+            network["proxy_url"] = proxy_url
+        if group_id:
+            check_url = await get_antigravity_egress_ip_check_url()
+            if not check_url:
+                raise HTTPException(status_code=400, detail="请先配置出口 IP 检测地址")
+            storage = await get_storage_adapter()
+            lease_id = uuid4().hex
+            try:
+                selection = await asyncio.wait_for(
+                    _reserve_fixed_import_exit(storage, group_id, check_url, lease_id),
+                    timeout=40,
+                )
+            except TimeoutError:
+                selection = None
+            if not selection:
+                return {"status": "waiting_for_egress", "message": "等待出口"}
+            proxy_url, egress_ip = selection
+            network["lease_id"] = lease_id
+
+        result = await asyncio.wait_for(
+            add_antigravity_account_by_refresh_token(
+                refresh_token, proxy_url=proxy_url, import_network=network,
+            ),
+            timeout=120,
+        )
+        if not result["success"]:
+            return {"status": "failed", "message": "导入失败，请检查凭证、账号资格或重复导入"}
+        return {
+            "status": "imported",
+            "file_path": result["file_path"],
+            "email": result.get("email"),
+            "egress_ip": egress_ip,
+        }
+    except HTTPException:
+        raise
+    except TimeoutError:
+        return {"status": "failed", "message": "认证请求超时"}
+    except Exception as exc:
+        log.error(f"Refresh token import failed: {type(exc).__name__}")
+        return {"status": "failed", "message": "导入失败"}
+    finally:
+        if storage is not None and lease_id:
+            try:
+                await storage.release_proxy_import_node(lease_id)
+            except Exception as exc:
+                log.warning(f"Refresh token import lease cleanup failed: {type(exc).__name__}")
+
+
+@router.post("/refresh-import-batches", status_code=201)
+async def create_refresh_import_batch(
+    request: RefreshImportBatchRequest, _token: str = Depends(verify_panel_token),
+):
+    group_id, proxy_url = request.get_network()
+    if request.proxy_mode == "custom" and not proxy_url:
+        raise HTTPException(status_code=400, detail="请填写自定义代理地址")
+    tokens = [token.get_secret_value().strip() for token in request.refresh_tokens]
+    queue = (await get_storage_adapter()).refresh_import_queue
+    batch_id = await queue.create_batch(
+        [token if len(token) <= 8192 else "" for token in tokens], group_id, proxy_url,
+    )
+    return {"batch_id": batch_id}
+
+
+@router.get("/refresh-import-batches")
+async def list_refresh_import_batches(_token: str = Depends(verify_panel_token)):
+    queue = (await get_storage_adapter()).refresh_import_queue
+    return {"batches": await queue.list_batches()}
+
+
+@router.get("/refresh-import-batches/{batch_id}")
+async def get_refresh_import_batch(batch_id: str, _token: str = Depends(verify_panel_token)):
+    queue = (await get_storage_adapter()).refresh_import_queue
+    items = await queue.list_items(batch_id)
+    if not items:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return {"items": items}
+
+
+@router.patch("/refresh-import-items/{item_id}")
+async def edit_refresh_import_item(
+    item_id: int, request: RefreshImportEditRequest, _token: str = Depends(verify_panel_token),
+):
+    group_id, proxy_url = request.get_network()
+    token = request.refresh_token.get_secret_value().strip() if request.refresh_token else None
+    if token and len(token) > 8192:
+        raise HTTPException(status_code=400, detail="refresh_token 长度无效")
+    queue = (await get_storage_adapter()).refresh_import_queue
+    try:
+        edited = await queue.edit_item(item_id, token, request.proxy_mode, group_id, proxy_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not edited:
+        raise HTTPException(status_code=409, detail="该条目状态已变化")
+    return {"status": "queued"}
+
+
+@router.post("/refresh-import-items/{item_id}/enable")
+async def enable_refresh_import_item(item_id: int, _token: str = Depends(verify_panel_token)):
+    queue = (await get_storage_adapter()).refresh_import_queue
+    if not await queue.enable_item(item_id):
+        raise HTTPException(status_code=409, detail="该条目状态已变化")
+    return {"status": "queued"}
+
+
+async def process_next_refresh_import(queue):
+    claim = await queue.claim_next()
+    if not claim:
+        return False
+    try:
+        payload = queue.read_claim_payload(claim)
+        token = payload["refresh_token"]
+        existing = await queue.find_existing(token, claim["token_digest"])
+        if existing is not None:
+            await queue.finish(claim, "imported", existing=existing)
+            return True
+        request = RefreshTokenImportRequest(
+            refresh_token=token, proxy_url=payload["proxy_url"], proxy_group_id=claim["proxy_group_id"],
+        )
+        result = await _run_refresh_import(request, claim=claim)
+        if result["status"] == "waiting_for_egress":
+            await queue.finish(claim, "disabled", "没有健康且空闲的出口 IP")
+        elif result["status"] == "failed":
+            await queue.finish(claim, "failed", result["message"])
+    except asyncio.CancelledError:
+        await queue.finish(claim, "queued")
+        raise
+    except HTTPException as exc:
+        await queue.finish(claim, "failed", exc.detail)
+    except Exception as exc:
+        log.warning(f"Refresh import item failed: {type(exc).__name__}")
+        await queue.finish(claim, "failed", "导入失败，可编辑后重试")
+    return True
+
+
+async def refresh_import_worker():
+    while True:
+        try:
+            queue = (await get_storage_adapter()).refresh_import_queue
+            if await process_next_refresh_import(queue):
+                continue
+        except Exception as exc:
+            log.warning(f"Refresh import worker failed: {type(exc).__name__}")
+        await asyncio.sleep(5)
 
 
 @router.get("/status/{project_id}")

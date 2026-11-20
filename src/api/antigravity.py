@@ -726,11 +726,23 @@ def _credential_slot_backpressure_response(
         media_type="application/json",
         headers={"Retry-After": str(error.retry_after if usage_limited else 1)},
     )
-    response.rate_limit = RateLimit("gateway", "account_usage_limit" if usage_limited else "capacity_busy")
+    response.rate_limit = getattr(error, "rate_limit", RateLimit("gateway", "capacity_busy"))
     return response
 
 
+def _selection_usage_rejection() -> Response | None:
+    from src.rate_limits import selection_usage_resume_at
+    resume_at = selection_usage_resume_at.get()
+    if resume_at:
+        return _credential_slot_backpressure_response(
+            AccountUsageLimitReached(max(1, resume_at - int(time.time())))
+        )
+    return None
+
+
 def _account_pool_429() -> Response:
+    if (response := _selection_usage_rejection()) is not None:
+        return response
     response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
                         media_type="application/json")
     response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
@@ -1034,7 +1046,7 @@ async def _stream_request_inner(
         # 文本号池暂时不可用返回429，图片保留原有语义。
         log.error("[ANTIGRAVITY STREAM] 当前无可用凭证")
         await _alert_all_accounts_unavailable_if_needed(model_name)
-        if image_request:
+        if image_request and _selection_usage_rejection() is None:
             yield Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=500,
                            media_type="application/json")
         else:
@@ -1148,7 +1160,7 @@ async def _stream_request_inner(
             await lease_tracker.release()
         cred_result = await credential_manager.get_valid_credential(
             mode="antigravity", model_name=model_name, image_request=image_request,
-            exclude_filenames=set(rate_limited_credentials) if not image_request else None,
+            exclude_filenames=set(rate_limited_credentials),
         )
         if not cred_result:
             return None
@@ -1157,6 +1169,10 @@ async def _stream_request_inner(
             await lease_tracker.activate(
                 new_file, new_data.pop("_image_lease_id", None)
             )
+        if new_file in rate_limited_credentials:
+            if lease_tracker is not None:
+                await lease_tracker.release()
+            return None
         new_access_token = new_data.get("access_token") or new_data.get("token")
         new_project_id = new_data.get("project_id", "")
         if not new_access_token:
@@ -1467,10 +1483,13 @@ async def _stream_request_inner(
                 slot_acquired = False
                 release_credential_slot(slot_holder)
                 await release_dynamic_warmup_slot(slot_holder)
-            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
-            await record_local_capture(slot_holder, model_name, reason=reason)
+            await record_local_capture(slot_holder, model_name, reason=exc.rate_limit.reason)
             rate_limited_credentials.add(slot_holder)
-            if retry_config["retry_enabled"] and attempt < max_retries:
+            if exc.rate_limit.reason == "account_usage_limit":
+                # A locally rejected candidate consumed no upstream attempt.
+                if await refresh_credential_fast():
+                    continue
+            elif retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
                     f"[PACING] 账号 {slot_holder} 本地槽位繁忙，尝试切换其他账号"
                 )
@@ -1666,7 +1685,8 @@ async def _non_stream_image_request_inner(
                 f"[BILLING] failed to record image request: {type(exc).__name__}"
             )
 
-    for account_attempt in range(max_account_attempts):
+    account_attempt = 0
+    while account_attempt < max_account_attempts:
         await lease_tracker.release()
         cred_result = await credential_manager.get_valid_credential(
             mode="antigravity",
@@ -1675,13 +1695,20 @@ async def _non_stream_image_request_inner(
             image_request=True,
         )
         if not cred_result:
+            if last_response is None:
+                last_response = _selection_usage_rejection()
+                last_was_slot_backpressure = last_response is not None
             break
 
         current_file, credential_data = cred_result
         await lease_tracker.activate(
             current_file, credential_data.pop("_image_lease_id", None)
         )
+        if current_file in attempted_credentials:
+            await lease_tracker.release()
+            break
         attempted_credentials.add(current_file)
+        account_attempt += 1
         access_token = credential_data.get("access_token") or credential_data.get(
             "token"
         )
@@ -1747,10 +1774,15 @@ async def _non_stream_image_request_inner(
                 credential_name=current_file,
             )
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
-            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
-            await record_local_capture(current_file, requested_model, reason=reason)
+            await record_local_capture(current_file, requested_model, reason=exc.rate_limit.reason)
             last_response = _credential_slot_backpressure_response(exc)
+            last_response.rate_limit_attempt = {
+                "request_id": last_request_id, "credential_name": current_file,
+                "model": requested_model, "upstream_request": final_payload,
+            }
             last_was_slot_backpressure = True
+            if exc.rate_limit.reason == "account_usage_limit":
+                account_attempt -= 1
             await lease_tracker.release()
             continue
         except Exception as exc:
@@ -1856,7 +1888,7 @@ async def _non_stream_image_request_inner(
         retryable = status_code not in (400, 403, 429) and (
             status_code in (404, 500, 503) or status_code in disable_error_codes
         )
-        will_retry = retry_enabled and retryable and account_attempt < max_account_attempts - 1
+        will_retry = retry_enabled and retryable and account_attempt < max_account_attempts
         await record_api_call_error(
             credential_manager,
             current_file,
@@ -2084,6 +2116,8 @@ async def non_stream_request(
         if not cred_result:
             return None
         new_file, new_data = cred_result
+        if new_file in rate_limited_credentials:
+            return None
         new_access_token = new_data.get("access_token") or new_data.get("token")
         new_project_id = new_data.get("project_id", "")
         if not new_access_token:
@@ -2374,10 +2408,13 @@ async def non_stream_request(
                 slot_acquired = False
                 release_credential_slot(slot_holder)
                 await release_dynamic_warmup_slot(slot_holder)
-            reason = "account_usage_limit" if isinstance(exc, AccountUsageLimitReached) else "capacity_busy"
-            await record_local_capture(slot_holder, model_name, reason=reason)
+            await record_local_capture(slot_holder, model_name, reason=exc.rate_limit.reason)
             rate_limited_credentials.add(slot_holder)
-            if retry_config["retry_enabled"] and attempt < max_retries:
+            if exc.rate_limit.reason == "account_usage_limit":
+                # A locally rejected candidate consumed no upstream attempt.
+                if await refresh_credential_fast():
+                    continue
+            elif retry_config["retry_enabled"] and attempt < max_retries:
                 log.info(
                     f"[PACING] 账号 {slot_holder} 本地槽位繁忙，尝试切换其他账号"
                 )

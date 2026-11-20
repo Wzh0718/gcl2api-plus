@@ -340,11 +340,14 @@ function createCredsManager(type) {
                 batchBtnNames.push('NetworkHealth');
                 batchBtnNames.push('WarmupStart');
                 batchBtnNames.push('WarmupCancel');
+                batchBtnNames.push('MessageTest');
             }
             const batchBtns = batchBtnNames.map(action =>
                 document.getElementById(this.getElementId(`Batch${action}Btn`))
             );
-            batchBtns.forEach(btn => btn && (btn.disabled = selectedCount === 0));
+            batchBtns.forEach(btn => {
+                if (btn) btn.disabled = selectedCount === 0 || btn.getAttribute('aria-busy') === 'true';
+            });
 
             const selectAllCheckbox = document.getElementById(this.getElementId('SelectAllCheckbox'));
             if (!selectAllCheckbox) return;
@@ -2050,6 +2053,7 @@ async function autoLogin() {
 }
 
 function logout() {
+    stopAntigravityImportProgress();
     localStorage.removeItem('gcli2api_auth_token');
     AppState.authToken = '';
     document.getElementById('loginSection').classList.remove('hidden');
@@ -2263,6 +2267,7 @@ function switchTab(tabName, sourceTab = null) {
 
 // 标签页数据加载（从动画中分离出来）
 function triggerTabDataLoad(tabName) {
+    if (tabName !== 'antigravity') stopAntigravityImportProgress();
     if (tabName === 'api-keys') loadApiKeys();
     if (tabName === 'manage') AppState.creds.refresh();
     if (tabName === 'antigravity-manage') AppState.antigravityCreds.refresh();
@@ -2271,7 +2276,10 @@ function triggerTabDataLoad(tabName) {
         loadCliVersionStatus();
         loadProxyGroups({ silent: true });
     }
-    if (tabName === 'antigravity') syncAntigravityRefreshTokenProxy();
+    if (tabName === 'antigravity') {
+        syncAntigravityRefreshTokenProxy();
+        startAntigravityImportProgress();
+    }
     if (tabName === 'antigravity-manage') loadProxyGroups({ silent: true });
     if (tabName === 'billing') {
         loadBillingDashboard();
@@ -3041,45 +3049,219 @@ function onAntigravityRefreshTokenProxyModeChange() {
     customGroup.style.display = select.value === 'custom' ? 'block' : 'none';
 }
 
-async function importAntigravityByRefreshToken() {
-    const refreshToken = document.getElementById('antigravityRefreshTokenInput').value.trim();
-    const proxyMode = document.getElementById('antigravityRefreshTokenProxySelect')?.value || '';
+function parseAntigravityRefreshTokens(text) {
+    let entries;
+    if (['{', '[', '"'].includes(text[0])) {
+        try {
+            entries = JSON.parse(text);
+        } catch (error) {
+            if (!text.includes('\n')) throw error;
+            entries = text.split('\n').map(line => line.trim()).filter(Boolean).map(line => JSON.parse(line));
+        }
+    } else if (/\s/.test(text)) {
+        throw new Error('请粘贴一个 refresh_token 或有效的凭证 JSON');
+    } else {
+        entries = text;
+    }
+    if (!Array.isArray(entries)) entries = [entries];
+    if (!entries.length || entries.length > 100) {
+        throw new Error('每次可导入 1 至 100 条凭证');
+    }
+    return entries.map(entry => {
+        const value = typeof entry === 'string' ? entry : entry?.refresh_token;
+        return typeof value === 'string' ? value.trim() : '';
+    });
+}
 
-    if (!refreshToken) {
-        showStatus('请输入 refresh_token', 'error');
+async function importAntigravityByRefreshToken() {
+    const input = document.getElementById('antigravityRefreshTokenInput');
+    const button = document.getElementById('antigravityImportBtn');
+    const proxySelect = document.getElementById('antigravityRefreshTokenProxySelect');
+    const proxyInput = document.getElementById('antigravityRefreshTokenProxyInput');
+    if (button.disabled) return;
+    if (!input.value.trim()) {
+        showStatus('请粘贴 refresh_token 或凭证 JSON', 'error');
         return;
     }
 
-    const body = { refresh_token: refreshToken };
-    if (proxyMode.startsWith('group:')) {
-        body.proxy_group_id = Number(proxyMode.slice(6));
-    } else if (proxyMode === 'custom') {
-        const proxyUrl = document.getElementById('antigravityRefreshTokenProxyInput').value.trim();
-        if (proxyUrl) body.proxy_url = proxyUrl;
-    }
-
-    showStatus('正在通过 Refresh Token 导入 Antigravity 账号...', 'info');
-
+    let tokens;
     try {
-        const response = await fetch('./auth/add-by-refresh-token', {
+        tokens = parseAntigravityRefreshTokens(input.value.trim());
+    } catch (error) {
+        showStatus(error instanceof SyntaxError ? '凭证 JSON 格式无效' : error.message, 'error');
+        return;
+    }
+    const controls = [button, input, proxySelect, proxyInput];
+    controls.forEach(control => { control.disabled = true; });
+    try {
+        const result = await requestAntigravityImport('./auth/refresh-import-batches', {
             method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify(body)
+            body: JSON.stringify({
+                ...antigravityImportNetwork(proxySelect.value, proxyInput.value),
+                refresh_tokens: tokens
+            })
         });
+        input.value = '';
+        proxyInput.value = '';
+        sessionStorage.setItem('antigravityImportBatch', result.batch_id);
+        showStatus('凭证已加入导入队列', 'success');
+        await refreshAntigravityImportProgress({ reloadBatches: true });
+    } catch (error) {
+        showStatus(error.message, 'error');
+    } finally {
+        controls.forEach(control => { control.disabled = false; });
+    }
+}
 
-        const result = await response.json();
+function antigravityImportNetwork(value, proxyUrl) {
+    if (value.startsWith('group:')) {
+        return { proxy_mode: 'group', proxy_group_id: Number(value.slice(6)) };
+    }
+    if (value === 'custom') {
+        return { proxy_mode: 'custom', proxy_url: proxyUrl.trim() || null };
+    }
+    return { proxy_mode: 'inherit' };
+}
 
-        if (response.ok && result.credentials) {
-            showStatus(`✅ Refresh Token 导入成功！${result.email ? '邮箱: ' + result.email + '，' : ''}文件已保存到: ${result.file_path}`, 'success');
-            document.getElementById('antigravityCredsContent').textContent = JSON.stringify(result.credentials, null, 2);
-            document.getElementById('antigravityCredsSection').classList.remove('hidden');
-            document.getElementById('antigravityRefreshTokenInput').value = '';
-        } else {
-            showStatus(`❌ 错误: ${result.error || result.detail || 'Refresh Token 导入失败'}`, 'error');
+async function requestAntigravityImport(url, options = {}) {
+    const response = await fetch(url, { ...options, headers: getAuthHeaders() });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '导入请求失败');
+    return data;
+}
+
+let antigravityImportProgressTimer;
+let antigravityImportProgressVersion = 0;
+let antigravityImportProgressRequests = 0;
+
+function startAntigravityImportProgress() {
+    stopAntigravityImportProgress();
+    refreshAntigravityImportProgress({ reloadBatches: true });
+    antigravityImportProgressTimer = setInterval(() => {
+        if (!antigravityImportProgressRequests) refreshAntigravityImportProgress();
+    }, 4000);
+}
+
+function stopAntigravityImportProgress() {
+    clearInterval(antigravityImportProgressTimer);
+    antigravityImportProgressVersion++;
+}
+
+async function refreshAntigravityImportProgress({ reloadBatches = false } = {}) {
+    const select = document.getElementById('antigravityImportBatch');
+    const results = document.getElementById('antigravityImportResults');
+    const history = document.getElementById('antigravityImportHistory');
+    if (!select) return;
+    const version = ++antigravityImportProgressVersion;
+    antigravityImportProgressRequests++;
+    try {
+        if (reloadBatches || !select.options.length) {
+            const { batches } = await requestAntigravityImport('./auth/refresh-import-batches');
+            if (version !== antigravityImportProgressVersion) return;
+            const selected = sessionStorage.getItem('antigravityImportBatch');
+            select.replaceChildren(...batches.map(batch => new Option(
+                `${new Date(batch.created_at * 1000).toLocaleString()} · ${batch.total} 条 · ${batch.batch_id.slice(0, 6)}`,
+                batch.batch_id
+            )));
+            if (selected && batches.some(batch => batch.batch_id === selected)) select.value = selected;
+        }
+        history.hidden = !select.value;
+        if (!select.value) return;
+        sessionStorage.setItem('antigravityImportBatch', select.value);
+        const { items } = await requestAntigravityImport(`./auth/refresh-import-batches/${encodeURIComponent(select.value)}`);
+        if (version !== antigravityImportProgressVersion) return;
+        const snapshot = JSON.stringify(items);
+        if (results.dataset.snapshot !== snapshot) {
+            results.replaceChildren(...items.map(renderAntigravityImportItem));
+            results.dataset.snapshot = snapshot;
         }
     } catch (error) {
-        showStatus(`网络错误: ${error.message}`, 'error');
+        if (reloadBatches && version === antigravityImportProgressVersion) showStatus(error.message, 'error');
+    } finally {
+        antigravityImportProgressRequests--;
     }
+}
+
+function renderAntigravityImportItem(item) {
+    const statuses = {
+        queued: '已排队',
+        running: '检查并导入中…',
+        disabled: '已禁用',
+        failed: '失败',
+        imported: '已导入'
+    };
+    const row = document.createElement('li');
+    row.textContent = [statuses[item.status], item.message, item.email || item.file_path, item.egress_ip]
+        .filter(Boolean).join(' · ');
+    if (item.status === 'disabled') {
+        const enable = document.createElement('button');
+        enable.type = 'button';
+        enable.textContent = '检查并启用';
+        enable.addEventListener('click', async () => {
+            enable.disabled = true;
+            try {
+                await requestAntigravityImport(`./auth/refresh-import-items/${item.id}/enable`, { method: 'POST' });
+                await refreshAntigravityImportProgress();
+            } catch (error) {
+                showStatus(error.message, 'error');
+            } finally {
+                enable.disabled = false;
+            }
+        });
+        row.append(' ', enable);
+    }
+    if (['queued', 'disabled', 'failed'].includes(item.status)) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = '编辑';
+        edit.addEventListener('click', () => editAntigravityImportItem(item));
+        row.append(' ', edit);
+    }
+    return row;
+}
+
+async function editAntigravityImportItem(item) {
+    const dialog = document.getElementById('antigravityImportEditDialog');
+    const form = dialog.querySelector('form');
+    const proxySelect = form.elements.proxy_mode;
+    await syncAntigravityRefreshTokenProxy();
+    if (dialog.open) return;
+    form.reset();
+    const importProxy = document.getElementById('antigravityRefreshTokenProxySelect');
+    proxySelect.replaceChildren(...Array.from(importProxy.options, option => option.cloneNode(true)));
+    const mode = item.proxy_group_id ? `group:${item.proxy_group_id}` : item.has_custom_proxy ? 'custom' : '';
+    if (mode.startsWith('group:') && !Array.from(proxySelect.options).some(option => option.value === mode)) {
+        proxySelect.add(new Option(`代理组 ${item.proxy_group_id}（不可用）`, mode));
+    }
+    proxySelect.value = mode;
+    const proxyField = form.elements.proxy_url;
+    const syncFields = () => { proxyField.parentElement.hidden = proxySelect.value !== 'custom'; };
+    proxySelect.onchange = syncFields;
+    syncFields();
+    const feedback = form.querySelector('[role="status"]');
+    feedback.textContent = '';
+    form.onsubmit = async event => {
+        event.preventDefault();
+        const save = form.querySelector('[type="submit"]');
+        save.disabled = true;
+        try {
+            await requestAntigravityImport(`./auth/refresh-import-items/${item.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    ...antigravityImportNetwork(proxySelect.value, proxyField.value),
+                    refresh_token: form.elements.refresh_token.value.trim() || null
+                })
+            });
+            dialog.close();
+            await refreshAntigravityImportProgress();
+        } catch (error) {
+            feedback.textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    dialog.onclose = () => form.reset();
+    dialog.showModal();
 }
 
 // =====================================================================
@@ -4894,15 +5076,19 @@ async function testCredential(filename) {
     }
 }
 
+function requestAntigravityCredentialTest(filename) {
+    return fetch(`./creds/test/${encodeURIComponent(filename)}?mode=antigravity`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+    });
+}
+
 async function testAntigravityCredential(filename) {
     try {
         // 显示加载状态
         showStatus('🧪 正在测试Antigravity凭证，请稍候...', 'info');
 
-        const response = await fetch(`./creds/test/${encodeURIComponent(filename)}?mode=antigravity`, {
-            method: 'POST',
-            headers: getAuthHeaders()
-        });
+        const response = await requestAntigravityCredentialTest(filename);
 
         // 解析JSON响应
         const data = await response.json();
@@ -4939,6 +5125,57 @@ async function testAntigravityCredential(filename) {
         const errorMsg = `测试失败: ${error.message}`;
         showStatus(`❌ ${errorMsg}`, 'error');
         showMessageModal('测试失败', `❌ ${errorMsg}`, 'error');
+    }
+}
+
+async function batchTestAntigravityCredentials(button) {
+    const manager = AppState.antigravityCreds;
+    const filenames = [...manager.selectedFiles];
+    if (button.disabled || !filenames.length) return;
+    if (!confirm(`确定对选中的 ${filenames.length} 个凭证发送测试消息吗？\n测试成功会清除对应错误状态并重新启用凭证。`)) return;
+
+    const label = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = `测试中 0/${filenames.length}`;
+    try {
+        const messages = [];
+        let passed = 0;
+        let rateLimited = 0;
+        const concurrency = 4;
+        for (let offset = 0; offset < filenames.length; offset += concurrency) {
+            const batchMessages = await Promise.all(filenames.slice(offset, offset + concurrency).map(async filename => {
+                try {
+                    const response = await requestAntigravityCredentialTest(filename);
+                    const data = await response.json().catch(() => null);
+                    if (response.status === 200 && data?.success) {
+                        passed++;
+                        return `✅ ${filename}（HTTP 200）`;
+                    }
+                    if (response.status === 429 && data?.success) {
+                        rateLimited++;
+                        return `⚠️ ${filename}（HTTP 429，凭证有效，当前限流）`;
+                    }
+                    const detail = data?.error || data?.detail || data?.message;
+                    const reason = typeof detail === 'string' ? detail : JSON.stringify(detail);
+                    return `❌ ${filename}（HTTP ${response.status}）${reason ? ` ${reason.slice(0, 600)}` : ''}`;
+                } catch (error) {
+                    return `❌ ${filename}（请求失败）${error.message}`;
+                }
+            }));
+            messages.push(...batchMessages);
+            button.textContent = `测试中 ${messages.length}/${filenames.length}`;
+        }
+
+        await manager.refresh();
+        const failed = filenames.length - passed - rateLimited;
+        const type = passed === filenames.length ? 'success' : failed === filenames.length ? 'error' : 'info';
+        const counts = `通过 ${passed}，限流 ${rateLimited}，失败 ${failed}，共 ${filenames.length} 项`;
+        showMessageModal('批量消息测试完成', `${counts}\n\n${escapeHtml(messages.join('\n'))}`, type);
+    } finally {
+        button.textContent = label;
+        button.removeAttribute('aria-busy');
+        manager.updateBatchControls();
     }
 }
 

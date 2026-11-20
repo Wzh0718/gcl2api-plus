@@ -7,6 +7,7 @@
 import asyncio
 import copy
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Response
@@ -182,6 +183,11 @@ async def test_account_usage_shared_across_keys_and_streaming(monkeypatch, tmp_p
 
     response = await agy.non_stream_request(_body("gemini-2.5-flash-lite"), api_key_id="second-key")
     assert response.status_code == 429
+    assert response.rate_limit.as_dict() == {
+        "source": "gateway",
+        "reason": "account_usage_limit",
+        "rules": ["generated_tokens_per_minute"],
+    }
     assert 1 <= int(response.headers["retry-after"]) <= 60
     assert sent == ["stream"]
     assert _inflight(cred[0]) == 0
@@ -222,6 +228,7 @@ async def test_stream_slot_wait_timeout_returns_429_without_releasing_owner(monk
 
     assert len(chunks) == 1
     assert chunks[0].status_code == 429
+    assert chunks[0].rate_limit.as_dict() == {"source": "gateway", "reason": "capacity_busy"}
     assert chunks[0].headers["retry-after"] == "1"
     assert json.loads(chunks[0].body)["error"]["code"] == 429
     assert _inflight(cred[0]) == 1
@@ -241,6 +248,7 @@ async def test_non_stream_slot_wait_timeout_returns_429_without_releasing_owner(
     response = await agy.non_stream_request(_body())
 
     assert response.status_code == 429
+    assert response.rate_limit.as_dict() == {"source": "gateway", "reason": "capacity_busy"}
     assert response.headers["retry-after"] == "1"
     assert json.loads(response.body)["error"]["code"] == 429
     assert _inflight(cred[0]) == 1
@@ -586,3 +594,24 @@ async def test_non_stream_unknown_model_returns_400_without_upstream(monkeypatch
 
     assert response.status_code == 400
     assert json.loads(response.body)["error"]["status"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.asyncio
+async def test_preselected_limited_account_switches_without_upstream_retry(monkeypatch):
+    from src.antigravity_usage import AccountUsageLimitReached
+
+    first = _patch_common(monkeypatch)
+    second = ("other.json", {"access_token": "other-token", "project_id": "other-project"})
+    select = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(agy.credential_manager, "get_valid_credential", select)
+    gate = AsyncMock(side_effect=[AccountUsageLimitReached(15), None])
+    monkeypatch.setattr(agy, "begin_account_usage", gate)
+    post = AsyncMock(return_value=_FakeResponse(200, b'{"candidates":[]}'))
+    monkeypatch.setattr(agy, "post_async", post)
+    response = await agy.non_stream_request(_body())
+    assert response.status_code == 200
+    assert select.await_args.kwargs["exclude_filenames"] == {first[0]}
+    assert [call.args[0] for call in gate.await_args_list] == [first[0], second[0]]
+    post.assert_awaited_once()
+    assert post.await_args.kwargs["headers"]["Authorization"] == "Bearer other-token"
+    assert _inflight(first[0]) == _inflight(second[0]) == 0
