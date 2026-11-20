@@ -3533,6 +3533,23 @@ function _cmLatencyCell(row) {
         `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
         `响应等待 ${format(row.downstream_first_byte_seconds)}`,
     ];
+    const stages = row.timing_details?.stages;
+    if (stages) {
+        const {first_upstream_send: first, last_upstream_send: last, last_upstream_data: end} = stages;
+        const firstByte = row.downstream_first_byte_seconds;
+        if (Number.isFinite(first) && first >= 0) {
+            tip.push(`首次调用上游前 ${format(first)}`);
+            // Single attempts stamp first/last separately; ignore sub-millisecond jitter.
+            if (Number.isFinite(last) && last - first >= 0.001) {
+                tip.push(`首次至末次上游发起 ${format(last - first)}`);
+            }
+        }
+        // Stream chunks may continue arriving after the first downstream body.
+        if (Number.isFinite(last) && Number.isFinite(end) && last >= 0 && end >= last
+                && measured(row.upstream_response_seconds) && measured(firstByte) && firstByte >= end) {
+            tip.push(`上游末包至下游首包 ${format(firstByte - end)}`);
+        }
+    }
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
     return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
