@@ -572,12 +572,28 @@ class ProxyGroupStorageTests(unittest.IsolatedAsyncioTestCase):
             group["id"],
             [{"proxy_url": "http://old.example:8080"}],
         )
+        await self.manager.store_credential(
+            "replace.json", {"access_token": "token"}, mode="antigravity"
+        )
+        await self.manager.update_credential_network(
+            "replace.json", proxy_mode="group", proxy_group_id=group["id"]
+        )
+        resolved = await self.manager.resolve_credential_network("replace.json", mode="antigravity")
+        self.assertIsNotNone(resolved["proxy_node_id"])
+        await self.manager.update_antigravity_account_health(
+            "replace.json", egress_ip="192.0.2.1", binding_status="healthy"
+        )
         await self.manager.import_proxy_group_nodes(
             group["id"],
             [{"proxy_url": "http://new.example:8080"}],
             replace=True,
         )
 
+        network = await self.manager.get_credential_network("replace.json", mode="antigravity")
+        self.assertIsNone(network["bound_proxy_node_id"])
+        health = await self.manager.get_antigravity_account_health("replace.json")
+        self.assertIsNone(health["egress_ip"])
+        self.assertEqual(health["binding_status"], "unchecked")
         detail = await self.manager.get_proxy_group(group["id"])
         self.assertEqual(
             [node["proxy_url"] for node in detail["nodes"]],
