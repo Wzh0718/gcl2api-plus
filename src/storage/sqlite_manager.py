@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from src.request_timing import measured_db_lock
 from src.storage.sqlite_pragmas import connect as sqlite_connect
 
 from log import log
@@ -1186,7 +1187,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             if mode == "antigravity":
                 # 排队发生在打开 aiosqlite 连接之前，避免同进程高并发同时
                 # 占用大量 FD，并绕开 SQLite busy_timeout 的退避延迟。
-                async with self._selection_lock:
+                async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                     return await self._get_next_antigravity_credential(
                         model_name=model_name,
                         excluded=excluded,
@@ -1392,7 +1393,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         params = [*routing_params, *params]
 
         try:
-            async with self._selection_lock:
+            async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     result = await db.execute(
@@ -5240,7 +5241,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             table_name = self._get_table_name(mode)
             # 成功响应可能在短时间内大量并发到达。这里只允许一个 SQLite
             # 成功状态事务持有连接，防止 aiosqlite 连接/线程堆积耗尽 nofile。
-            async with self._success_write_lock:
+            async with measured_db_lock(self._success_write_lock, "success_lock_wait", "success_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
 
@@ -5333,7 +5334,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             # 与成功状态写入同理：串行化轻量统计写入，避免高并发下连接堆积
-            async with self._stats_write_lock:
+            async with measured_db_lock(self._stats_write_lock, "model_stats_lock_wait", "model_stats_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     await db.execute("""

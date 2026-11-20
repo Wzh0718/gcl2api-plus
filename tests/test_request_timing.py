@@ -424,3 +424,39 @@ async def test_monitor_insert_follows_body_send_even_on_disconnect(disconnect):
     assert writes[0]['request_id'] == 'once'
     assert (writes[0]['response_total_seconds'] is None) == disconnect
     backend.update_call_record_timing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slow_request_distinguishes_lock_wait_from_work_and_limits_logs(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import src.request_timing as timing
+
+    now = [100.0]
+    monkeypatch.setattr(timing, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(timing, '_next_slow_log', 0)
+    logger = Mock()
+    monkeypatch.setattr(timing, 'log', logger)
+    state = timing.RequestTiming(response_total_seconds=14.0)
+    token = timing.request_timing.set(state)
+    lock = asyncio.Lock()
+    await lock.acquire()
+
+    async def worker():
+        async with timing.measured_db_lock(lock, 'success_lock_wait', 'success_locked_work'):
+            now[0] += 2.0
+
+    try:
+        task = asyncio.create_task(worker())
+        await asyncio.sleep(0)
+        now[0] += 12.0
+        lock.release()
+        await task
+        assert state.details()['phase_ms'] == {'success_lock_wait': 12000, 'success_locked_work': 2000}
+        assert not lock.locked()
+        timing._log_slow_request(state)
+        timing._log_slow_request(state)
+        logger.info.assert_called_once()
+        assert 'success_lock_wait=12000.0' in logger.info.call_args.args[0]
+    finally:
+        timing.request_timing.reset(token)
