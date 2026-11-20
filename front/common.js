@@ -3443,6 +3443,7 @@ const callMonitorState = {
     page: 1,
     pageSize: 20,
     lastData: null,
+    pendingRequest: null,
     expandedKeys: new Set(), // key 视图里已展开的密钥（API Key ID）
 };
 
@@ -3731,32 +3732,50 @@ async function loadCallMonitor(options = {}) {
     const { silent = false } = options;
     const content = document.getElementById('callMonitorContent');
     if (!content) return;
+    const params = new URLSearchParams({
+        range: callMonitorState.range,
+        failed_only: callMonitorState.failedOnly ? 'true' : 'false',
+    });
+    let url;
+    if (callMonitorState.view === 'realtime') {
+        params.set('page', String(callMonitorState.page));
+        params.set('page_size', String(callMonitorState.pageSize));
+        url = `./call-monitor/realtime?${params}`;
+    } else {
+        params.set('view', callMonitorState.view);
+        url = `./call-monitor/overview?${params}`;
+    }
+    const previous = callMonitorState.pendingRequest;
+    if (previous?.url === url) return;
+    previous?.controller.abort();
+    const request = { url, controller: new AbortController() };
+    callMonitorState.pendingRequest = request;
+    const timeout = setTimeout(() => request.controller.abort(), 30000);
     if (!silent && !callMonitorState.lastData) {
         content.innerHTML = '<div class="loading">正在加载调用监控数据...</div>';
     }
     try {
-        const params = new URLSearchParams({
-            range: callMonitorState.range,
-            failed_only: callMonitorState.failedOnly ? 'true' : 'false',
+        const response = await fetch(url, {
+            headers: getAuthHeaders(), signal: request.controller.signal,
         });
-        let url;
-        if (callMonitorState.view === 'realtime') {
-            params.set('page', String(callMonitorState.page));
-            params.set('page_size', String(callMonitorState.pageSize));
-            url = `./call-monitor/realtime?${params}`;
-        } else {
-            params.set('view', callMonitorState.view);
-            url = `./call-monitor/overview?${params}`;
-        }
-        const response = await fetch(url, { headers: getAuthHeaders() });
         const data = await response.json();
+        if (callMonitorState.pendingRequest !== request) return;
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         callMonitorState.lastData = data;
         renderCallMonitor();
     } catch (error) {
-        if (!silent) {
+        if (callMonitorState.pendingRequest !== request) return;
+        if (!silent || !callMonitorState.lastData) {
             closeCallMonitorLatency();
-            content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(error.message)}</div>`;
+            const message = error.name === 'AbortError'
+                ? '查询超时，请重试或缩短时间范围'
+                : error.message;
+            content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(message)}</div>`;
+        }
+    } finally {
+        clearTimeout(timeout);
+        if (callMonitorState.pendingRequest === request) {
+            callMonitorState.pendingRequest = null;
         }
     }
 }

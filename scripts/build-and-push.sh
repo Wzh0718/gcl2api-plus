@@ -144,8 +144,9 @@ run_quality_gates() {
         printf '\n[3/5] Python 编译检查\n'
         python3 -m compileall -q src tests web.py config.py
 
-        printf '\n[4/5] JavaScript 语法检查\n'
+        printf '\n[4/5] JavaScript 语法与调用监控回归检查\n'
         node --check front/common.js
+        node --test tests/call_monitor_loading.test.cjs
 
         printf '\n[5/5] 导出源码合并标记检查\n'
         ! grep -rn --include='*.py' --include='*.js' --include='*.html' --include='*.css' \

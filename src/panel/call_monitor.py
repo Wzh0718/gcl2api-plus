@@ -265,7 +265,7 @@ async def call_monitor_overview(
                 since_ts=since_ts, failed_only=failed_only
             )
         counters = await count_records(since_ts=since_ts, failed_only=False)
-        if min_ts_getter is not None:
+        if range_name == "all" and min_ts_getter is not None:
             oldest_ts = await min_ts_getter()
 
     if view == "key":
@@ -315,11 +315,7 @@ async def call_monitor_realtime(
         api_key_id=api_key_id,
     )
 
-    count_records = getattr(getattr(storage, "_backend", None), "count_call_records", None)
-    if count_records is not None:
-        counters = await count_records(since_ts=since_ts)
-    else:
-        counters = monitor.buffer_counters(since_ts=since_ts)
+    counters = paged["counters"]
 
     getter = getattr(storage._backend, "list_telemetry_events", None)
     events = await getter([row.get("timing_id") for row in paged["records"]]) if getter else []

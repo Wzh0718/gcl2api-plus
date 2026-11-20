@@ -4036,7 +4036,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回逐条调用记录（实时视图，支持 offset 分页）。"""
         self._ensure_initialized()
-        await self.flush_call_records()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
         columns = ", ".join(self._CALL_RECORD_COLUMNS)
         async with sqlite_connect(self._db_path) as db:
@@ -4053,7 +4052,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def list_recent_call_records(self, *, limit: int = 1000) -> List[Dict[str, Any]]:
         """启动预热用：取最近 N 条记录（时间正序返回）。"""
         self._ensure_initialized()
-        await self.flush_call_records()
         columns = ", ".join(self._CALL_RECORD_COLUMNS)
         async with sqlite_connect(self._db_path) as db:
             async with db.execute(
@@ -4066,6 +4064,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         records = [self._call_record_row(row) for row in rows]
         records.reverse()
         return records
+
+    @staticmethod
+    def _call_record_aggregation_source(since_ts: float, until_ts: Optional[float]) -> str:
+        # GROUP BY can otherwise scan the entire credential/key index.
+        if since_ts > 0 or until_ts is not None:
+            return "call_records INDEXED BY idx_call_records_created"
+        return "call_records"
 
     async def aggregate_call_records(
         self,
@@ -4081,12 +4086,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         每个分组附带最近一次调用的 success/status_code（由独立的倒序查询合并）。
         """
         self._ensure_initialized()
-        await self.flush_call_records()
         if group_by not in ("api_key_id", "credential_name"):
             raise ValueError(f"不支持的聚合维度: {group_by}")
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
         if group_by == "credential_name":
             where += " AND credential_name <> ''"
+        source = self._call_record_aggregation_source(since_ts, until_ts)
         async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT {group_by} AS group_key, model_name,
@@ -4104,7 +4109,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         MAX(currency) AS currency,
                         MAX(task_type) AS task_type,
                         MAX(channel) AS channel
-                   FROM call_records
+                   FROM {source}
                    WHERE {where}
                    GROUP BY {group_by}, model_name
                    ORDER BY total DESC, group_key ASC, model_name ASC""",
@@ -4114,7 +4119,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 最近状态：倒序扫描有界行数，取每个分组的第一条
             async with db.execute(
                 f"""SELECT {group_by} AS group_key, model_name, success, status_code
-                   FROM call_records
+                   FROM {source}
                    WHERE {where}
                    ORDER BY created_at DESC, id DESC
                    LIMIT 5000""",
@@ -4177,6 +4182,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """
         self._ensure_initialized()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
+        source = self._call_record_aggregation_source(since_ts, until_ts)
         async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT api_key_id, credential_name,
@@ -4194,7 +4200,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         MAX(currency) AS currency,
                         MAX(task_type) AS task_type,
                         MAX(channel) AS channel
-                   FROM call_records
+                   FROM {source}
                    WHERE {where}
                    GROUP BY api_key_id, credential_name
                    ORDER BY total DESC, api_key_id ASC, credential_name ASC""",
@@ -4204,7 +4210,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 最近状态：倒序扫描有界行数，取每个「密钥 × 账号」的首条
             async with db.execute(
                 f"""SELECT api_key_id, credential_name, success, status_code
-                   FROM call_records
+                   FROM {source}
                    WHERE {where}
                    ORDER BY created_at DESC, id DESC
                    LIMIT 5000""",
@@ -4215,7 +4221,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             async with db.execute(
                 f"""SELECT api_key_id, credential_name, model_name, upstream_model,
                            COUNT(*) AS calls
-                   FROM call_records
+                   FROM {source}
                    WHERE {where}
                    GROUP BY api_key_id, credential_name, model_name, upstream_model""",
                 tuple(params),
@@ -4295,7 +4301,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> Dict[str, int]:
         """日志/失败计数与账号、API Key 去重计数（顶部角标 / 分页总数）。"""
         self._ensure_initialized()
-        await self.flush_call_records()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
         async with sqlite_connect(self._db_path) as db:
             async with db.execute(
@@ -4321,7 +4326,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def get_call_records_min_ts(self) -> Optional[float]:
         """最早一条调用记录的时间戳（'全部' 范围的 TPS 口径用）。"""
         self._ensure_initialized()
-        await self.flush_call_records()
         async with sqlite_connect(self._db_path) as db:
             async with db.execute("SELECT MIN(created_at) FROM call_records") as cursor:
                 row = await cursor.fetchone()

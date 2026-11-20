@@ -289,15 +289,20 @@ class CallMonitor:
                 limit=page_size,
                 offset=offset,
             )
-            counters = await count_fn(
-                since_ts=since_ts,
-                until_ts=until_ts,
-                failed_only=failed_only,
-                api_key_id=api_key_id,
-            )
+            counters = await count_fn(since_ts=since_ts, until_ts=until_ts)
+            total = counters["failed" if failed_only else "logs"]
+            if api_key_id:
+                filtered = await count_fn(
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                    failed_only=failed_only,
+                    api_key_id=api_key_id,
+                )
+                total = filtered["logs"]
             return {
                 "records": records,
-                "total": int(counters.get("logs", 0)),
+                "total": int(total),
+                "counters": counters,
                 "page": page,
                 "page_size": page_size,
                 "degraded": False,
@@ -311,6 +316,7 @@ class CallMonitor:
         return {
             "records": rows[offset : offset + page_size],
             "total": len(rows),
+            "counters": self.buffer_counters(since_ts=since_ts),
             "page": page,
             "page_size": page_size,
             "degraded": True,
