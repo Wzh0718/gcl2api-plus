@@ -349,6 +349,17 @@ async def wrap_cli_request(
         gemini_request = await fuse_request(gemini_request, model, credential_key, credential_data)
     inner = dict(gemini_request)
 
+    # 基线提示词在选号前只埋占位符，这里按账号的 hub 构建替换成对应版本，
+    # 保证 system 基线与该账号 UA 声明的版本一致（混淆不覆盖基线部分）。
+    if credential_data:
+        from src.antigravity_device_profile import get_device_profile
+        from src.converter.antigravity_system_prompt import resolve_pending_baseline
+
+        inner = resolve_pending_baseline(
+            inner,
+            get_device_profile(credential_data, credential_key)["hub_version"],
+        )
+
     # 移除 safetySettings（CLI 不发送）
     inner.pop("safetySettings", None)
     is_image_request = is_antigravity_image_request(model, inner)
