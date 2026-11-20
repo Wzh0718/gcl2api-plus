@@ -177,21 +177,17 @@ async def lifespan(app: FastAPI):
     else:
         log.info("[MEM] 内存回收任务已启动（仅 gc.collect，malloc_trim 不可用）")
 
-    from src.request_capture import capture_maintenance_loop
-    capture_task = asyncio.create_task(capture_maintenance_loop(), name="request_capture_cleanup")
+    from src.request_capture import capture_maintenance_loop, capture_writer_lifespan
 
-    import_task = asyncio.create_task(refresh_import_worker(), name="refresh_import_worker")
-    try:
-        yield
-    finally:
-        import_task.cancel()
-        await asyncio.gather(import_task, return_exceptions=True)
-
-    capture_task.cancel()
-    try:
-        await capture_task
-    except asyncio.CancelledError:
-        pass
+    async with capture_writer_lifespan():
+        capture_task = asyncio.create_task(capture_maintenance_loop(), name="request_capture_cleanup")
+        import_task = asyncio.create_task(refresh_import_worker(), name="refresh_import_worker")
+        try:
+            yield
+        finally:
+            capture_task.cancel()
+            import_task.cancel()
+            await asyncio.gather(capture_task, import_task, return_exceptions=True)
 
     # 清理资源
     log.info("开始关闭 GCLI2API 主服务")
