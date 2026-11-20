@@ -149,12 +149,18 @@ class CallMonitor:
                        timing_details=timing.details())
         async with self._lock:
             self._buffer.append(row)
-        try:
-            insert = self._backend_method("insert_call_record")
-            if insert is not None:
-                await insert(**row, request_details=details)
-        except Exception as exc:
-            log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
+        # Fold the ordinary metadata-only INSERT and final timing UPDATE into one
+        # write after ASGI sends the body. Keep at most one row and no snapshots.
+        defer_insert = (timing is not None and timing.defer_monitor_insert
+                        and timing.pending_monitor_row is None and not details
+                        and timing.downstream_first_byte_seconds is None
+                        and timing.request_info.get("transport") != "stream")
+        if defer_insert:
+            timing.pending_monitor_row = row
+        else:
+            await self._insert_record(row, details)
+            if timing is not None:
+                timing.has_persisted_monitor_rows = True
         agy_upstream_limit = channel == "antigravity" and rate_limit is not None and rate_limit.source == "upstream"
         if status_code is not None and (status_code != 429 or agy_upstream_limit):
             try:
@@ -167,8 +173,17 @@ class CallMonitor:
                 )
             except Exception as exc:
                 log.warning(f"[DINGTALK] status alert evaluation failed: {type(exc).__name__}")
-        await self._maybe_cleanup()
+        if not defer_insert:
+            await self._maybe_cleanup()
         mark_stage("monitor_finished")
+
+    async def _insert_record(self, row, details):
+        try:
+            insert = self._backend_method("insert_call_record")
+            if insert is not None:
+                await insert(**row, request_details=details)
+        except Exception as exc:
+            log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
 
     async def finish_timing(self, timing) -> None:
         values = {
@@ -177,6 +192,14 @@ class CallMonitor:
             "downstream_send_seconds": timing.downstream_send_seconds,
             "timing_details": timing.details(),
         }
+        pending = timing.pending_monitor_row
+        timing.pending_monitor_row = None
+        if pending is not None:
+            pending.update(values)
+            await self._insert_record(pending, {})
+            await self._maybe_cleanup()
+        if not timing.has_persisted_monitor_rows:
+            return
         # Existing bounded deque only; no per-request lookup cache is retained.
         async with self._lock:
             for row in self._buffer:

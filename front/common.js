@@ -3484,6 +3484,7 @@ const callMonitorState = {
     page: 1,
     pageSize: 20,
     lastData: null,
+    pendingRequest: null,
     expandedKeys: new Set(), // key 视图里已展开的密钥（API Key ID）
 };
 
@@ -3532,6 +3533,23 @@ function _cmLatencyCell(row) {
         `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
         `响应等待 ${format(row.downstream_first_byte_seconds)}`,
     ];
+    const stages = row.timing_details?.stages;
+    if (stages) {
+        const {first_upstream_send: first, last_upstream_send: last, last_upstream_data: end} = stages;
+        const firstByte = row.downstream_first_byte_seconds;
+        if (Number.isFinite(first) && first >= 0) {
+            tip.push(`首次调用上游前 ${format(first)}`);
+            // Single attempts stamp first/last separately; ignore sub-millisecond jitter.
+            if (Number.isFinite(last) && last - first >= 0.001) {
+                tip.push(`首次至末次上游发起 ${format(last - first)}`);
+            }
+        }
+        // Stream chunks may continue arriving after the first downstream body.
+        if (Number.isFinite(last) && Number.isFinite(end) && last >= 0 && end >= last
+                && measured(row.upstream_response_seconds) && measured(firstByte) && firstByte >= end) {
+            tip.push(`上游末包至下游首包 ${format(firstByte - end)}`);
+        }
+    }
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
     return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
@@ -3772,32 +3790,50 @@ async function loadCallMonitor(options = {}) {
     const { silent = false } = options;
     const content = document.getElementById('callMonitorContent');
     if (!content) return;
+    const params = new URLSearchParams({
+        range: callMonitorState.range,
+        failed_only: callMonitorState.failedOnly ? 'true' : 'false',
+    });
+    let url;
+    if (callMonitorState.view === 'realtime') {
+        params.set('page', String(callMonitorState.page));
+        params.set('page_size', String(callMonitorState.pageSize));
+        url = `./call-monitor/realtime?${params}`;
+    } else {
+        params.set('view', callMonitorState.view);
+        url = `./call-monitor/overview?${params}`;
+    }
+    const previous = callMonitorState.pendingRequest;
+    if (previous?.url === url) return;
+    previous?.controller.abort();
+    const request = { url, controller: new AbortController() };
+    callMonitorState.pendingRequest = request;
+    const timeout = setTimeout(() => request.controller.abort(), 30000);
     if (!silent && !callMonitorState.lastData) {
         content.innerHTML = '<div class="loading">正在加载调用监控数据...</div>';
     }
     try {
-        const params = new URLSearchParams({
-            range: callMonitorState.range,
-            failed_only: callMonitorState.failedOnly ? 'true' : 'false',
+        const response = await fetch(url, {
+            headers: getAuthHeaders(), signal: request.controller.signal,
         });
-        let url;
-        if (callMonitorState.view === 'realtime') {
-            params.set('page', String(callMonitorState.page));
-            params.set('page_size', String(callMonitorState.pageSize));
-            url = `./call-monitor/realtime?${params}`;
-        } else {
-            params.set('view', callMonitorState.view);
-            url = `./call-monitor/overview?${params}`;
-        }
-        const response = await fetch(url, { headers: getAuthHeaders() });
         const data = await response.json();
+        if (callMonitorState.pendingRequest !== request) return;
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         callMonitorState.lastData = data;
         renderCallMonitor();
     } catch (error) {
-        if (!silent) {
+        if (callMonitorState.pendingRequest !== request) return;
+        if (!silent || !callMonitorState.lastData) {
             closeCallMonitorLatency();
-            content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(error.message)}</div>`;
+            const message = error.name === 'AbortError'
+                ? '查询超时，请重试或缩短时间范围'
+                : error.message;
+            content.innerHTML = `<div class="status error">加载调用监控失败: ${_cmEscape(message)}</div>`;
+        }
+    } finally {
+        clearTimeout(timeout);
+        if (callMonitorState.pendingRequest === request) {
+            callMonitorState.pendingRequest = null;
         }
     }
 }

@@ -2260,13 +2260,36 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     fixed_urls = {row[0] for row in await cursor.fetchall()}
                 if not fixed_urls.issubset({node["proxy_url"] for node in nodes}):
                     raise ValueError("不能移除仍有账号固定绑定的节点")
+                # 替换导入会重建普通节点，先在同一事务内清理引用和健康状态。
+                removable_nodes = """
+                    SELECT id FROM proxy_group_nodes
+                    WHERE group_id = ? AND id NOT IN (
+                        SELECT bound_proxy_node_id FROM antigravity_credentials
+                        WHERE fixed_proxy_ip IS NOT NULL AND bound_proxy_node_id IS NOT NULL
+                    )
+                """
+                group_params = (int(group_id),)
                 await db.execute(
-                    """DELETE FROM proxy_group_nodes
-                       WHERE group_id = ? AND id NOT IN (
-                           SELECT bound_proxy_node_id FROM antigravity_credentials
-                           WHERE fixed_proxy_ip IS NOT NULL AND bound_proxy_node_id IS NOT NULL
-                       )""",
-                    (int(group_id),),
+                    f"""UPDATE antigravity_account_health
+                        SET egress_ip = NULL, egress_country = NULL,
+                            binding_status = 'unchecked', eligibility_status = 'unchecked',
+                            eligibility_reason = NULL, eligibility_checked_at = NULL,
+                            updated_at = unixepoch()
+                        WHERE credential_name IN (
+                            SELECT filename FROM antigravity_credentials
+                            WHERE bound_proxy_node_id IN ({removable_nodes})
+                        )""",
+                    group_params,
+                )
+                await db.execute(
+                    f"""UPDATE antigravity_credentials
+                        SET bound_proxy_node_id = NULL, updated_at = unixepoch()
+                        WHERE bound_proxy_node_id IN ({removable_nodes})""",
+                    group_params,
+                )
+                await db.execute(
+                    f"DELETE FROM proxy_group_nodes WHERE id IN ({removable_nodes})",
+                    group_params,
                 )
             imported_count = 0
             updated_count = 0
