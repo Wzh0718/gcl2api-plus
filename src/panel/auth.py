@@ -333,15 +333,19 @@ async def _reserve_fixed_import_exit(storage, group_id: int, check_url: str, lea
 
     async def _probe_nodes():
         probed_failure = False
+        throttled = 0
         for node_id, proxy_url in nodes:
             observation = await observe_egress(
                 check_url, proxy_url, fetch_echo,
                 lambda response: parse_egress_identity(response.json()),
             )
             if observation.status == 429:
-                # The provider is throttling every route for a while; the
-                # remaining probes would short-circuit on the same cooldown.
-                return None, EGRESS_RATE_LIMITED
+                # This route is throttled, not the batch: keep probing the
+                # remaining exits and only report throttling once every one of
+                # them was refused. Aborting here let one unlucky node stall a
+                # whole import while the other exits were perfectly usable.
+                throttled += 1
+                continue
             if observation.status != 200 or not observation.ip:
                 probed_failure = True
                 continue
@@ -351,6 +355,10 @@ async def _reserve_fixed_import_exit(storage, group_id: int, check_url: str, lea
                 return (proxy_url, observation.ip), ""
             # Another import took the node, or its exit is owned elsewhere.
             probed_failure = True
+        if throttled:
+            # Never disable the item on throttling: that says nothing about the
+            # account, so the caller defers and retries instead.
+            return None, EGRESS_RATE_LIMITED
         return None, EGRESS_PROBE_FAILED if probed_failure else EGRESS_NO_FREE_NODE
 
     try:

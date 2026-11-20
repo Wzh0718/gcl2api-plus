@@ -52,6 +52,73 @@ async def test_rate_limited_probe_requeues_instead_of_disabling(storage, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_one_throttled_exit_does_not_block_the_remaining_exits(storage, monkeypatch):
+    """A 429 on the first probed node must not abort the whole import.
+
+    This is the regression behind "15 items stuck on 出口探测被限流": the loop
+    returned on the first throttled answer, so healthy exits were never tried.
+    """
+    group = await storage.create_proxy_group(name="PX6")
+    await storage.import_proxy_group_nodes(group["id"], [
+        {"name": "a", "proxy_url": "http://192.0.2.41:8080"},
+        {"name": "b", "proxy_url": "http://192.0.2.42:8080"},
+    ])
+    batch_id = await storage.refresh_import_queue.create_batch(["mock-token"], group["id"], None)
+    queue = storage.refresh_import_queue
+    probed = []
+
+    async def throttled_then_healthy(check_url, proxy_url, fetch, parse):
+        probed.append(proxy_url)
+        if len(probed) == 1:
+            return SimpleNamespace(status=429, ip=None, cached=True, error_type=None)
+        return SimpleNamespace(status=200, ip="198.51.100.77", cached=False, error_type=None)
+
+    monkeypatch.setattr(panel, "observe_egress", throttled_then_healthy)
+    observe_import = AsyncMock(
+        return_value={"success": True, "file_path": "ok.json", "email": "a@b.c"},
+    )
+    monkeypatch.setattr(panel, "add_antigravity_account_by_refresh_token", observe_import)
+
+    assert await panel.process_next_refresh_import(queue)
+    item = (await queue.list_items(batch_id))[0]
+    # The healthy exit was reached and the import ran; only the echo answer on
+    # the first node was throttled. Persisting "imported" belongs to the mocked
+    # import call, so the item simply must not be requeued or disabled here.
+    assert len(probed) == 2
+    observe_import.assert_awaited_once()
+    assert item["status"] not in ("queued", "disabled")
+
+
+@pytest.mark.asyncio
+async def test_every_exit_throttled_still_requeues(storage, monkeypatch):
+    """Only a uniformly throttled pool reports throttling — and it requeues."""
+    group = await storage.create_proxy_group(name="PX6")
+    await storage.import_proxy_group_nodes(group["id"], [
+        {"name": "a", "proxy_url": "http://192.0.2.51:8080"},
+        {"name": "b", "proxy_url": "http://192.0.2.52:8080"},
+    ])
+    batch_id = await storage.refresh_import_queue.create_batch(["mock-token"], group["id"], None)
+    queue = storage.refresh_import_queue
+    probed = []
+
+    async def always_throttled(check_url, proxy_url, fetch, parse):
+        probed.append(proxy_url)
+        return SimpleNamespace(status=429, ip=None, cached=True, error_type=None)
+
+    monkeypatch.setattr(panel, "observe_egress", always_throttled)
+    observe_import = AsyncMock()
+    monkeypatch.setattr(panel, "add_antigravity_account_by_refresh_token", observe_import)
+
+    assert await panel.process_next_refresh_import(queue)
+    item = (await queue.list_items(batch_id))[0]
+    assert item["status"] == "queued"
+    assert "限流" in item["message"]
+    # Every candidate exit was actually tried before giving up.
+    assert len(probed) == 2
+    observe_import.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_probe_timeout_requeues_item(storage, monkeypatch):
     _, batch_id = await _batch_with_node(storage)
     queue = storage.refresh_import_queue
