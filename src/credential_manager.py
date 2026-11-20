@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import hashlib
 import inspect
 import json
 import os
@@ -18,6 +19,27 @@ from src.operational_audit import emit as audit, reference, refresh_context, exp
 
 from src.google_oauth_api import Credentials
 from src.storage_adapter import get_storage_adapter
+
+# Token 刷新窗口抖动：所有账号共用固定 300s 缓冲时，同批导入的账号过期时刻
+# 天然对齐，会形成整点刷新簇。按账号稳定散开 300~900s，簇即被打散。
+_REFRESH_BUFFER_BASE_SECONDS = 300
+_REFRESH_BUFFER_SPREAD_SECONDS = 600
+
+
+def _refresh_buffer_seconds(credential_data: Dict[str, Any], mode: str) -> int:
+    """该账号本次刷新使用的提前量；antigravity 走抖动，其余保持 300s。"""
+    if mode != "antigravity":
+        return _REFRESH_BUFFER_BASE_SECONDS
+    seed = str(
+        credential_data.get("refresh_token")
+        or credential_data.get("client_id")
+        or credential_data.get("_credential_revision")
+        or ""
+    )
+    if not seed:
+        return _REFRESH_BUFFER_BASE_SECONDS
+    digest = hashlib.sha256(f"agy-refresh-buffer:v1:{seed}".encode("utf-8")).digest()
+    return _REFRESH_BUFFER_BASE_SECONDS + int.from_bytes(digest[:4], "big") % _REFRESH_BUFFER_SPREAD_SECONDS
 
 
 REFRESH_LEASE_TTL = 60
@@ -615,6 +637,7 @@ class CredentialManager:
                 network=network,
                 ip_check_url=await get_antigravity_egress_ip_check_url(),
                 api_base_url=await get_antigravity_api_url(),
+                credential_data=credential_data,
             )
         )
 
@@ -890,7 +913,7 @@ class CredentialManager:
                 # 官方 Linux agy 使用 300 秒提前过期窗口；geminicli 同样保留 5 分钟缓冲。
                 now = datetime.now(timezone.utc)
                 time_left = (file_expiry - now).total_seconds()
-                refresh_buffer = 300
+                refresh_buffer = _refresh_buffer_seconds(credential_data, mode)
 
                 log.debug(
                     f"Token时间检查: "

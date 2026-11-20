@@ -59,6 +59,28 @@ def _record_kwargs(request_id, *, created_at=None, success=True, api_key_id="key
 
 
 @pytest.mark.asyncio
+async def test_webhook_counts_only_confirmed_agy_upstream_429(monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.call_monitor import CallMonitor
+    from src.rate_limits import RateLimit
+
+    alert = AsyncMock()
+    monkeypatch.setattr("src.dingtalk_alert.send_status_frequency_alert", alert)
+    monitor = CallMonitor(object())
+    for request_id, channel, limit in (
+        ("local", "antigravity", RateLimit("gateway", "account_usage_limit")),
+        ("unknown", "antigravity", None),
+        ("other", "vertex", RateLimit("upstream", "rate_limited")),
+        ("confirmed", "antigravity", RateLimit("upstream", "rate_limited")),
+    ):
+        await monitor.record(request_id=request_id, model_name=request_id, channel=channel,
+                             success=False, status_code=429, rate_limit=limit)
+
+    alert.assert_awaited_once_with(status_code=429, channel="antigravity", model="confirmed")
+    assert len(monitor.realtime()) == 4
+
+
+@pytest.mark.asyncio
 async def test_call_records_table_created(tmp_path, monkeypatch):
     adapter = await _make_adapter(tmp_path, monkeypatch)
     import aiosqlite
