@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
@@ -22,6 +24,10 @@ capture_context: ContextVar[CaptureContext | None] = ContextVar("capture_context
 capture_managed: ContextVar[bool] = ContextVar("capture_managed", default=False)
 active_attempt: ContextVar[CaptureAttempt | None] = ContextVar("capture_attempt", default=None)
 _store = None
+_capture_queue: asyncio.Queue | None = None
+_queue_drops = 0
+_CAPTURE_QUEUE_SIZE = 256
+_CAPTURE_DRAIN_TIMEOUT = 10.0
 
 
 def get_capture_store():
@@ -171,24 +177,87 @@ async def record_local_capture(credential_name, model, reason="capacity_busy"):
                  "kind": "local_queue", "phase": "rejected",
                  "credential_name": credential_name, "model": model,
                  "status_code": 429, "reason": reason, "api_key_id": context.api_key_id}
-        await write_event("attempts", event)
-        await write_event("errors", {**event, "details": {"client": context.client}})
+        enqueue_capture_event("attempts", event)
+        enqueue_capture_event("errors", {**event, "details": {"client": context.client}})
 
 
-async def write_event(policy, event):
+def enqueue_capture_event(policy, event, *, compare=False):
+    global _queue_drops
+    queue = _capture_queue
+    if queue is None:
+        return
     settings = capture_settings()
-    if not settings["request_capture_enabled"]:
-        return False
+    if not settings["request_capture_enabled"] or not settings[f"request_capture_{policy}_enabled"]:
+        return
     try:
-        return await asyncio.to_thread(
-            get_capture_store().write, policy, {**identity(), **event}, capture_policies(settings)[policy],
-            min_free_bytes=capture_policies(settings)[policy]["min_free_bytes"],
-            max_entry_bytes=settings["request_capture_max_entry_kb"] * 1024,
-        )
-    except Exception as exc:
-        # Never let evidence capture change the response/retry behaviour.
-        log.warning(f"[CAPTURE] evidence unavailable: {type(exc).__name__}")
-        return False
+        queue.put_nowait((policy, event, settings, compare))
+    except asyncio.QueueFull:
+        _queue_drops += 1
+        if _queue_drops & (_queue_drops - 1) == 0:
+            log.warning(f"[CAPTURE] writer queue full, dropped events: {_queue_drops}")
+
+
+def _persist_capture_event(policy, event, settings, compare):
+    store = get_capture_store()
+    policies = capture_policies(settings)
+
+    def persist(name, data):
+        options = policies[name]
+        store.write(name, {**identity(), **data}, options,
+                    min_free_bytes=options["min_free_bytes"],
+                    max_entry_bytes=settings["request_capture_max_entry_kb"] * 1024)
+
+    persist(policy, event)
+    count = settings["request_capture_context_count"]
+    account = event.get("credential_name")
+    if compare and count and account:
+        prior = store.query("normal", policies["normal"], credential_name=account,
+                            status_code=200, limit=count, before=event["created_at"],
+                            complete_only=True)
+        for sample in prior:
+            if sample.get("incomplete"):
+                continue
+            persist("errors", {**sample, "kind": "prior_success",
+                               "request_id": event["request_id"],
+                               "source_request_id": sample["request_id"],
+                               "source_created_at": sample["created_at"],
+                               "created_at": time.time(),
+                               "trigger_request_id": event["request_id"],
+                               "trigger_attempt_id": event.get("attempt_id")})
+
+
+async def _capture_writer(queue, executor):
+    loop = asyncio.get_running_loop()
+    while True:
+        item = await queue.get()
+        try:
+            await loop.run_in_executor(executor, _persist_capture_event, *item)
+        except Exception as exc:
+            log.warning(f"[CAPTURE] evidence unavailable: {type(exc).__name__}")
+        finally:
+            queue.task_done()
+
+
+@asynccontextmanager
+async def capture_writer_lifespan():
+    global _capture_queue, _queue_drops
+    queue = asyncio.Queue(maxsize=_CAPTURE_QUEUE_SIZE)
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="request-capture")
+    worker = asyncio.create_task(_capture_writer(queue, executor), name="request_capture_writer")
+    _capture_queue = queue
+    _queue_drops = 0
+    try:
+        yield
+    finally:
+        _capture_queue = None
+        try:
+            await asyncio.wait_for(queue.join(), timeout=_CAPTURE_DRAIN_TIMEOUT)
+        except TimeoutError:
+            log.warning(f"[CAPTURE] writer shutdown timed out, discarding {queue.qsize()} queued events")
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _error_fields(body, limit):
@@ -258,8 +327,8 @@ class CaptureAttempt:
 
     async def start(self):
         if self.enabled:
-            await write_event("attempts", self.event)
-            await write_event("features", {**self.event, "features": self.feature_data})
+            enqueue_capture_event("attempts", self.event)
+            enqueue_capture_event("features", {**self.event, "features": self.feature_data})
 
     def response(self, status, headers=None, body=b""):
         self.status = status
@@ -330,40 +399,13 @@ class CaptureAttempt:
                  "response_headers": self.headers,
                  "trace_id": self.headers.get("x-cloud-trace-context") or self.headers.get("x-request-id") or self.headers.get("x-goog-request-id"),
                  "reason": reason, "incomplete": self.incomplete}
-        await write_event("attempts", event)
+        enqueue_capture_event("attempts", event)
         raw_event = {**event, "details": self.details, "error": error if self.error_body else None,
                      "error_truncated": truncated}
         failed = bool(self.incomplete or self.status is None or self.status >= 400)
         if failed:
-            await self._save_error(raw_event)
-        await write_event("normal", raw_event)
-
-    async def _save_error(self, event):
-        settings = capture_settings()
-        if not settings["request_capture_errors_enabled"]:
-            return
-        await write_event("errors", event)
-        count = settings["request_capture_context_count"]
-        account = event.get("credential_name")
-        if count and account:
-            try:
-                prior = await asyncio.to_thread(
-                    get_capture_store().query, "normal", capture_policies(settings)["normal"],
-                    credential_name=account, status_code=200, limit=count,
-                    before=event["created_at"], complete_only=True,
-                )
-                for sample in prior:
-                    if sample.get("incomplete"):
-                        continue
-                    await write_event("errors", {**sample, "kind": "prior_success",
-                                                 "request_id": event["request_id"],
-                                                 "source_request_id": sample["request_id"],
-                                                 "source_created_at": sample["created_at"],
-                                                 "created_at": time.time(),
-                                                 "trigger_request_id": event["request_id"],
-                                                 "trigger_attempt_id": event.get("attempt_id")})
-            except Exception as exc:
-                log.warning(f"[CAPTURE] comparison evidence unavailable: {type(exc).__name__}")
+            enqueue_capture_event("errors", raw_event, compare=True)
+        enqueue_capture_event("normal", raw_event)
 
 
 def observe_stream_headers(response):
@@ -441,7 +483,8 @@ async def capture_request(scope, receive, send, app):
     prefixes = ("/v1/", "/v1beta/", "/antigravity/v1/", "/antigravity/v1beta/",
                 "/vertex/v1/", "/vertex/v1beta/", "/geminicli/v1/", "/geminicli/v1beta/")
     if (scope["type"] != "http" or scope.get("method") != "POST" or
-            not path.startswith(prefixes) or not capture_settings()["request_capture_enabled"]):
+            not path.startswith(prefixes) or _capture_queue is None or
+            not capture_settings()["request_capture_enabled"]):
         return await app(scope, receive, send)
     context = CaptureContext()
     if "/models/" in path:
@@ -516,14 +559,14 @@ async def capture_request(scope, receive, send, app):
                      "ingress": context.ingress,
                      "request_model": context.request_model,
                      "incomplete": exception_name or (None if response_complete else "response_incomplete")}
-            await write_event("attempts", final)
-            await write_event("features", {**final, "features": {"client": context.client_features}})
+            enqueue_capture_event("attempts", final)
+            enqueue_capture_event("features", {**final, "features": {"client": context.client_features}})
             if context.attempt_count == 0:
-                await write_event("normal", {**final, "details": {"client": context.client}})
+                enqueue_capture_event("normal", {**final, "details": {"client": context.client}})
             if status is None or status >= 400 or final["incomplete"]:
                 reason, error, truncated = _error_fields(final_error, settings["request_capture_error_body_kb"] * 1024)
-                await write_event("errors", {**final, "details": {"client": context.client},
-                                             "reason": reason, "error": error, "error_truncated": truncated})
+                enqueue_capture_event("errors", {**final, "details": {"client": context.client},
+                                                 "reason": reason, "error": error, "error_truncated": truncated})
         finally:
             capture_context.reset(token)
 
