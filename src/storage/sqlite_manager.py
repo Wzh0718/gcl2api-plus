@@ -2287,14 +2287,50 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     fixed_urls = {row[0] for row in await cursor.fetchall()}
                 if not fixed_urls.issubset({node["proxy_url"] for node in nodes}):
                     raise ValueError("不能移除仍有账号固定绑定的节点")
-                await db.execute(
-                    """DELETE FROM proxy_group_nodes
+                # 先解除即将被删除节点上的账号绑定：否则 replace 导入后这些
+                # 账号的 bound_proxy_node_id 会指向已不存在的节点，面板看着
+                # 「有绑定」但请求时选不到节点。固定 IP 绑定在上一段已被拒绝。
+                async with db.execute(
+                    """SELECT id FROM proxy_group_nodes
                        WHERE group_id = ? AND id NOT IN (
                            SELECT bound_proxy_node_id FROM antigravity_credentials
                            WHERE fixed_proxy_ip IS NOT NULL AND bound_proxy_node_id IS NOT NULL
                        )""",
                     (int(group_id),),
-                )
+                ) as cursor:
+                    doomed_node_ids = [row[0] for row in await cursor.fetchall()]
+                if doomed_node_ids:
+                    placeholders = ",".join("?" * len(doomed_node_ids))
+                    async with db.execute(
+                        f"""SELECT filename FROM antigravity_credentials
+                            WHERE bound_proxy_node_id IN ({placeholders})""",
+                        doomed_node_ids,
+                    ) as cursor:
+                        freed_accounts = [row[0] for row in await cursor.fetchall()]
+                    await db.execute(
+                        f"""UPDATE antigravity_credentials
+                            SET bound_proxy_node_id = NULL, fixed_proxy_ip = NULL,
+                                updated_at = unixepoch()
+                            WHERE bound_proxy_node_id IN ({placeholders})""",
+                        doomed_node_ids,
+                    )
+                    if freed_accounts:
+                        account_placeholders = ",".join("?" * len(freed_accounts))
+                        await db.execute(
+                            f"""UPDATE antigravity_account_health
+                                SET egress_ip = NULL, egress_country = NULL,
+                                    binding_status = 'unchecked',
+                                    eligibility_status = 'unchecked',
+                                    eligibility_reason = NULL,
+                                    eligibility_checked_at = NULL,
+                                    updated_at = unixepoch()
+                                WHERE credential_name IN ({account_placeholders})""",
+                            freed_accounts,
+                        )
+                    await db.execute(
+                        f"DELETE FROM proxy_group_nodes WHERE id IN ({placeholders})",
+                        doomed_node_ids,
+                    )
             imported_count = 0
             updated_count = 0
             for node in nodes:

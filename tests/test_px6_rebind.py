@@ -173,3 +173,53 @@ async def test_rebind_treats_unknown_url_as_stale_when_live_list_given(pool):
         gid, live_urls={node("live", future)["proxy_url"], node("legacy", None)["proxy_url"]}
     )
     assert again["checked"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_once_through_storage_adapter(pool, monkeypatch):
+    """导入密钥后的首轮同步必须经适配器完成，不能因缺转发方法 500。"""
+    manager, gid, _ = pool
+    from src import px6, px6_refresh
+    from src.storage_adapter import close_storage_adapter, get_storage_adapter
+
+    await close_storage_adapter()
+    adapter = await get_storage_adapter()
+    try:
+        await px6_refresh.save_api_key("abcd-1234-efgh-5678")
+        future = time.time() + 7 * 86400
+        fresh = {"name": "PX6 9001", "proxy_url": "http://fresh.example:8080",
+                 "expires_at": future}
+
+        async def fake_fetch(api_key, protocol="http"):
+            return {"nodes": [fresh], "items": []}
+
+        monkeypatch.setattr(px6, "fetch_owned_proxies", fake_fetch)
+
+        summary = await px6_refresh.sync_once(gid)
+
+        assert "error" not in summary, summary
+        assert summary["fetched"] == 1
+        assert summary["imported"] == 1
+        nodes = {n["name"]: n for n in (await manager.get_proxy_group(gid))["nodes"]}
+        assert nodes["PX6 9001"]["enabled"] == 1
+        assert nodes["PX6 9001"]["expires_at"] == pytest.approx(future)
+    finally:
+        await px6_refresh.save_api_key("")
+        await close_storage_adapter()
+
+
+@pytest.mark.asyncio
+async def test_replace_import_clears_bindings_of_removed_nodes(pool):
+    """替换导入会删掉旧节点，指过去的账号绑定必须一起清掉，不能留悬空引用。"""
+    manager, gid, _ = pool
+    future = time.time() + 7 * 86400
+    await manager.import_proxy_group_nodes(gid, [node("old", future), node("keep", future)])
+    await bind_account(manager, gid, node_id=await node_id_of(manager, gid, "old"))
+
+    await manager.import_proxy_group_nodes(gid, [node("keep", future)], replace=True)
+
+    nodes = {n["name"]: n for n in (await manager.get_proxy_group(gid))["nodes"]}
+    assert "old" not in nodes
+    network = await manager.get_credential_network("a.json", mode="antigravity")
+    assert network["bound_proxy_node_id"] is None
+    assert network["fixed_proxy_ip"] is None
