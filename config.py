@@ -524,6 +524,11 @@ _ANTIGRAVITY_DORMANT_ENABLED_DEFAULT = False
 _ANTIGRAVITY_DORMANT_HOURS_DEFAULT = 6
 # 全池闸门：极端负载下先在闸前排队吸收，排不下才快速失败并给出诚实 Retry-After。
 # 默认关闭；0 表示该项不限制。
+# PX6 代理池定时同步：默认开启，间隔 1 小时；组未指定时按名称含 PX6 自动识别。
+_PX6_REFRESH_ENABLED_DEFAULT = True
+_PX6_REFRESH_INTERVAL_DEFAULT = 3600
+_PX6_GROUP_ID_DEFAULT: Optional[int] = None
+
 _ANTIGRAVITY_FLEET_ENABLED_DEFAULT = False
 _ANTIGRAVITY_FLEET_INFLIGHT_DEFAULT = 0
 _ANTIGRAVITY_FLEET_RPM_DEFAULT = 0
@@ -769,6 +774,36 @@ def get_antigravity_dormant_hours_sync() -> int:
         ),
         20,
     )
+
+
+async def get_px6_refresh_enabled() -> bool:
+    """PX6 代理池定时同步开关。默认开启。"""
+    value = await _async_panel_first("px6_refresh_enabled", "PX6_REFRESH_ENABLED", None)
+    if value is None:
+        return _PX6_REFRESH_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+async def get_px6_refresh_interval() -> int:
+    """同步间隔（秒），默认 3600。"""
+    value = await _async_panel_first("px6_refresh_interval", "PX6_REFRESH_INTERVAL", None)
+    try:
+        return min(max(int(value), 60), 86400)
+    except (TypeError, ValueError):
+        return _PX6_REFRESH_INTERVAL_DEFAULT
+
+
+async def get_px6_group_id() -> Optional[int]:
+    """要维护的代理组 id；未配置时返回 None（由调用方按名称识别）。"""
+    value = await _async_panel_first("px6_group_id", "PX6_GROUP_ID", None)
+    if value in (None, ""):
+        return _PX6_GROUP_ID_DEFAULT
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return _PX6_GROUP_ID_DEFAULT
 
 
 async def get_antigravity_fleet_enabled() -> bool:

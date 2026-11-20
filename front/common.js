@@ -1244,7 +1244,12 @@ function buildCredStatusBadges(credInfo, manager) {
             statusBadges += `<span class="status-badge" style="background-color: #b71c1c; color: white;" title="Google 以违反服务条款（TOS_VIOLATION）停用了该账号：已自动禁用并停止参与调度。请通过 Google 申诉链接提交申诉，申诉通过后重新启用即可恢复">账号待申诉</span>`;
         }
         if (credInfo.binding_status === 'proxy_drift' || credInfo.binding_status === 'proxy_failed') {
-            statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="绑定代理异常，需要重新检测或重绑">${credInfo.binding_status === 'proxy_drift' ? 'IP 漂移' : '代理失败'}</span>`;
+            const bindTip = credInfo.binding_reason || '绑定代理异常，需要重新检测或重绑';
+            statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="${bindTip}">${credInfo.binding_status === 'proxy_drift' ? 'IP 漂移' : '代理失败'}</span>`;
+        } else if (credInfo.binding_status === 'proxy_rebound') {
+            // PX6 节点到期后由定时任务自动换了一台；原因里带旧节点与新节点。
+            const reboundTip = credInfo.binding_reason || '代理节点已到期，已自动换绑到新节点';
+            statusBadges += `<span class="status-badge" style="background-color: #1565c0; color: white;" title="${reboundTip}">已换绑</span>`;
         }
     }
 
@@ -7679,14 +7684,19 @@ async function fetchPX6Proxies(importNodes = false) {
             method: 'POST', headers: getAuthHeaders(), cache: 'no-store',
             body: JSON.stringify({api_key: apiKey,
                 protocol: document.getElementById('proxyPX6Protocol').value,
-                replace: Boolean(document.getElementById('proxyPX6Replace').checked)})
+                replace: Boolean(document.getElementById('proxyPX6Replace').checked),
+                // 导入时把 key 加密存进服务端，后续每小时自动同步并换绑到期 IP。
+                remember: importNodes})
         });
         const data = await response.json();
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'PX6 请求失败，请检查输入');
         result.replaceChildren();
         const summary = document.createElement('p');
+        const syncInfo = data.sync && !data.sync.skipped
+            ? ` 自动同步：换绑 ${data.sync.rebound || 0} 个到期账号，停用 ${data.sync.disabled_orphans || 0} 个旧节点。`
+            : '';
         summary.textContent = importNodes
-            ? `导入完成：新增 ${data.imported_count}，更新 ${data.updated_count}。已保存有明确到期时间的节点；请求前会检查到期时间，提前 24 小时切换到有效备用 IP。`
+            ? `导入完成：新增 ${data.imported_count}，更新 ${data.updated_count}。已保存有明确到期时间的节点；请求前会检查到期时间，提前 24 小时切换到有效备用 IP。${data.key_saved ? ' API Key 已加密保存，服务每 ${Math.round((data.sync?.interval_seconds || 3600) / 60)} 分钟自动同步一次。' : ''}${syncInfo}`
             : `Key 验证成功，找到 ${data.count} 个有效代理。`;
         result.append(summary);
         if (data.items?.length) {

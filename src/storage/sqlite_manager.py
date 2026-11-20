@@ -2617,6 +2617,162 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             await db.commit()
         return result.rowcount > 0
 
+    async def disable_orphan_proxy_nodes(
+        self, group_id: int, keep_urls: set
+    ) -> int:
+        """停用「本轮同步结果里没有、且没有账号绑定」的旧节点。
+
+        PX6 换 IP 后旧节点记录会留在库里；不清掉的话组内会越积越多，
+        而且 ``expires_at`` 未知的旧节点仍可能被选中。有账号绑定的节点
+        保持原样，由 :meth:`rebind_expired_proxy_accounts` 负责迁移。
+        """
+        self._ensure_initialized()
+        if not keep_urls:
+            return 0
+        async with sqlite_connect(self._db_path) as db:
+            placeholders = ",".join(["?"] * len(keep_urls))
+            result = await db.execute(
+                f"""UPDATE proxy_group_nodes SET enabled = 0, updated_at = unixepoch()
+                    WHERE group_id = ? AND enabled = 1
+                      AND proxy_url NOT IN ({placeholders})
+                      AND id NOT IN (
+                          SELECT bound_proxy_node_id FROM antigravity_credentials
+                          WHERE bound_proxy_node_id IS NOT NULL
+                      )""",
+                (int(group_id), *keep_urls),
+            )
+            await db.commit()
+            return result.rowcount or 0
+
+    async def rebind_expired_proxy_accounts(
+        self, group_id: int, *, now: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """把绑定在「已过期 / 已停用」节点上的账号迁到同组可用节点。
+
+        背景：PX6 的出口 IP 有租期，节点记录里的 ``expires_at`` 一旦到期，
+        选节点逻辑会把它排除，但**已经硬绑定的账号不会自己挪窝**——继续拿
+        过期 URL 出网，表现为大面积代理失败。这里把这类账号主动迁走。
+
+        约束：
+        - 只在同一代理组内迁；
+        - 新节点必须未过期（``expires_at`` 为空或 > now）、启用、不在冷却；
+        - 组开启 ``exclusive_assignment`` 时，跳过已被其他账号占用的节点；
+        - 没有可用节点时把账号标成 ``proxy_failed`` 并写明原因，不静默留旧 IP。
+
+        返回 ``{"rebound": [...], "unassignable": [...], "checked": n}``。
+        """
+        self._ensure_initialized()
+        current = float(now if now is not None else time.time())
+        rebound: List[Dict[str, Any]] = []
+        unassignable: List[Dict[str, Any]] = []
+        async with sqlite_connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT exclusive_assignment FROM proxy_groups WHERE id = ?", (int(group_id),)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                await db.rollback()
+                raise ValueError("代理组不存在")
+            exclusive = bool(row[0])
+            async with db.execute(
+                """SELECT a.filename, a.bound_proxy_node_id, n.name, n.proxy_url, n.expires_at, n.enabled
+                   FROM antigravity_credentials a
+                   JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
+                   WHERE a.proxy_mode = 'group' AND a.proxy_group_id = ?
+                     AND (
+                         n.enabled = 0
+                         OR (n.expires_at IS NOT NULL AND n.expires_at <= ?)
+                     )""",
+                (int(group_id), current),
+            ) as cursor:
+                stale = await cursor.fetchall()
+            if not stale:
+                await db.rollback()
+                return {"checked": 0, "rebound": [], "unassignable": []}
+
+            async with db.execute(
+                """SELECT n.id, n.name, n.proxy_url
+                   FROM proxy_group_nodes n
+                   WHERE n.group_id = ? AND n.enabled = 1
+                     AND (n.expires_at IS NULL OR n.expires_at > ?)
+                     AND (n.cooldown_until IS NULL OR n.cooldown_until <= ?)
+                   ORDER BY (n.expires_at IS NULL) DESC, n.expires_at DESC, n.id""",
+                (int(group_id), current, current),
+            ) as cursor:
+                candidates = [tuple(r) for r in await cursor.fetchall()]
+
+            async with db.execute(
+                """SELECT bound_proxy_node_id FROM antigravity_credentials
+                   WHERE bound_proxy_node_id IS NOT NULL AND proxy_mode = 'group'
+                     AND proxy_group_id = ?""",
+                (int(group_id),),
+            ) as cursor:
+                occupied = {r[0] for r in await cursor.fetchall()}
+
+            for filename, node_id, node_name, node_url, expires_at, enabled in stale:
+                label = node_name or f"#{node_id}"
+                reason = (f"节点 {label} 已停用" if not enabled
+                          else "节点 %s 已于 %s 到期" % (
+                              label,
+                              datetime.fromtimestamp(
+                                  float(expires_at), timezone(timedelta(hours=8))
+                              ).strftime("%Y-%m-%d %H:%M")))
+                pick = None
+                for cand in candidates:
+                    if exclusive and cand[0] in occupied:
+                        continue
+                    pick = cand
+                    break
+                if pick is None:
+                    unassignable.append({"filename": filename, "reason": reason})
+                    await db.execute(
+                        """INSERT INTO antigravity_account_health(credential_name, binding_status,
+                               eligibility_status, eligibility_reason, eligibility_checked_at, updated_at)
+                           VALUES (?, 'proxy_failed', 'eligible', ?, unixepoch(), unixepoch())
+                           ON CONFLICT(credential_name) DO UPDATE SET
+                               binding_status = 'proxy_failed',
+                               eligibility_reason = excluded.eligibility_reason,
+                               updated_at = unixepoch()""",
+                        (filename, f"{reason}；组内暂无可用节点，请检查 PX6 授权或补充节点"),
+                    )
+                    continue
+                await db.execute(
+                    """UPDATE antigravity_credentials
+                       SET bound_proxy_node_id = ?, proxy_bound_at = ?, updated_at = unixepoch()
+                       WHERE filename = ?""",
+                    (pick[0], current, filename),
+                )
+                # 出口 IP 属于账号健康表；换绑后旧值作废，等下一次探测回填。
+                await db.execute(
+                    "UPDATE antigravity_account_health SET egress_ip = NULL WHERE credential_name = ?",
+                    (filename,),
+                )
+                occupied.discard(node_id)
+                occupied.add(pick[0])
+                note = f"{reason}，已切换到 {pick[1] or ('节点 #%d' % pick[0])}"
+                await db.execute(
+                    """INSERT INTO antigravity_account_health(credential_name, binding_status,
+                           eligibility_status, eligibility_reason, eligibility_checked_at, updated_at)
+                       VALUES (?, 'proxy_rebound', 'eligible', ?, unixepoch(), unixepoch())
+                       ON CONFLICT(credential_name) DO UPDATE SET
+                           binding_status = 'proxy_rebound',
+                           eligibility_reason = excluded.eligibility_reason,
+                           updated_at = unixepoch()""",
+                    (filename, note),
+                )
+                rebound.append({
+                    "filename": filename, "from_node_id": node_id, "from_node_name": node_name,
+                    "to_node_id": pick[0], "to_node_name": pick[1], "reason": reason,
+                })
+            await db.commit()
+        if rebound:
+            log.info(
+                f"[PX6] 代理组 {group_id} 换绑 {len(rebound)} 个账号"
+                f"（无可用节点 {len(unassignable)} 个）"
+            )
+        return {"checked": len(stale), "rebound": rebound, "unassignable": unassignable}
+
     async def batch_update_credential_network(
         self,
         filenames: List[str],
@@ -4620,6 +4776,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                             summary["eligibility_status"] = row[16] or "unchecked"
                             summary["eligibility_checked_at"] = row[17]
                             summary["last_403_category"] = row[18]
+                            # 代理换绑/失败原因（PX6 到期等），供账号列表展示。
+                            summary["eligibility_reason"] = row[20] if len(row) > 20 else None
                             # 条款封禁（TOS_VIOLATION）：永久停用，需要提交申诉。
                             tos_text = " ".join(
                                 str(part or "") for part in (row[19], row[20])
