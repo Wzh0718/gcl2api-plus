@@ -140,6 +140,20 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 
 达限时暂停向该账号派发，沿用现有换号策略，没有放行候选时返回本地 `429` 和 `Retry-After`。生成用量在收到回执后确认，在飞请求仍可能让结算值超过设定线。
 
+### 全池闸门与账号静默窗口
+
+「Antigravity 配置」里的「全池闸门（极端负载保护）」是跨账号的总量准入：全池在飞并发上限 + 每分钟令牌桶，突发先在闸前**有界排队**吸收（默认 60 秒），排不下才失败，并返回按令牌补充速度算出的真实 `Retry-After`。墙钟上游限流不解决「批量任务永远失败」——网关自己给出的 429 若不是有界退避，客户端会按固定 1 秒热重试，把池子打穿。
+
+同一区域还有「账号每日静默窗口」：每个账号每天有一段不参与调度，起始小时按账号名稳定分配，让整池不再呈现「24 小时恒定在线」的机器画像。选号时直接跳过，不改 SQL，也不消耗一次上游尝试。两项默认关闭。
+
+**后端**：`ANTIGRAVITY_FLEET_BACKEND=auto`（默认）时，配了 `REDIS_URL` 就把在飞许可与令牌桶放在 Redis，多 worker / 多副本共享同一份额度；没配或 `memory` 则用进程内计数。Redis 不可用时自动降级进程内计数并限频告警 30 秒，不阻断请求。
+
+Redis 侧状态自愈，没有额外清理任务：
+
+- 在飞许可在 ZSET `gcli:fleet:v1:inflight`（member=许可 id，score=过期时刻），每次准先前清理过期成员，进程崩溃/漏释放的许可在 TTL（`ANTIGRAVITY_FLEET_SLOT_TTL_SECONDS`，默认 900 秒）后自动回收；
+- 令牌桶在 HASH `gcli:fleet:v1:tokens`（`tokens` / `ts`），准入时按时间差补充；
+- 准入是一个 Lua 脚本（清过期 + 判在飞 + 补令牌 + 记账）一次完成，`release()` 仍是同步函数：Redis 释放投递到进程内队列，由后台协程合批执行。
+
 ### 计费 API 与控制面板
 
 - `src/panel/billing.py` 提供汇总、排行和价格管理 API。
@@ -208,6 +222,15 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 首次发送前无可用凭证时使用的模型降级链，逗号分隔；留空关闭，图片请求不降级 | 空（关闭） |
 | `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按请求原子轮转，历史及分钟次数不参与选号 | `15` |
 | `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |
+| `ANTIGRAVITY_FLEET_ENABLED` ★ | 全池闸门开关（面板优先，默认关闭） | `false` |
+| `ANTIGRAVITY_FLEET_INFLIGHT` ★ | 全池在飞并发上限，`0` 表示不限 | `0` |
+| `ANTIGRAVITY_FLEET_RPM` ★ | 全池每分钟请求上限（令牌桶，突发容量按 10 秒计），`0` 表示不限 | `0` |
+| `ANTIGRAVITY_FLEET_WAIT_SECONDS` ★ | 闸前排队上限（秒），超时才返回 429 | `60` |
+| `ANTIGRAVITY_FLEET_BACKEND` ★ | `auto` / `redis` / `memory`；`auto` 在配了 `REDIS_URL` 时用 Redis | `auto` |
+| `ANTIGRAVITY_FLEET_REDIS_PREFIX` | 闸门在 Redis 里的键前缀 | `gcli:fleet:v1` |
+| `ANTIGRAVITY_FLEET_SLOT_TTL_SECONDS` | 在飞许可的自愈 TTL（30–7200 秒） | `900` |
+| `ANTIGRAVITY_DORMANT_ENABLED` ★ | 账号每日静默窗口开关（面板优先） | `false` |
+| `ANTIGRAVITY_DORMANT_HOURS` ★ | 每账号每天静默小时数（0–20） | `6` |
 | `ANTIGRAVITY_NETWORK_CHECK_ENABLED` ★ | 出口 IP 与地区资格检查门禁 | `false` |
 | `ANTIGRAVITY_NETWORK_CHECK_TTL_SECONDS` ★ | 检查结果有效期（秒，最小 60） | `1800` |
 | `ANTIGRAVITY_EGRESS_IP_CHECK_URL` ★ | 出口 IP 回显接口，返回至少 `{"ip":"..."}`；启用检查前必填 | 空 |
@@ -240,6 +263,16 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 | `COMPATIBILITY_MODE` | 兼容模式：system 消息全部转 user，可避免流式空回但可能降低理解 | `false` |
 | `RETURN_THOUGHTS_TO_FRONTEND` | 是否把思维链返回前端，关闭则过滤 | `true` |
 | `ANTHROPIC_DEBUG` | Anthropic 协议转换调试日志 | `true` |
+
+### Redis（可选，共享状态）
+
+| 变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `REDIS_URL` | Redis 地址；留空则完全不用 Redis（会话、计费镜像、全池闸门都退进程内） | 空 |
+| `REDIS_USER` / `REDIS_PASSWORD` | 认证；配置后 `REDIS_URL` 里不能再带账号密码 | 空 |
+| `REDIS_SOCKET_CONNECT_TIMEOUT` / `REDIS_SOCKET_TIMEOUT` | 客户端连接与读写超时（秒，上限 60） | `3` |
+
+Redis 承载三件事：会话状态（`antigravity:session:*`，6 小时 TTL）、计费镜像（`gcli:billing:*`，默认 45 天 TTL，SQLite 仍是真相源）、全池闸门计数（见上）。任一不可用时都回退到本地实现，不影响请求成功与否。
 
 ### 计费与看板
 
