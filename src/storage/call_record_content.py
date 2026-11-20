@@ -35,12 +35,17 @@ def decode_details(stored):
     return json.loads(stored or "{}")
 
 
-def compress_history(db_path, batch_size=1, progress=None):
+_COMPRESSIBLE_COLUMNS = {"request_details", "timing_details"}
+
+
+def compress_history(db_path, batch_size=1, progress=None, column="request_details"):
     """Convert only legacy detail TEXT, verifying exact bytes before each commit.
 
     Each batch is atomic and reruns skip compressed rows. No rows are deleted.
     The caller must deploy the compatible reader before running this function.
     """
+    if column not in _COMPRESSIBLE_COLUMNS:
+        raise ValueError(f"column must be one of {sorted(_COMPRESSIBLE_COLUMNS)}")
     if not 1 <= batch_size <= 256:
         raise ValueError("batch_size must be between 1 and 256")
     result = {"records": 0, "before_bytes": 0, "after_bytes": 0}
@@ -51,8 +56,8 @@ def compress_history(db_path, batch_size=1, progress=None):
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 rows = db.execute(
-                    "SELECT id, request_details FROM call_records "
-                    "WHERE id > ? AND typeof(request_details) = 'text' ORDER BY id LIMIT ?",
+                    f"SELECT id, {column} FROM call_records "
+                    f"WHERE id > ? AND typeof({column}) = 'text' ORDER BY id LIMIT ?",
                     (last_id, batch_size),
                 ).fetchall()
                 if not rows:
@@ -60,8 +65,8 @@ def compress_history(db_path, batch_size=1, progress=None):
                 for row_id, text in rows:
                     raw = text.encode("utf-8")
                     packed = compress_details(raw)
-                    db.execute("UPDATE call_records SET request_details = ? WHERE id = ?", (packed, row_id))
-                    saved = db.execute("SELECT request_details FROM call_records WHERE id = ?", (row_id,)).fetchone()[0]
+                    db.execute(f"UPDATE call_records SET {column} = ? WHERE id = ?", (packed, row_id))
+                    saved = db.execute(f"SELECT {column} FROM call_records WHERE id = ?", (row_id,)).fetchone()[0]
                     if zlib.decompress(saved[len(MAGIC):]) != raw:
                         raise ValueError(f"Monitor content verification failed at row {row_id}")
                     result["records"] += 1
@@ -79,10 +84,29 @@ def main():
     parser.add_argument("database", type=Path)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--vacuum", action="store_true", help="Reclaim free pages; requires temporary disk space")
+    parser.add_argument("--column", default="request_details",
+                        choices=["request_details", "timing_details", "both"],
+                        help="Which detail column to compress (timing_details is ~85%% of row width)")
+    parser.add_argument("--drop-legacy-index", action="store_true",
+                        help="Drop idx_call_records_request_id (554 MB at 4.6M rows; panels now use the primary key)")
     args = parser.parse_args()
     def report(result):
         print(json.dumps(result), flush=True)
-    report(compress_history(args.database, args.batch_size, progress=report))
+    columns = ["request_details", "timing_details"] if args.column == "both" else [args.column]
+    for column in columns:
+        print(f"compressing {column}", flush=True)
+        report(compress_history(args.database, args.batch_size, progress=report, column=column))
+    if args.drop_legacy_index:
+        with closing(sqlite3.connect(args.database.resolve().as_uri() + "?mode=rw", uri=True, timeout=30)) as db:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_call_records_request_id'"
+            ).fetchone()
+            if exists:
+                db.execute("DROP INDEX idx_call_records_request_id")
+                db.commit()
+                print("dropped idx_call_records_request_id", flush=True)
+            else:
+                print("idx_call_records_request_id already absent", flush=True)
     with closing(sqlite3.connect(args.database.resolve().as_uri() + "?mode=rw", uri=True)) as db:
         if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise RuntimeError("Database integrity check failed")

@@ -21,10 +21,13 @@ class RequestTiming:
     monitor: object = None
     defer_monitor_insert: bool = False
     pending_monitor_row: dict | None = None
-    has_persisted_monitor_rows: bool = False
     stages: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
     request_info: dict = field(default_factory=dict)
+    # 调用监控行：record() 时组装，等 finish_timing() 补齐计时后一次性入库，
+    # 避免「先 INSERT 再 UPDATE 同一行」两次事务（见 src/call_monitor.py）。
+    call_row: dict | None = None
+    call_details: dict | None = None
 
     def details(self):
         return {"stages": dict(self.stages), "parameters": dict(self.parameters),
@@ -44,7 +47,9 @@ def get_inflight_requests() -> int:
 
 _STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api_started",
                           "first_upstream_send", "last_upstream_send", "last_upstream_data",
-                          "billing_started", "monitor_started", "monitor_finished"})
+                          "billing_started", "billing_saved", "billing_enter", "recorder_lookup",
+                          "post_enter", "post_exit", "usage_confirmed", "credential_saved",
+                          "monitor_started", "monitor_finished"})
 
 
 def mark_stage(name, *, replace=False):

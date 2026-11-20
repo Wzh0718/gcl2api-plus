@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
+from src.storage.sqlite_pragmas import connect as sqlite_connect
+
 
 class AntigravityWarmupStore:
     @staticmethod
@@ -32,7 +34,7 @@ class AntigravityWarmupStore:
     async def get_antigravity_warmup(self, filename: str) -> Dict[str, Any]:
         self._ensure_initialized()
         filename = os.path.basename(filename)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT status, level, success_count, window_started_at,
                           next_start_at, config_json
@@ -78,7 +80,7 @@ class AntigravityWarmupStore:
         now = time.time()
         defaults = await self.get_config("antigravity_warmup_defaults", {})
         results: Dict[str, Dict[str, Any]] = {}
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
             placeholders = ",".join("?" for _ in names)
             async with db.execute(
@@ -218,7 +220,7 @@ class AntigravityWarmupStore:
 
         filename = os.path.basename(filename)
         now = time.time() if now is None else float(now)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute("BEGIN IMMEDIATE")
             try:
@@ -333,7 +335,7 @@ class AntigravityWarmupStore:
         self._ensure_initialized()
         if not lease_id:
             return True
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             cursor = await db.execute(
                 "DELETE FROM antigravity_warmup_leases WHERE lease_id = ?",
                 (lease_id,),
@@ -354,7 +356,7 @@ class AntigravityWarmupStore:
         from src.antigravity_dynamic_warmup import normalize_warmup_config, warmup_limits
 
         now = time.time() if now is None else float(now)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute("BEGIN IMMEDIATE")
             try:
@@ -471,7 +473,7 @@ class AntigravityWarmupStore:
 
         accounts: Dict[str, Dict[str, Any]] = {}
         groups: Dict[str, Dict[str, Any]] = {}
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT c.filename, COALESCE(w.status, 'off'),
                           COALESCE(w.level, 0), COALESCE(w.success_count, 0),
@@ -537,7 +539,7 @@ class AntigravityWarmupStore:
         if not ip_key or len(ip_key) > 256:
             raise ValueError("无效的 IP 组标识")
         now = time.time()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
                 async with db.execute(
