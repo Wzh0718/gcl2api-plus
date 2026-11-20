@@ -2369,7 +2369,7 @@
                     style="margin: 20px 0; padding: 15px; border: 2px solid #e8f4fd; border-radius: 8px; background: #f8fcff;">
                     <div style="font-weight: bold; color: #0066cc; margin-bottom: 10px;">🔑 Refresh Token 导入</div>
                     <div style="color: #666; font-size: 13px; margin-bottom: 12px; line-height: 1.6;">
-                        支持批量粘贴凭证 JSON。选择代理组时，每个账号固定绑定一个空闲出口。无可用出口的条目会标为「已禁用」，可在巡查时检查并启用。
+                        支持批量粘贴凭证 JSON。选择代理组时，每个账号固定绑定一个空闲出口。出口探测被上游限流或超时时会自动延后重试；只有确实没有空闲出口的条目才会标为「已禁用」，可在巡查时检查并启用。
                     </div>
                     <div class="input-group">
                         <textarea id="antigravityRefreshTokenInput" rows="5" spellcheck="false" autocomplete="off"

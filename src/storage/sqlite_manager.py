@@ -9,6 +9,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -2336,15 +2337,62 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
           )
     """
 
+    @staticmethod
+    def _proxy_node_host(proxy_url: str) -> str:
+        try:
+            return (urlsplit(str(proxy_url)).hostname or "").strip().lower()
+        except ValueError:
+            return ""
+
+    @staticmethod
+    async def _proxy_import_reservation_holds(db) -> set:
+        async with db.execute(
+            "SELECT egress_ip FROM antigravity_egress_reservations WHERE expires_at > unixepoch()"
+        ) as cursor:
+            held = {(row[0] or "").strip().lower() for row in await cursor.fetchall()}
+        held.discard("")
+        return held
+
     async def list_free_proxy_import_nodes(self, group_id: int) -> List[Tuple[int, str]]:
+        """Return importable nodes, skipping exits still held by deleted accounts.
+
+        A deleted account keeps its last observed public exit for seven days
+        (`antigravity_egress_reservations`). `reserve_proxy_import_node` rejects
+        those nodes anyway, so probing them only burns the import budget (one
+        probe per MIN_INTERVAL) and made large pools look like "no free exit".
+        The node host is what the proxy dials; for PX6 individual proxies it is
+        the public exit itself, so a host match is treated as held.
+        """
         self._ensure_initialized()
         async with aiosqlite.connect(self._db_path) as db:
+            held = await self._proxy_import_reservation_holds(db)
             async with db.execute(
                 f"""SELECT n.id, n.proxy_url {self._FREE_IMPORT_NODES}
                     AND n.group_id = ? ORDER BY RANDOM()""",
                 (group_id,),
             ) as cursor:
-                return await cursor.fetchall()
+                nodes = await cursor.fetchall()
+        if not held:
+            return nodes
+        return [
+            (node_id, proxy_url) for node_id, proxy_url in nodes
+            if self._proxy_node_host(proxy_url) not in held
+        ]
+
+    async def count_proxy_import_nodes_held_by_reservations(self, group_id: int) -> int:
+        """Count importable nodes whose exit is still inside a deletion hold."""
+        self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as db:
+            held = await self._proxy_import_reservation_holds(db)
+            if not held:
+                return 0
+            async with db.execute(
+                f"""SELECT n.proxy_url {self._FREE_IMPORT_NODES}
+                    AND n.group_id = ?""",
+                (group_id,),
+            ) as cursor:
+                urls = [row[0] for row in await cursor.fetchall()]
+        return sum(1 for url in urls if self._proxy_node_host(url) in held)
 
     async def reserve_proxy_import_node(
         self, group_id: int, node_id: int, proxy_url: str, egress_ip: str, lease_id: str,

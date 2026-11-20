@@ -60,15 +60,30 @@ async def test_inherited_proxy_is_resolved_before_caching(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_429_stops_other_routes_for_same_provider_and_honors_retry_after(fake_clock):
+async def test_429_cooldown_is_capped_to_keep_other_routes_probeable(fake_clock):
     fetch = AsyncMock(return_value=httpx.Response(429, headers={'Retry-After': '1200'}))
-    await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)
-    fake_clock[0] += 600
-    assert (await probe.observe_egress('https://echo.test/other', 'two', fetch, parse)).cached
+    first = await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)
+    assert first.status == 429 and first.error_type is None
+    short_circuit = await probe.observe_egress('https://echo.test/other', 'two', fetch, parse)
+    assert short_circuit.cached and short_circuit.status == 429
     assert fetch.await_count == 1
-    fake_clock[0] += 601
+    # A provider asking for 20 minutes must not freeze the pool that long.
+    fake_clock[0] += probe.COOLDOWN_MAX + 1
     await probe.observe_egress('https://echo.test/ip', 'two', fetch, parse)
     assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_throttled_route_is_retried_after_short_rate_limit_ttl(fake_clock):
+    fetch = AsyncMock(side_effect=[httpx.Response(429), httpx.Response(200, json={'ip': '203.0.113.1'})])
+    assert (await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)).status == 429
+    # The 429 is cached for RATE_LIMIT_TTL, not the generic failure TTL, so the
+    # same route is re-probed shortly after the throttle window instead of
+    # staying poisoned for five minutes.
+    fake_clock[0] += probe.RATE_LIMIT_TTL + 1
+    assert (await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)).status == 200
+    assert fetch.await_count == 2
+    assert probe.RATE_LIMIT_TTL < probe.FAILURE_TTL
 
 
 @pytest.mark.asyncio
@@ -96,10 +111,15 @@ async def test_cancelled_probe_leaves_cooldown():
     assert fetch.await_count == 1
 
 
-def test_retry_after_date_and_invalid_value(monkeypatch):
+def test_retry_after_is_bounded_and_defaults_to_short_cooldown(monkeypatch):
     monkeypatch.setattr(probe.time, 'time', lambda: 0)
-    assert probe._retry_after({'Retry-After': 'Thu, 01 Jan 1970 00:20:00 GMT'}) == 1200
-    assert probe._retry_after({'Retry-After': 'invalid'}) == probe.FAILURE_TTL
+    # Honored within the cap, never raised to the failure TTL, never above the cap.
+    assert probe._retry_after({'Retry-After': '5'}) == 5
+    assert probe._retry_after({'Retry-After': 'Thu, 01 Jan 1970 00:00:05 GMT'}) == 5
+    assert probe._retry_after({'Retry-After': 'Thu, 01 Jan 1970 00:20:00 GMT'}) == probe.COOLDOWN_MAX
+    assert probe._retry_after({'Retry-After': 'invalid'}) == probe.COOLDOWN_DEFAULT
+    assert probe._retry_after({}) == probe.COOLDOWN_DEFAULT
+    assert probe.COOLDOWN_MAX < probe.FAILURE_TTL
 
 
 def test_state_cache_is_bounded():
