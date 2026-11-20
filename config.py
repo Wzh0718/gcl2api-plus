@@ -518,6 +518,16 @@ _ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 80
 _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT = 50
 _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT = 15
 _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT = 30.0
+# 账号静默窗口：每个账号每天有一段不参与调度的时段，按账号名稳定分配。
+# 目的不是省额度，而是让整池不再呈现「24 小时恒定在线」的机器画像。
+_ANTIGRAVITY_DORMANT_ENABLED_DEFAULT = False
+_ANTIGRAVITY_DORMANT_HOURS_DEFAULT = 6
+# 全池闸门：极端负载下先在闸前排队吸收，排不下才快速失败并给出诚实 Retry-After。
+# 默认关闭；0 表示该项不限制。
+_ANTIGRAVITY_FLEET_ENABLED_DEFAULT = False
+_ANTIGRAVITY_FLEET_INFLIGHT_DEFAULT = 0
+_ANTIGRAVITY_FLEET_RPM_DEFAULT = 0
+_ANTIGRAVITY_FLEET_WAIT_SECONDS_DEFAULT = 60.0
 _ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT = True
 _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT = 0.05
 
@@ -708,6 +718,159 @@ def get_antigravity_pacing_slot_wait_seconds_sync() -> float:
             _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT,
         ),
         0.0,
+    )
+
+
+async def get_antigravity_dormant_enabled() -> bool:
+    """账号每日静默窗口开关。默认关闭，需显式打开。"""
+    value = await _async_panel_first(
+        "antigravity_dormant_enabled", "ANTIGRAVITY_DORMANT_ENABLED", None
+    )
+    if value is None:
+        return _ANTIGRAVITY_DORMANT_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+def get_antigravity_dormant_enabled_sync() -> bool:
+    return _sync_bool(
+        "antigravity_dormant_enabled",
+        "ANTIGRAVITY_DORMANT_ENABLED",
+        _ANTIGRAVITY_DORMANT_ENABLED_DEFAULT,
+    )
+
+
+async def get_antigravity_dormant_hours() -> int:
+    """每个账号每天静默的小时数（0-20）。默认 6。"""
+    value = await _async_panel_first(
+        "antigravity_dormant_hours",
+        "ANTIGRAVITY_DORMANT_HOURS",
+        _ANTIGRAVITY_DORMANT_HOURS_DEFAULT,
+    )
+    try:
+        return min(max(int(value), 0), 20)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_DORMANT_HOURS_DEFAULT
+
+
+def get_antigravity_dormant_hours_sync() -> int:
+    return min(
+        max(
+            int(
+                _sync_number(
+                    "antigravity_dormant_hours",
+                    "ANTIGRAVITY_DORMANT_HOURS",
+                    _ANTIGRAVITY_DORMANT_HOURS_DEFAULT,
+                    cast=int,
+                )
+            ),
+            0,
+        ),
+        20,
+    )
+
+
+async def get_antigravity_fleet_enabled() -> bool:
+    """全池闸门开关。默认关闭。"""
+    value = await _async_panel_first(
+        "antigravity_fleet_enabled", "ANTIGRAVITY_FLEET_ENABLED", None
+    )
+    if value is None:
+        return _ANTIGRAVITY_FLEET_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+def get_antigravity_fleet_enabled_sync() -> bool:
+    return _sync_bool(
+        "antigravity_fleet_enabled",
+        "ANTIGRAVITY_FLEET_ENABLED",
+        _ANTIGRAVITY_FLEET_ENABLED_DEFAULT,
+    )
+
+
+async def get_antigravity_fleet_inflight() -> int:
+    """全池在飞并发上限；0 表示不限制。"""
+    value = await _async_panel_first(
+        "antigravity_fleet_inflight", "ANTIGRAVITY_FLEET_INFLIGHT", None
+    )
+    try:
+        return min(max(int(value), 0), 4096)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_FLEET_INFLIGHT_DEFAULT
+
+
+def get_antigravity_fleet_inflight_sync() -> int:
+    return min(
+        max(
+            int(
+                _sync_number(
+                    "antigravity_fleet_inflight",
+                    "ANTIGRAVITY_FLEET_INFLIGHT",
+                    _ANTIGRAVITY_FLEET_INFLIGHT_DEFAULT,
+                    cast=int,
+                )
+            ),
+            0,
+        ),
+        4096,
+    )
+
+
+async def get_antigravity_fleet_rpm() -> int:
+    """全池每分钟请求上限；0 表示不限制。"""
+    value = await _async_panel_first(
+        "antigravity_fleet_rpm", "ANTIGRAVITY_FLEET_RPM", None
+    )
+    try:
+        return min(max(int(value), 0), 100000)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_FLEET_RPM_DEFAULT
+
+
+def get_antigravity_fleet_rpm_sync() -> int:
+    return min(
+        max(
+            int(
+                _sync_number(
+                    "antigravity_fleet_rpm",
+                    "ANTIGRAVITY_FLEET_RPM",
+                    _ANTIGRAVITY_FLEET_RPM_DEFAULT,
+                    cast=int,
+                )
+            ),
+            0,
+        ),
+        100000,
+    )
+
+
+async def get_antigravity_fleet_wait_seconds() -> float:
+    """闸门前的有界等待上限（秒）。默认 60。"""
+    value = await _async_panel_first(
+        "antigravity_fleet_wait_seconds",
+        "ANTIGRAVITY_FLEET_WAIT_SECONDS",
+        _ANTIGRAVITY_FLEET_WAIT_SECONDS_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 0.0), 600.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_FLEET_WAIT_SECONDS_DEFAULT
+
+
+def get_antigravity_fleet_wait_seconds_sync() -> float:
+    return min(
+        max(
+            _sync_number(
+                "antigravity_fleet_wait_seconds",
+                "ANTIGRAVITY_FLEET_WAIT_SECONDS",
+                _ANTIGRAVITY_FLEET_WAIT_SECONDS_DEFAULT,
+            ),
+            0.0,
+        ),
+        600.0,
     )
 
 

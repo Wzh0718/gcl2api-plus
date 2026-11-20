@@ -731,6 +731,9 @@ def _credential_slot_backpressure_response(
     error: Exception | None = None,
 ) -> Response:
     usage_limited = isinstance(error, AccountUsageLimitReached)
+    # 全池闸门会带一个按令牌补充速度算出的真实等待时间；恒为 1 秒会让批量
+    # 客户端热重试，在极端负载下把池子打穿。
+    retry_after = getattr(error, "retry_after", None)
     response = Response(
         content=json.dumps(
             {
@@ -746,7 +749,7 @@ def _credential_slot_backpressure_response(
         ),
         status_code=429,
         media_type="application/json",
-        headers={"Retry-After": str(error.retry_after if usage_limited else 1)},
+        headers={"Retry-After": str(retry_after if retry_after else (error.retry_after if usage_limited else 1))},
     )
     response.rate_limit = getattr(error, "rate_limit", RateLimit("gateway", "capacity_busy"))
     return response

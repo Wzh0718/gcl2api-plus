@@ -3311,6 +3311,53 @@
                             </div>
 
                             <div class="form-group">
+                                <label for="antigravityFleetEnabled">全池闸门（极端负载保护）:</label>
+                                <label class="config-checkbox-label">
+                                    <input type="checkbox" id="antigravityFleetEnabled" class="config-checkbox" />
+                                    启用全池准入
+                                </label>
+                                <small class="config-note">跨账号生效：突发先在闸前有界排队吸收，排不下才快速失败并返回真实
+                                    Retry-After；这是「任务跑得完」的主要手段 <span style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityFleetInflight">全池在飞并发上限:</label>
+                                <input type="number" id="antigravityFleetInflight" class="config-input" min="0" max="4096"
+                                    step="1" />
+                                <small class="config-note">所有账号同时在飞的上游请求总数，0 表示不限制</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityFleetRpm">全池每分钟请求上限:</label>
+                                <input type="number" id="antigravityFleetRpm" class="config-input" min="0" max="100000"
+                                    step="1" />
+                                <small class="config-note">令牌桶；突发容量按 10 秒的量计，避免攒额度再一次性打出去，0 表示不限制</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityFleetWaitSeconds">全池闸门排队上限（秒）:</label>
+                                <input type="number" id="antigravityFleetWaitSeconds" class="config-input" min="0" max="600"
+                                    step="1" />
+                                <small class="config-note">超过该时长仍未放行才返回 429，默认 60；批量任务建议调到 120-180</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityDormantEnabled">账号每日静默窗口:</label>
+                                <label class="config-checkbox-label">
+                                    <input type="checkbox" id="antigravityDormantEnabled" class="config-checkbox" />
+                                    启用静默窗口
+                                </label>
+                                <small class="config-note">每个账号每天有一段不参与调度，起始小时按账号名稳定分配，整池可用率约 75%</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityDormantHours">每账号静默小时数:</label>
+                                <input type="number" id="antigravityDormantHours" class="config-input" min="0" max="20"
+                                    step="1" />
+                                <small class="config-note">默认 6；填 0 等同于不启用</small>
+                            </div>
+
+                            <div class="form-group">
                                 <label for="antigravityPacingBaseMs">请求发起错峰基准（毫秒/账号）:</label>
                                 <input type="number" id="antigravityPacingBaseMs" class="config-input" min="0"
                                     max="600000" step="10" />
