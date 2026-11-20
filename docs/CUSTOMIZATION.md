@@ -110,7 +110,7 @@ echo "$CR_PAT" | docker login ghcr.io -u <GitHub 用户名> --password-stdin
 - `proxy_mode` 支持 `inherit`、`custom`、`direct` 和 `group`；代理组账号固定保存 `bound_proxy_node_id`，不会逐请求轮换。
 - 代理组启用 `exclusive_assignment` 后，节点只能绑定一个账号，节点不足时失败关闭；实际 `egress_ip` 与其他账号重复、IP 漂移、代理失败、地区不合格或检查过期都会阻止请求。
 - 独占组必须配置可信的 `ANTIGRAVITY_EGRESS_IP_CHECK_URL`，且始终要求 TTL 内 `healthy + eligible`，不沿用普通账号的检测失败放行逻辑。
-- 「Antigravity 认证」支持粘贴凭证 JSON 数组并逐条导入 `refresh_token`，进度保存在导入批次中。选择代理组后，随机分配经出口检测且未占用的固定节点。没有空闲出口时，条目标为「已禁用」，巡查时可点击「检查并启用」。已禁用或失败的条目可以编辑凭证及代理。固定绑定的节点失效时暂停使用，管理员可在账号管理中手动调整代理策略。
+- 「Antigravity 认证」支持粘贴凭证 JSON 数组并逐条导入 `refresh_token`，进度保存在导入批次中。选择代理组后，随机分配经出口检测且未占用的固定节点。出口探测被上游限流（HTTP 429）或超时时，条目会延后 30 秒自动重试（最多 10 次），不会因此判为禁用；只有确实没有空闲出口时才标为「已禁用」，巡查时可点击「检查并启用」。已禁用或失败的条目可以编辑凭证及代理。固定绑定的节点失效时暂停使用，管理员可在账号管理中手动调整代理策略。
 - PX6 可手动导入 **IPv4 Individual（version=4）** 的 `host:port:user:pass`，一账号至少准备一个节点并开启续费；不要选 IPv4 Shared。PX6 个人代理不等于住宅或低风控 IP，系统仍需实测出口和资格。
 - `src/api/antigravity.py:get_effective_proxy_url` 是有效代理入口。账号重试切换会同时切换凭证、Token、Project、Proxy 和请求体；OAuth、项目发现、额度检查和生成请求使用同一账号网络上下文。
 

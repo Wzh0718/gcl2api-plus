@@ -19,6 +19,12 @@ from src.operational_audit import emit as audit
 
 SUCCESS_TTL = 1800.0
 FAILURE_TTL = 300.0
+# A single transient 429 must not freeze every probe for the whole provider:
+# batch imports and health checks share this state, and a 5 minute hold turned
+# one throttled node into "no free egress IP" for the entire batch.
+RATE_LIMIT_TTL = 30.0
+COOLDOWN_DEFAULT = 30.0
+COOLDOWN_MAX = 60.0
 MIN_INTERVAL = 2.0
 MAX_ENTRIES = 1024
 
@@ -56,15 +62,23 @@ def _put(mapping, key, value):
 
 
 def _retry_after(headers):
+    """Honor Retry-After, but cap the hold so one 429 cannot freeze a whole batch.
+
+    A provider asking for an hour must not stop every other route from being
+    probed; the throttle is retried after COOLDOWN_MAX at the latest.
+    """
     value = headers.get('Retry-After', '')
+    delay = None
     try:
         delay = float(value)
     except (TypeError, ValueError):
         try:
             delay = parsedate_to_datetime(value).timestamp() - time.time()
         except (TypeError, ValueError, OverflowError):
-            delay = FAILURE_TTL
-    return max(FAILURE_TTL, delay) if math.isfinite(delay) else FAILURE_TTL
+            delay = None
+    if delay is None or not math.isfinite(delay):
+        return COOLDOWN_DEFAULT
+    return min(max(delay, 1.0), COOLDOWN_MAX)
 
 
 async def observe_egress(url, proxy_url, fetch, parse):
@@ -88,6 +102,8 @@ async def observe_egress(url, proxy_url, fetch, parse):
             state.cache.move_to_end(key)
             return replace(existing[1], cached=True)
         if state.cooldowns.get(provider, 0) > now:
+            # `error_type` stays empty on purpose: a throttled echo is not a
+            # probe failure, and callers treat error_type as a hard failure.
             return Observation(status=429, cached=True)
         delay = state.next_start - now
         if delay > 0:
@@ -108,7 +124,13 @@ async def observe_egress(url, proxy_url, fetch, parse):
                     _put(state.cooldowns, provider, time.monotonic() + _retry_after(getattr(response, 'headers', {})))
         except Exception as exc:
             result = Observation(status=0, error_type=type(exc).__name__)
-        ttl = SUCCESS_TTL if result.status == 200 else FAILURE_TTL
+        if result.status == 200:
+            ttl = SUCCESS_TTL
+        elif result.status == 429:
+            # The throttle window is short; retry the same route once it passes.
+            ttl = RATE_LIMIT_TTL
+        else:
+            ttl = FAILURE_TTL
         _put(state.cache, key, (time.monotonic() + ttl, result))
         # Log actual samples only, not every cache read. Never log URLs or auth.
         try:

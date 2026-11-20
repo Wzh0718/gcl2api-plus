@@ -1,5 +1,6 @@
 import hashlib
 import json
+import time
 from uuid import uuid4
 
 import aiosqlite
@@ -34,10 +35,21 @@ class RefreshImportQueue:
                 egress_ip TEXT,
                 lease_id TEXT,
                 lease_until INTEGER,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                retry_after INTEGER,
                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                 UNIQUE(batch_id, position)
             )
         """)
+        # Older databases predate deferred egress retries; add the columns in place.
+        async with db.execute("PRAGMA table_info(refresh_import_items)") as cursor:
+            existing = {row[1] for row in await cursor.fetchall()}
+        for name, definition in (
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("retry_after", "INTEGER"),
+        ):
+            if name not in existing:
+                await db.execute(f"ALTER TABLE refresh_import_items ADD COLUMN {name} {definition}")
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_refresh_import_ready
                 ON refresh_import_items(status, id)
@@ -122,7 +134,8 @@ class RefreshImportQueue:
             await db.execute(
                 """UPDATE refresh_import_items SET
                        payload_ciphertext = ?, token_digest = ?, proxy_group_id = ?,
-                       has_custom_proxy = ?, status = 'queued', message = NULL
+                       has_custom_proxy = ?, status = 'queued', message = NULL,
+                       retry_count = 0, retry_after = NULL
                    WHERE id = ?""",
                 (
                     cipher.encrypt(json.dumps({"refresh_token": token, "proxy_url": custom})),
@@ -135,7 +148,8 @@ class RefreshImportQueue:
     async def enable_item(self, item_id):
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """UPDATE refresh_import_items SET status = 'queued', message = NULL
+                """UPDATE refresh_import_items SET
+                       status = 'queued', message = NULL, retry_count = 0, retry_after = NULL
                    WHERE id = ? AND status = 'disabled'""",
                 (item_id,),
             )
@@ -150,14 +164,15 @@ class RefreshImportQueue:
                    SET status = 'running', message = NULL, lease_id = ?, lease_until = unixepoch() + 240
                    WHERE id = (
                        SELECT id FROM refresh_import_items
-                       WHERE status = 'queued'
-                          OR (status = 'running' AND lease_until <= unixepoch())
+                       WHERE (status = 'queued'
+                              OR (status = 'running' AND lease_until <= unixepoch()))
+                         AND (retry_after IS NULL OR retry_after <= unixepoch())
                        ORDER BY id LIMIT 1
                    ) AND NOT EXISTS (
                        SELECT 1 FROM refresh_import_items
                        WHERE status = 'running' AND lease_until > unixepoch()
                    )
-                   RETURNING id, payload_ciphertext, token_digest, proxy_group_id, lease_id""",
+                   RETURNING id, payload_ciphertext, token_digest, proxy_group_id, lease_id, retry_count""",
                 (uuid4().hex,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -211,3 +226,41 @@ class RefreshImportQueue:
                     (status, message, claim["id"], claim["lease_id"]),
                 )
             await db.commit()
+
+    async def defer(self, claim, message, delay_seconds=30, max_retries=10):
+        """Requeue an item whose egress probe was throttled instead of disabling it.
+
+        A transient 429 from the egress-IP provider says nothing about the
+        account, so the item stays queued and becomes claimable again after
+        `delay_seconds`. Only an exhausted retry budget turns it into a
+        disabled item, and the message keeps the real reason.
+        """
+        retries = int(claim.get("retry_count") or 0) + 1
+        exhausted = retries >= int(max_retries)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """UPDATE refresh_import_items SET
+                       status = ?, message = ?, retry_count = ?, retry_after = ?,
+                       lease_id = NULL, lease_until = NULL
+                   WHERE id = ? AND status = 'running' AND lease_id = ?""",
+                (
+                    "disabled" if exhausted else "queued",
+                    f"{message}（已重试 {retries} 次，请稍后手动启用）" if exhausted else message,
+                    retries,
+                    None if exhausted else int(time.time()) + int(delay_seconds),
+                    claim["id"], claim["lease_id"],
+                ),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+    async def disable(self, claim, message):
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """UPDATE refresh_import_items SET
+                       status = 'disabled', message = ?, lease_id = NULL, lease_until = NULL
+                   WHERE id = ? AND status = 'running' AND lease_id = ?""",
+                (message, claim["id"], claim["lease_id"]),
+            )
+            await db.commit()
+            return cursor.rowcount == 1

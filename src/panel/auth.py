@@ -282,22 +282,81 @@ class RefreshImportEditRequest(RefreshImportProxy):
     refresh_token: SecretStr | None = None
 
 
+# Reasons returned by _reserve_fixed_import_exit. Only the two pool-exhaustion
+# reasons disable an item; throttled/failed probes are retried later.
+EGRESS_NO_FREE_NODE = "no_free_node"
+EGRESS_RESERVED = "reserved"
+EGRESS_RATE_LIMITED = "rate_limited"
+EGRESS_PROBE_TIMEOUT = "probe_timeout"
+EGRESS_PROBE_FAILED = "probe_failed"
+
+# One probe per MIN_INTERVAL (2s) means a fixed 40s budget only covers ~20 nodes;
+# size the budget from the pool so a healthy large pool cannot time out.
+EGRESS_BUDGET_MIN_SECONDS = 40.0
+EGRESS_BUDGET_MAX_SECONDS = 180.0
+EGRESS_BUDGET_PER_NODE_SECONDS = 3.0
+
+# A throttled provider is retried shortly; an import must not sit disabled
+# because ipapi.io answered one probe with 429.
+EGRESS_RETRY_DELAY_SECONDS = 30
+EGRESS_RETRY_LIMIT = 10
+
+_EGRESS_RETRY_MESSAGES = {
+    EGRESS_RATE_LIMITED: "出口探测被限流，稍后自动重试",
+    EGRESS_PROBE_TIMEOUT: "出口探测超时，稍后自动重试",
+    EGRESS_PROBE_FAILED: "出口探测失败，稍后自动重试",
+}
+
+
 async def _reserve_fixed_import_exit(storage, group_id: int, check_url: str, lease_id: str):
+    """Pick one importable node and lease it for this import.
+
+    Returns ``(selection, reason)`` where selection is ``(proxy_url, egress_ip)``
+    or ``None``. The reason is what actually stopped the selection, so callers
+    can tell a throttled probe apart from an exhausted pool.
+    """
     async def fetch_echo(proxy_url):
         return await get_async(check_url, timeout=8.0, proxy_url=proxy_url, trust_env=False)
 
-    for node_id, proxy_url in await storage.list_free_proxy_import_nodes(group_id):
-        observation = await observe_egress(
-            check_url, proxy_url, fetch_echo,
-            lambda response: parse_egress_identity(response.json()),
-        )
-        if observation.status != 200 or not observation.ip:
-            continue
-        if await storage.reserve_proxy_import_node(
-            group_id, node_id, proxy_url, observation.ip, lease_id,
-        ):
-            return proxy_url, observation.ip
-    return None
+    nodes = await storage.list_free_proxy_import_nodes(group_id)
+    if not nodes:
+        # Distinguish "every exit is bound" from "the free exits are still held
+        # for seven days after their account was deleted" — the operator fixes
+        # these differently.
+        if await storage.count_proxy_import_nodes_held_by_reservations(group_id):
+            return None, EGRESS_RESERVED
+        return None, EGRESS_NO_FREE_NODE
+    budget = min(
+        EGRESS_BUDGET_MAX_SECONDS,
+        max(EGRESS_BUDGET_MIN_SECONDS, EGRESS_BUDGET_PER_NODE_SECONDS * len(nodes)),
+    )
+
+    async def _probe_nodes():
+        probed_failure = False
+        for node_id, proxy_url in nodes:
+            observation = await observe_egress(
+                check_url, proxy_url, fetch_echo,
+                lambda response: parse_egress_identity(response.json()),
+            )
+            if observation.status == 429:
+                # The provider is throttling every route for a while; the
+                # remaining probes would short-circuit on the same cooldown.
+                return None, EGRESS_RATE_LIMITED
+            if observation.status != 200 or not observation.ip:
+                probed_failure = True
+                continue
+            if await storage.reserve_proxy_import_node(
+                group_id, node_id, proxy_url, observation.ip, lease_id,
+            ):
+                return (proxy_url, observation.ip), ""
+            # Another import took the node, or its exit is owned elsewhere.
+            probed_failure = True
+        return None, EGRESS_PROBE_FAILED if probed_failure else EGRESS_NO_FREE_NODE
+
+    try:
+        return await asyncio.wait_for(_probe_nodes(), budget)
+    except TimeoutError:
+        return None, EGRESS_PROBE_TIMEOUT
 
 
 @router.post("/import-refresh-token")
@@ -336,15 +395,15 @@ async def _run_refresh_import(request: RefreshTokenImportRequest, claim=None):
                 raise HTTPException(status_code=400, detail="请先配置出口 IP 检测地址")
             storage = await get_storage_adapter()
             lease_id = uuid4().hex
-            try:
-                selection = await asyncio.wait_for(
-                    _reserve_fixed_import_exit(storage, group_id, check_url, lease_id),
-                    timeout=40,
-                )
-            except TimeoutError:
-                selection = None
+            selection, reason = await _reserve_fixed_import_exit(
+                storage, group_id, check_url, lease_id,
+            )
             if not selection:
-                return {"status": "waiting_for_egress", "message": "等待出口"}
+                return {
+                    "status": "waiting_for_egress",
+                    "reason": reason or EGRESS_NO_FREE_NODE,
+                    "message": "等待出口",
+                }
             proxy_url, egress_ip = selection
             network["lease_id"] = lease_id
 
@@ -433,6 +492,26 @@ async def enable_refresh_import_item(item_id: int, _token: str = Depends(verify_
     return {"status": "queued"}
 
 
+async def _settle_waiting_egress(queue, claim, reason):
+    """Turn a failed exit selection into a requeue or a disabled item.
+
+    Only an exhausted pool disables the item. A throttled or timed-out probe
+    says nothing about the account, so the item is deferred and retried.
+    """
+    reason = reason or EGRESS_NO_FREE_NODE
+    if reason == EGRESS_RESERVED:
+        await queue.disable(claim, "空闲出口 IP 仍在删除账号的 7 天保留期内")
+        return
+    if reason == EGRESS_NO_FREE_NODE:
+        await queue.disable(claim, "没有可用的空闲出口 IP")
+        return
+    message = _EGRESS_RETRY_MESSAGES.get(reason, "出口探测失败，稍后自动重试")
+    await queue.defer(
+        claim, message,
+        delay_seconds=EGRESS_RETRY_DELAY_SECONDS, max_retries=EGRESS_RETRY_LIMIT,
+    )
+
+
 async def process_next_refresh_import(queue):
     claim = await queue.claim_next()
     if not claim:
@@ -449,7 +528,7 @@ async def process_next_refresh_import(queue):
         )
         result = await _run_refresh_import(request, claim=claim)
         if result["status"] == "waiting_for_egress":
-            await queue.finish(claim, "disabled", "没有健康且空闲的出口 IP")
+            await _settle_waiting_egress(queue, claim, result.get("reason"))
         elif result["status"] == "failed":
             await queue.finish(claim, "failed", result["message"])
     except asyncio.CancelledError:
