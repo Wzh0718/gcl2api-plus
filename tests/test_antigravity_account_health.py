@@ -22,14 +22,11 @@ class AntigravityUserAgentTests(unittest.TestCase):
             "arch=amd64; cl=1003475615)",
         )
 
-    def test_cli_builder_kept_for_version_probe(self):
-        from src.utils import build_antigravity_cli_user_agent
+    def test_cli_track_builder_is_retired(self):
+        # CLI 轨迹已退役：任何代码都不应再能构造 cli UA。
+        import src.utils as utils
 
-        self.assertEqual(
-            build_antigravity_cli_user_agent("1.1.8"),
-            "antigravity/cli/1.1.8 (aidev_client; os_type=linux; "
-            "arch=amd64; auth_method=consumer)",
-        )
+        self.assertFalse(hasattr(utils, "build_antigravity_cli_user_agent"))
 
     def test_default_header_does_not_use_obsolete_windows_signature(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -1515,11 +1512,14 @@ class AntigravityQuotaProjectTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        quota_mock.assert_awaited_once_with(
-            "token",
-            project_id="project-123",
-            proxy_url=None,
-        )
+        quota_mock.assert_awaited_once()
+        args, kwargs = quota_mock.await_args
+        self.assertEqual(args, ("token",))
+        self.assertEqual(kwargs["project_id"], "project-123")
+        self.assertEqual(kwargs["proxy_url"], None)
+        # 额度探测必须带账号上下文，否则 UA 画像与生成请求不一致
+        self.assertEqual(kwargs["credential_name"], "account.json")
+        self.assertIsInstance(kwargs["credential_data"], dict)
 
     async def test_panel_quota_view_does_not_clear_model_cooldowns(self):
         from src.panel import creds as creds_panel

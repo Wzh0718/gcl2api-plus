@@ -55,7 +55,9 @@ def request(name="a"):
                "requestType": "agent", "request": {"sessionId": _derive_session_id("", name + ".json"),
                "labels": {"cascade_id": "conversation", "trajectory_id": "trajectory", "request_id": "trajectory-0"},
                "contents": [{"parts": [{"text": "PRIVATE PROMPT"}]}]}}
-    return payload, build_antigravity_headers(name + "-token"), f"http://{name}-proxy:8080"
+    return (payload,
+            build_antigravity_headers(name + "-token", credential_name=name + ".json"),
+            f"http://{name}-proxy:8080")
 
 
 async def begin(service, name="a"):

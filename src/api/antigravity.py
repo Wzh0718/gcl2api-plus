@@ -42,7 +42,6 @@ from src.httpx_client import (
 from src.stream_guard import aclose_quietly
 from src.models import Model, model_to_dict
 from src.redis_config import create_redis_client_from_env
-from src.utils import build_antigravity_user_agent
 from src.antigravity_error_classifier import (
     Antigravity403Decision,
     classify_antigravity_403,
@@ -453,13 +452,23 @@ def build_antigravity_headers(
     image_request: bool = False,
     project_id: Optional[str] = None,
     version_override: Optional[str] = None,
+    credential_data: Optional[Mapping[str, Any]] = None,
+    credential_name: Optional[str] = None,
 ) -> Dict[str, str]:
     """构建 Antigravity CLI API 请求头。
 
     version_override 供版本探测等场景指定候选版本；默认使用动态生效版本。
+    credential_data / credential_name 用于取该账号自己的设备画像（版本/CL/
+    平台），保证同一账号 UA 永久稳定、账号之间互不相同。
     """
+    from src.utils import get_antigravity_user_agent_for
+
     return {
-        "User-Agent": build_antigravity_user_agent(version_override),
+        "User-Agent": get_antigravity_user_agent_for(
+            credential_data,
+            credential_name,
+            version_override=version_override,
+        ),
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",
@@ -568,6 +577,8 @@ async def _get_available_models_for_credential(
         access_token,
         image_request=True,
         project_id=project_id,
+        credential_data=credential_data,
+        credential_name=credential_name,
     )
     proxy_url = get_effective_proxy_url(credential_data)
     response, _ = await _post_image_request(
@@ -1081,7 +1092,11 @@ async def _stream_request_inner(
     antigravity_url = (await get_antigravity_api_url()).rstrip("/")
     target_url = f"{antigravity_url}/v1internal:streamGenerateContent?alt=sse"
 
-    auth_headers = build_antigravity_headers(access_token)
+    auth_headers = build_antigravity_headers(
+        access_token,
+        credential_data=credential_data,
+        credential_name=current_file,
+    )
 
     # 合并自定义headers
     if headers:
@@ -1743,6 +1758,8 @@ async def _non_stream_image_request_inner(
             access_token,
             image_request=True,
             project_id=project_id,
+            credential_data=credential_data,
+            credential_name=current_file,
         )
         if headers:
             auth_headers.update(headers)
@@ -2051,7 +2068,11 @@ async def non_stream_request(
     antigravity_url = await get_antigravity_api_url()
     target_url = f"{antigravity_url}/v1internal:generateContent"
 
-    auth_headers = build_antigravity_headers(access_token)
+    auth_headers = build_antigravity_headers(
+        access_token,
+        credential_data=credential_data,
+        credential_name=current_file,
+    )
 
     # 合并自定义headers
     if headers:
@@ -2625,8 +2646,12 @@ async def fetch_available_models() -> List[Dict[str, Any]]:
         log.error(f"[ANTIGRAVITY] No access token in credential: {current_file}")
         return []
 
-    # 构建请求头
-    headers = build_antigravity_headers(access_token)
+    # 构建请求头（沿用该账号画像，保持与生成请求同一份 UA）
+    headers = build_antigravity_headers(
+        access_token,
+        credential_data=credential_data,
+        credential_name=current_file,
+    )
 
     try:
         # 使用 POST 请求获取模型列表（默认配置时按 sandbox → daily → prod 降级）
@@ -2698,6 +2723,9 @@ async def fetch_quota_info(
     access_token: str,
     proxy_url: Any = ...,
     project_id: Optional[str] = None,
+    *,
+    credential_data: Optional[Mapping[str, Any]] = None,
+    credential_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     获取指定凭证的额度信息
@@ -2738,7 +2766,11 @@ async def fetch_quota_info(
             "error": "凭证缺少 Project ID，请先点击“检验”更新 Project ID",
         }
 
-    headers = build_antigravity_headers(access_token)
+    headers = build_antigravity_headers(
+        access_token,
+        credential_data=credential_data,
+        credential_name=credential_name,
+    )
 
     try:
         # 默认配置时按 sandbox → daily → prod 降级
@@ -2818,6 +2850,9 @@ ANTIGRAVITY_STARTER_QUOTA_NAME = "Antigravity Starter Quota"
 async def fetch_paid_tier_info(
     access_token: str,
     proxy_url: Any = ...,
+    *,
+    credential_data: Optional[Mapping[str, Any]] = None,
+    credential_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     调用 v1internal:loadCodeAssist 获取账号实时付费档位（paidTier）。
@@ -2831,7 +2866,11 @@ async def fetch_paid_tier_info(
         请求失败或响应中没有 paidTier 时返回 None（best-effort，不影响额度查询）。
     """
     try:
-        headers = build_antigravity_headers(access_token)
+        headers = build_antigravity_headers(
+            access_token,
+            credential_data=credential_data,
+            credential_name=credential_name,
+        )
         response = await _post_with_host_fallback(
             "/v1internal:loadCodeAssist",
             headers,
