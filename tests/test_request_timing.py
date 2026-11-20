@@ -384,3 +384,42 @@ async def test_protocol_mode_metadata_survives_normalization(path, body, protoco
     await RequestTimingMiddleware(app)({'type': 'http', 'method': 'POST', 'path': path}, None, None)
     assert observed == [{'protocol': protocol, 'transport': transport, 'mode': mode}]
     assert request_timing.get() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('disconnect', [False, True])
+async def test_monitor_insert_follows_body_send_even_on_disconnect(disconnect):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.call_monitor import CallMonitor
+
+    writes = []
+    events = []
+
+    async def insert(**row):
+        events.append('insert')
+        writes.append(row)
+
+    backend = SimpleNamespace(insert_call_record=insert, update_call_record_timing=AsyncMock())
+    monitor = CallMonitor(SimpleNamespace(_backend=backend))
+
+    async def app(scope, receive, send):
+        await monitor.record(request_id='once', success=True)
+        await send({'type': 'http.response.body', 'body': b'ok'})
+
+    async def send(message):
+        events.append('send')
+        if disconnect:
+            raise OSError('client disconnected')
+
+    call = RequestTimingMiddleware(app)(
+        {'type': 'http', 'method': 'POST', 'path': '/v1/messages'}, None, send)
+    if disconnect:
+        with pytest.raises(OSError, match='client disconnected'):
+            await call
+    else:
+        await call
+    assert events == ['send', 'insert']
+    assert writes[0]['request_id'] == 'once'
+    assert (writes[0]['response_total_seconds'] is None) == disconnect
+    backend.update_call_record_timing.assert_not_awaited()

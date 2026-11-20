@@ -19,6 +19,9 @@ class RequestTiming:
     upstream_response_seconds: float | None = None
     downstream_send_seconds: float | None = None
     monitor: object = None
+    defer_monitor_insert: bool = False
+    pending_monitor_row: dict | None = None
+    has_persisted_monitor_rows: bool = False
     stages: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
     request_info: dict = field(default_factory=dict)
@@ -147,7 +150,7 @@ class RequestTimingMiddleware:
                 or not path.startswith(('/v1/', '/v1beta/', '/antigravity/v1/',
                                         '/antigravity/v1beta/', '/vertex/v1/', '/vertex/v1beta/'))):
             return await self.app(scope, receive, send)
-        state = RequestTiming()
+        state = RequestTiming(defer_monitor_insert=True)
         if ":streamGenerateContent" in path or ":generateContent" in path:
             streaming = ":streamGenerateContent" in path
             model = path.split("/models/", 1)[-1].split(":", 1)[0]
@@ -188,7 +191,8 @@ class RequestTimingMiddleware:
         finally:
             _inflight_requests -= 1
             request_timing.reset(token)
-            # Await one bounded update inline; never leave a background task per request.
+            # Finish telemetry inline after the response, including on disconnect.
+            state.defer_monitor_insert = False
             if state.monitor is not None:
                 try:
                     await state.monitor.finish_timing(state)
