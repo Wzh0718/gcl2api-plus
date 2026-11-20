@@ -18,8 +18,10 @@
 """
 
 import asyncio
+import hashlib
 import random
 import time
+from datetime import datetime
 from typing import Dict
 
 from log import log
@@ -46,6 +48,49 @@ class CredentialSlotWaitTimeout(Exception):
 
         super().__init__(credential_name)
         self.rate_limit = RateLimit('gateway', 'warmup_capacity' if warmup else 'capacity_busy')
+
+
+class CredentialDormant(CredentialSlotWaitTimeout):
+    """账号处于自身每日静默窗口，本轮不参与调度。
+
+    继承 CredentialSlotWaitTimeout，使 API 层现有的「换下一个账号」逻辑
+    无需改动即可跳过该账号；rate_limit 用独立 reason 便于面板区分。
+    """
+
+    def __init__(self, credential_name: str):
+        from src.rate_limits import RateLimit
+
+        super().__init__(credential_name)
+        self.rate_limit = RateLimit('gateway', 'dormant_window')
+
+
+def _stable_digest(credential_name: str, purpose: str) -> int:
+    raw = hashlib.sha256(f"{purpose}:{credential_name}".encode("utf-8")).digest()
+    return int.from_bytes(raw[:8], "big")
+
+
+def dormant_window_start_hour(credential_name: str) -> int:
+    """账号每日静默窗口的起始小时（0-23），按账号名稳定分配。"""
+    return _stable_digest(credential_name, "agy-dormant-hour") % 24
+
+
+def is_dormant(credential_name: str, *, now: datetime | None = None) -> bool:
+    """该账号此刻是否处于静默窗口。总开关关闭时恒为 False。"""
+    if not credential_name:
+        return False
+    from config import (
+        get_antigravity_dormant_enabled_sync,
+        get_antigravity_dormant_hours_sync,
+    )
+
+    if not get_antigravity_dormant_enabled_sync():
+        return False
+    hours = get_antigravity_dormant_hours_sync()
+    if hours <= 0:
+        return False
+    current = now or datetime.now()
+    elapsed = (current.hour - dormant_window_start_hour(credential_name)) % 24
+    return elapsed < hours
 
 
 class _Slot:
@@ -141,8 +186,29 @@ async def acquire_credential_slot(credential_name: str) -> float:
         release_dynamic_warmup_slot,
     )
 
+    if is_dormant(credential_name):
+        log.debug(f"[PACING] 账号 {credential_name} 处于静默窗口，本轮跳过")
+        raise CredentialDormant(credential_name)
+
+    from src.antigravity_fleet_gate import FleetTimeout
+    from src.antigravity_fleet_gate import acquire as fleet_acquire
+    from src.antigravity_fleet_gate import release as fleet_release
+
+    # 全池闸门先于账号闸门：极端负载下先在闸前排队吸收，排不下才快速失败，
+    # 并带上按令牌补充速度算出的 Retry-After（而不是恒为 1 秒的热重试）。
+    try:
+        await fleet_acquire()
+    except FleetTimeout as exc:
+        error = CredentialSlotWaitTimeout(credential_name)
+        from src.rate_limits import RateLimit
+
+        error.rate_limit = RateLimit('gateway', 'fleet_busy')
+        error.retry_after = exc.retry_after
+        raise error from None
+
     warmup = await acquire_dynamic_warmup_slot(credential_name)
     if not warmup.get("acquired"):
+        fleet_release()
         raise CredentialSlotWaitTimeout(credential_name, warmup=True)
     try:
         if not get_antigravity_pacing_enabled_sync():
@@ -190,6 +256,7 @@ async def acquire_credential_slot(credential_name: str) -> float:
         return waited
     except BaseException:
         await release_dynamic_warmup_slot(credential_name)
+        fleet_release()
         raise
 
 
@@ -202,9 +269,12 @@ def apply_account_concurrency(credential_name: str) -> None:
 
 
 def release_credential_slot(credential_name: str) -> None:
-    """释放并发槽位。纯同步，可在 finally / 取消路径安全调用。"""
+    """释放并发槽位与全池许可。纯同步，可在 finally / 取消路径安全调用。"""
     if not credential_name:
         return
+    from src.antigravity_fleet_gate import release as fleet_release
+
+    fleet_release()
     slot = _SLOTS.get(credential_name)
     if slot is None:
         return

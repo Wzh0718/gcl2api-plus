@@ -6682,6 +6682,12 @@ function populateConfigForm() {
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
     setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
     setConfigField('antigravityPacingSlotWaitSeconds', c.antigravity_pacing_slot_wait_seconds ?? 30);
+    document.getElementById('antigravityFleetEnabled').checked = c.antigravity_fleet_enabled === true;
+    setConfigField('antigravityFleetInflight', c.antigravity_fleet_inflight ?? 0);
+    setConfigField('antigravityFleetRpm', c.antigravity_fleet_rpm ?? 0);
+    setConfigField('antigravityFleetWaitSeconds', c.antigravity_fleet_wait_seconds ?? 60);
+    document.getElementById('antigravityDormantEnabled').checked = c.antigravity_dormant_enabled === true;
+    setConfigField('antigravityDormantHours', c.antigravity_dormant_hours ?? 6);
     const accountUsage = c.antigravity_account_usage ?? {};
     document.getElementById('antigravityAccountUsageEnabled').checked = accountUsage.enabled === true;
     for (const [key, id] of Object.entries(accountUsageFields)) {
@@ -6880,6 +6886,12 @@ async function saveConfig() {
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
             antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
             antigravity_pacing_slot_wait_seconds: getValue('antigravityPacingSlotWaitSeconds', '30'),
+            antigravity_fleet_enabled: getChecked('antigravityFleetEnabled'),
+            antigravity_fleet_inflight: getInt('antigravityFleetInflight', 0),
+            antigravity_fleet_rpm: getInt('antigravityFleetRpm', 0),
+            antigravity_fleet_wait_seconds: getValue('antigravityFleetWaitSeconds', '60'),
+            antigravity_dormant_enabled: getChecked('antigravityDormantEnabled'),
+            antigravity_dormant_hours: getInt('antigravityDormantHours', 6),
             antigravity_account_usage: accountUsage,
             antigravity_quota_guard_enabled: getChecked('antigravityQuotaGuardEnabled'),
             antigravity_quota_guard_threshold: getFloat('antigravityQuotaGuardThreshold', 0.05),

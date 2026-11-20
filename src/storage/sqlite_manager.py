@@ -1276,6 +1276,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         await db.rollback()
                         return None
                     filename = row[0]
+                    # 静默窗口内的账号不参与本小时调度。放在 SELECT 之后、
+                    # 计数写入之前，既不改 SQL，也不消耗一次上游尝试。
+                    from src.antigravity_pacing import is_dormant
+
+                    if is_dormant(filename):
+                        attempted.add(filename)
+                        await db.rollback()
+                        continue
                     await db.execute(
                         """UPDATE antigravity_credentials
                            SET call_count = COALESCE(call_count, 0) + 1,

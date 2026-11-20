@@ -106,6 +106,14 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_stream2nostream"] = await config.get_antigravity_stream2nostream()
         current_config["antigravity_switch_credential_enabled"] = await config.get_antigravity_switch_credential_enabled()
 
+        # 全池闸门与静默窗口（2026-11-20：极端负载下保证任务跑得完）
+        current_config["antigravity_fleet_enabled"] = await config.get_antigravity_fleet_enabled()
+        current_config["antigravity_fleet_inflight"] = await config.get_antigravity_fleet_inflight()
+        current_config["antigravity_fleet_rpm"] = await config.get_antigravity_fleet_rpm()
+        current_config["antigravity_fleet_wait_seconds"] = await config.get_antigravity_fleet_wait_seconds()
+        current_config["antigravity_dormant_enabled"] = await config.get_antigravity_dormant_enabled()
+        current_config["antigravity_dormant_hours"] = await config.get_antigravity_dormant_hours()
+
         # Antigravity hub 轨迹指纹（UA 版本/CL，2026-10-21 起）
         current_config["antigravity_hub_version"] = await config.get_antigravity_hub_version()
         current_config["antigravity_hub_cl"] = await config.get_antigravity_hub_cl()
@@ -318,6 +326,39 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             if pacing_flag in new_config:
                 if not isinstance(new_config[pacing_flag], bool):
                     raise HTTPException(status_code=400, detail=f"{flag_label}必须是布尔值")
+
+        for fleet_flag, fleet_label in (
+            ("antigravity_fleet_enabled", "全池闸门开关"),
+            ("antigravity_dormant_enabled", "账号静默窗口开关"),
+        ):
+            if fleet_flag in new_config and not isinstance(new_config[fleet_flag], bool):
+                raise HTTPException(status_code=400, detail=f"{fleet_label}必须是布尔值")
+
+        for fleet_key, fleet_low, fleet_high, fleet_label in (
+            ("antigravity_fleet_inflight", 0, 4096, "全池在飞并发上限"),
+            ("antigravity_fleet_rpm", 0, 100000, "全池每分钟请求上限"),
+            ("antigravity_dormant_hours", 0, 20, "账号静默小时数"),
+        ):
+            if fleet_key in new_config:
+                try:
+                    number = int(new_config[fleet_key])
+                    if number < fleet_low or number > fleet_high:
+                        raise ValueError
+                    new_config[fleet_key] = number
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{fleet_label}必须是{fleet_low}-{fleet_high}之间的整数",
+                    )
+
+        if "antigravity_fleet_wait_seconds" in new_config:
+            try:
+                wait_seconds = float(new_config["antigravity_fleet_wait_seconds"])
+                if wait_seconds < 0 or wait_seconds > 600:
+                    raise ValueError
+                new_config["antigravity_fleet_wait_seconds"] = wait_seconds
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="全池闸门等待上限必须是0-600之间的秒数")
 
         if "antigravity_pacing_base_ms" in new_config:
             try:
