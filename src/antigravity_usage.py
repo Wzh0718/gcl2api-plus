@@ -346,7 +346,7 @@ async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
     try:
         limits = await get_usage_settings(for_admission=True)
         path = _db_path()
-        reservation = asyncio.create_task(asyncio.to_thread(_admit, path, account, limits))
+        reservation = asyncio.create_task(_in_db_thread(_admit, path, account, limits))
         try:
             bucket = await asyncio.shield(reservation)
         except asyncio.CancelledError:
