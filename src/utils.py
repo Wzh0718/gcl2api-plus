@@ -1,6 +1,6 @@
 import hmac
 import os
-from typing import List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 from config import get_api_password, get_panel_password
 from fastapi import Depends, HTTPException, Header, Query, Request, status
@@ -33,18 +33,16 @@ GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 # hub 通道周更，CL 只能从新二进制 --stamp 获取；复跑方法见上述文档 §5。
 ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.31.0")
 ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1017595969")
-ANTIGRAVITY_CLI_VERSION = os.getenv("ANTIGRAVITY_CLI_VERSION", "1.3.1")
-ANTIGRAVITY_CLI_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
-ANTIGRAVITY_CLI_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
-ANTIGRAVITY_CLI_AUTH_METHOD = os.getenv(
-    "ANTIGRAVITY_CLI_AUTH_METHOD", "consumer"
-)
+# 平台字段的部署级默认值。变量名沿用历史命名（容器里已注入），语义是
+# "hub UA 的 os_type/arch 兜底"，与已退役的 CLI 轨迹无关。
+ANTIGRAVITY_PLATFORM_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
+ANTIGRAVITY_PLATFORM_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
 
 
 def build_antigravity_user_agent(
     version: Optional[str] = None,
-    os_type: str = ANTIGRAVITY_CLI_OS_TYPE,
-    arch: str = ANTIGRAVITY_CLI_ARCH,
+    os_type: str = ANTIGRAVITY_PLATFORM_OS_TYPE,
+    arch: str = ANTIGRAVITY_PLATFORM_ARCH,
     cl: Optional[str] = None,
 ) -> str:
     """Build the AGY hub-track User-Agent（真实官方客户端形态）。
@@ -62,23 +60,43 @@ def build_antigravity_user_agent(
     )
 
 
-def build_antigravity_cli_user_agent(
-    version: str,
-    os_type: str = ANTIGRAVITY_CLI_OS_TYPE,
-    arch: str = ANTIGRAVITY_CLI_ARCH,
-    auth_method: str = ANTIGRAVITY_CLI_AUTH_METHOD,
-) -> str:
-    """旧 CLI 轨迹 UA，仅供 src/antigravity_cli_version.py 版本探测使用。"""
-    return (
-        f"antigravity/cli/{version} "
-        f"(aidev_client; os_type={os_type}; arch={arch}; "
-        f"auth_method={auth_method})"
-    )
-
-
 def get_antigravity_user_agent() -> str:
     """构建 Antigravity hub 轨迹 User-Agent。"""
     return build_antigravity_user_agent()
+
+
+def get_antigravity_user_agent_for(
+    credential_data: Optional[Mapping[str, Any]] = None,
+    credential_name: Optional[str] = None,
+    *,
+    version_override: Optional[str] = None,
+) -> str:
+    """按账号设备画像构建 UA；无账号上下文时退回全局默认。
+
+    同一账号的 UA 必须永久稳定（安装级一致），跨账号必须分散——这是本函数
+    存在的唯一理由，不要在调用侧再随机化。
+
+    没有账号上下文（无 credential_data 且无 credential_name）时不引入画像，
+    直接沿用全局配置值，保持探测类调用的既有行为。
+    """
+    if credential_data is None and not credential_name:
+        return build_antigravity_user_agent(version_override)
+
+    from src.antigravity_device_profile import cl_for_version, get_device_profile
+
+    profile = get_device_profile(credential_data, credential_name)
+    version = profile["hub_version"]
+    cl = profile["cl"]
+    if version_override:
+        version = version_override
+        # 只有实读核验过的版本才带自己的 CL；未核验版本沿用配置值，避免编造。
+        cl = cl_for_version(version) or cl
+    return build_antigravity_user_agent(
+        version=version,
+        os_type=profile["os_type"],
+        arch=profile["arch"],
+        cl=cl,
+    )
 
 
 # 兼容别名：导入期快照；新代码请用 get_antigravity_user_agent()。

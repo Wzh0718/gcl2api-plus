@@ -141,10 +141,10 @@ def _mock_collect_deps(monkeypatch, paid_tier):
     async def fake_get_storage_adapter():
         return _FakeStorageAdapter(credential_data)
 
-    async def fake_fetch_quota_info(access_token, project_id=None, proxy_url=None):
+    async def fake_fetch_quota_info(access_token, project_id=None, proxy_url=None, **kwargs):
         return {"success": True, "models": {"gemini-3-flash": {"remaining": 1}}, "groups": None}
 
-    async def fake_fetch_paid_tier_info(access_token, proxy_url=None):
+    async def fake_fetch_paid_tier_info(access_token, proxy_url=None, **kwargs):
         return paid_tier
 
     monkeypatch.setattr(creds_module, "get_storage_adapter", fake_get_storage_adapter)

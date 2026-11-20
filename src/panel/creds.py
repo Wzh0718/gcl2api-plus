@@ -1461,13 +1461,20 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
             access_token,
             project_id=credential_data.get("project_id"),
             proxy_url=creds.proxy_url,
+            credential_data=credential_data,
+            credential_name=filename,
         )
 
         if quota_info.get("success"):
             # 顺带用 loadCodeAssist 的 paidTier 校准实时档位：凭证库里的 tier 是
             # 导入时快照，账号被 Google 降档（Starter Quota）后仍显示旧档位会误导排查。
             # best-effort，失败时为 None，不影响额度返回。
-            paid_tier = await fetch_paid_tier_info(access_token, proxy_url=creds.proxy_url)
+            paid_tier = await fetch_paid_tier_info(
+                access_token,
+                proxy_url=creds.proxy_url,
+                credential_data=credential_data,
+                credential_name=filename,
+            )
             return {
                 "success": True,
                 "filename": filename,

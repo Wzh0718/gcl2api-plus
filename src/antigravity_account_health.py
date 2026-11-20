@@ -9,7 +9,7 @@ from src.antigravity_error_classifier import classify_antigravity_403
 from src.httpx_client import get_async, post_async
 from src.egress_probe import observe_egress
 from src.proxy_groups import proxy_argument_from_network
-from src.utils import get_antigravity_user_agent
+from src.utils import get_antigravity_user_agent_for
 
 
 def _first_value(payload: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
@@ -122,6 +122,7 @@ async def check_antigravity_account_health(
     ip_check_url: str,
     api_base_url: str,
     checked_at: Optional[float] = None,
+    credential_data: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     """Check IP stability and eligibility through one account's bound proxy."""
     timestamp = time.time() if checked_at is None else float(checked_at)
@@ -143,7 +144,7 @@ async def check_antigravity_account_health(
         async def fetch_echo(resolved_proxy):
             return await get_async(
                 ip_check_url,
-                headers={"User-Agent": get_antigravity_user_agent()},
+                headers={"User-Agent": get_antigravity_user_agent_for(credential_data, credential_name)},
                 timeout=15.0,
                 proxy_url=resolved_proxy,
             )
@@ -203,7 +204,7 @@ async def check_antigravity_account_health(
             )
 
     headers = {
-        "User-Agent": get_antigravity_user_agent(),
+        "User-Agent": get_antigravity_user_agent_for(credential_data, credential_name),
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip",

@@ -172,7 +172,7 @@ class TelemetryService:
     async def _environment(self, adapter, account):
         from config import get_proxy_config, get_antigravity_native_transport_enabled_sync
         from src.proxy_groups import proxy_argument_from_network
-        from src.utils import get_antigravity_user_agent
+        from src.utils import get_antigravity_user_agent_for
         network = await adapter.get_credential_network(account["filename"], mode="antigravity")
         if network.get("proxy_mode") == "group":
             # Read the existing sticky binding. Resolving here could rotate it and
@@ -186,7 +186,7 @@ class TelemetryService:
         if proxy is ...:
             proxy = await get_proxy_config() or None
         credential = account["credential_data"]
-        environment = {"user_agent": get_antigravity_user_agent(),
+        environment = {"user_agent": get_antigravity_user_agent_for(credential, account["filename"]),
                        "route_ref": _digest([proxy, network.get("proxy_mode"), network.get("proxy_group_id"), network.get("bound_proxy_node_id")]),
                        "oauth_client_ref": _digest([credential.get("oauth_client_key"), credential.get("client_id")]),
                        "native_transport": get_antigravity_native_transport_enabled_sync()}
