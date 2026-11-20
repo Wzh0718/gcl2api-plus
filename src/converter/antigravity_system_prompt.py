@@ -10,9 +10,16 @@ from src.converter.protected_leet import (
     protected_system_parts,
 )
 
-PROMPT_VERSION = '2.31.2'
+DEFAULT_PROMPT_VERSION = '2.31.2'
+# 兼容既有引用；真正的版本由 baseline_prompt() 按运行期配置/账号解析。
+PROMPT_VERSION = DEFAULT_PROMPT_VERSION
 PROMPT_SCOPE = '固定基础模块：identity、communication_style、guidelines；非完整运行时 system'
-PROMPT_PATH = Path(__file__).resolve().parent.parent / 'prompts' / 'antigravity-2.31.2.txt'
+PROMPT_DIR = Path(__file__).resolve().parent.parent / 'prompts'
+PROMPT_PATH = PROMPT_DIR / f'antigravity-{DEFAULT_PROMPT_VERSION}.txt'
+
+# 基线在选号之前不可知（要跟随账号的 hub 版本）。注入时先用部署级默认版本，
+# 选号之后由 resolve_pending_baseline() 在 wrap_cli_request 里按账号版本做一次
+# 前缀替换；同版本时两个前缀字符串相等，直接返回，零额外开销。
 
 BRIDGE = (
     'Execution environment adapter: The client guidance below describes the actual '
@@ -49,9 +56,72 @@ class _PreparedRequest(dict):
         return result
 
 
-@lru_cache(maxsize=1)
-def baseline_prompt() -> str:
-    return PROMPT_PATH.read_text(encoding='utf-8').strip()
+def _configured_prompt_version() -> str:
+    """部署级默认基线版本：跟随 hub 版本配置，非法值回退到内置版本。"""
+    try:
+        from config import get_antigravity_hub_version_sync
+
+        version = get_antigravity_hub_version_sync()
+    except Exception:
+        return DEFAULT_PROMPT_VERSION
+    if isinstance(version, str) and version.count('.') == 2 and version.replace('.', '').isdigit():
+        return version
+    return DEFAULT_PROMPT_VERSION
+
+
+@lru_cache(maxsize=8)
+def _baseline_for_version(version: str) -> str:
+    path = PROMPT_DIR / f'antigravity-{version}.txt'
+    if not path.is_file():
+        path = PROMPT_DIR / f'antigravity-{DEFAULT_PROMPT_VERSION}.txt'
+    return path.read_text(encoding='utf-8').strip()
+
+
+def baseline_prompt(version: str | None = None) -> str:
+    """取基线提示词；version 为空时用部署配置的 hub 版本。
+
+    只支持已经随仓库分发基线的版本，缺失时回退到内置版本——宁可版本不符，
+    也不要在线上生成一个内容不可控的 system。
+    """
+    return _baseline_for_version(version or _configured_prompt_version())
+
+
+def _host_prefix(version: str | None = None) -> str:
+    return baseline_prompt(version) + '\n\n' + BRIDGE
+
+
+def resolve_pending_baseline(request: dict, version: str | None) -> dict:
+    """按账号版本替换已注入的基线前缀；版本相同或没有注入时原样返回。
+
+    在选号之后调用（wrap_cli_request），因此 system 基线与账号 UA 声明的
+    版本一致。缺失该版本基线文件时 baseline_prompt 会回退到内置版本，
+    于是 old == new，函数直接返回，不会产生半套内容。
+    """
+    if not version:
+        return request
+    old = _host_prefix()
+    new = _host_prefix(version)
+    if old == new:
+        return request
+    instruction = request.get('systemInstruction')
+    if not isinstance(instruction, dict):
+        return request
+    parts = instruction.get('parts')
+    if not isinstance(parts, list) or not parts:
+        return request
+    head = parts[0]
+    if not isinstance(head, dict) or not isinstance(head.get('text'), str):
+        return request
+    text = head['text']
+    if not text.startswith(old):
+        return request
+    return {
+        **request,
+        'systemInstruction': {
+            **instruction,
+            'parts': [{'text': new + text[len(old):]}, *parts[1:]],
+        },
+    }
 
 
 def _caller_controls_output(generation: dict, system_text: str, contents) -> bool:
@@ -126,7 +196,7 @@ async def prepare_antigravity_system_prompt(
         if isinstance(first_text, str) and first_text.startswith(baseline_prompt().partition('\n')[0]):
             host_part, *caller_parts = caller_parts
     if inject and host_part is None:
-        host_part = {'text': baseline_prompt() + '\n\n' + BRIDGE}
+        host_part = {'text': _host_prefix()}
 
     if obfuscate:
         profile = client_profile or detect_client_profile(system_text)
