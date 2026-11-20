@@ -53,7 +53,8 @@ fsync/s，全部排在单写锁上。`account_usage` 还挤在默认线程池（
 1. **统一连接参数**（新增 `src/storage/sqlite_pragmas.py`，104 处连接点接入）
    - `synchronous=NORMAL`（WAL 官方推荐；崩溃只丢最后一次 checkpoint 后的事务）
    - `wal_autocheckpoint=20000`（默认 4MB 一次 checkpoint → 约 78MB）
-   - `cache_size=-65536`（2MB → 64MB）、`temp_store=MEMORY`、`busy_timeout=5000`
+   - `cache_size=-8192`（8MB：连接是短命的，缓存无法跨请求复用，调大只会按并发数放大内存）、
+     `temp_store=MEMORY`、`busy_timeout=5000`
 2. **call_records 批量写**：`record()` 入队（保留行对象引用），后台协程按 200ms
    窗口攒批、单事务 `executemany`；读路径「读前刷写」，队列满丢遥测不影响账务。
 3. **去双写**：收尾时把计时字段回填到同一行对象；只有该行已被批量写出去

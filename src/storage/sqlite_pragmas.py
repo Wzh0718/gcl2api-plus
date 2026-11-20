@@ -14,8 +14,9 @@
   checkpoint 之后提交的事务，数据库文件不会损坏；换来 commit 不再每次 fsync。
 - ``wal_autocheckpoint``：默认 1000 页（~4MB）就 checkpoint 一次，在持续写入下
   制造周期性停顿；调到 20000 页（~78MB）把频率降下来。
-- ``cache_size``：默认 2MB 装不下 4GB 库的热索引页，调到 64MB 让 B-tree 定位
-  命中内存。
+- ``cache_size``：保持 8MB。这里的连接几乎都是「一次请求一个短连接」，
+  连接关闭后页缓存全部作废，调大只是按并发数放大器内存（185 并发 × 64MB
+  就是 11.8GB，而机器只有 7GB）。8MB 足够覆盖单次请求的索引定位。
 - ``temp_store=MEMORY``：聚合查询的临时 B-tree 不走磁盘。
 
 ``journal_mode=WAL`` 是持久属性（写在库头），仍在初始化时设置一次。
@@ -33,8 +34,9 @@ import aiosqlite
 BUSY_TIMEOUT_MS = 5000
 # ~78 MB 的 WAL 阈值；4 MB 默认值在高写入下会频繁 checkpoint。
 WAL_AUTOCHECKPOINT_PAGES = 20000
-# 负数表示 KiB，即 64 MB。
-CACHE_SIZE_KB = 65536
+# 负数表示 KiB，即 8 MB。连接是短命的，缓存无法跨请求复用，
+# 上限过高只会按并发数放大内存占用。
+CACHE_SIZE_KB = 8192
 
 
 async def apply_pragmas(db: aiosqlite.Connection) -> None:
