@@ -170,7 +170,9 @@ async def sync_once(group_id: Optional[int] = None) -> Dict[str, Any]:
     disabled = await storage.disable_orphan_proxy_nodes(
         resolved, {node["proxy_url"] for node in nodes}
     )
-    rebound = await storage.rebind_expired_proxy_accounts(resolved)
+    rebound = await storage.rebind_expired_proxy_accounts(
+        resolved, live_urls={node["proxy_url"] for node in nodes}
+    )
     summary = {
         "at": started,
         "group_id": resolved,

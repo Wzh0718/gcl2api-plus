@@ -146,3 +146,30 @@ async def test_px6_key_encrypted_roundtrip(pool):
 
     assert await save_api_key("") is True
     assert await load_api_key() is None
+
+
+@pytest.mark.asyncio
+async def test_rebind_treats_unknown_url_as_stale_when_live_list_given(pool):
+    """早期节点 expires_at 为空，只能靠 PX6 授权列表判断是否还可用。"""
+    manager, gid, _ = pool
+    future = time.time() + 7 * 86400
+    await manager.import_proxy_group_nodes(
+        gid, [node("legacy", None), node("live", future)]
+    )
+    await bind_account(manager, gid, node_id=await node_id_of(manager, gid, "legacy"))
+
+    # legacy 不在 PX6 当前授权列表里 → 视为失效并迁走
+    result = await manager.rebind_expired_proxy_accounts(
+        gid, live_urls={node("live", future)["proxy_url"]}
+    )
+
+    assert result["checked"] == 1
+    assert result["rebound"][0]["to_node_name"] == "live"
+    health = await manager.get_antigravity_account_health("a.json")
+    assert "已不在 PX6 授权列表" in (health["eligibility_reason"] or "")
+
+    # 绑定节点仍在授权列表里时不迁移
+    again = await manager.rebind_expired_proxy_accounts(
+        gid, live_urls={node("live", future)["proxy_url"], node("legacy", None)["proxy_url"]}
+    )
+    assert again["checked"] == 0

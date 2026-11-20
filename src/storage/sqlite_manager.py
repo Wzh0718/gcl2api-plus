@@ -2645,7 +2645,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return result.rowcount or 0
 
     async def rebind_expired_proxy_accounts(
-        self, group_id: int, *, now: Optional[float] = None
+        self, group_id: int, *, now: Optional[float] = None,
+        live_urls: Optional[set] = None,
     ) -> Dict[str, Any]:
         """把绑定在「已过期 / 已停用」节点上的账号迁到同组可用节点。
 
@@ -2658,6 +2659,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         - 新节点必须未过期（``expires_at`` 为空或 > now）、启用、不在冷却；
         - 组开启 ``exclusive_assignment`` 时，跳过已被其他账号占用的节点；
         - 没有可用节点时把账号标成 ``proxy_failed`` 并写明原因，不静默留旧 IP。
+
+        传入 ``live_urls``（本轮 PX6 授权列表）时，**绑定的节点 URL 不在列表里**
+        也算失效：早期手工归并的节点 ``expires_at`` 为空，只能靠授权列表判断
+        供应商是否还认这个 IP。
 
         返回 ``{"rebound": [...], "unassignable": [...], "checked": n}``。
         """
@@ -2675,16 +2680,23 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await db.rollback()
                 raise ValueError("代理组不存在")
             exclusive = bool(row[0])
+            live_clause = ""
+            params: List[Any] = [int(group_id), current]
+            if live_urls:
+                placeholders = ",".join(["?"] * len(live_urls))
+                live_clause = f"OR n.proxy_url NOT IN ({placeholders})"
+                params.extend(sorted(live_urls))
             async with db.execute(
-                """SELECT a.filename, a.bound_proxy_node_id, n.name, n.proxy_url, n.expires_at, n.enabled
-                   FROM antigravity_credentials a
-                   JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
-                   WHERE a.proxy_mode = 'group' AND a.proxy_group_id = ?
-                     AND (
-                         n.enabled = 0
-                         OR (n.expires_at IS NOT NULL AND n.expires_at <= ?)
-                     )""",
-                (int(group_id), current),
+                f"""SELECT a.filename, a.bound_proxy_node_id, n.name, n.proxy_url, n.expires_at, n.enabled
+                    FROM antigravity_credentials a
+                    JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
+                    WHERE a.proxy_mode = 'group' AND a.proxy_group_id = ?
+                      AND (
+                          n.enabled = 0
+                          OR (n.expires_at IS NOT NULL AND n.expires_at <= ?)
+                          {live_clause}
+                      )""",
+                tuple(params),
             ) as cursor:
                 stale = await cursor.fetchall()
             if not stale:
@@ -2712,12 +2724,17 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
             for filename, node_id, node_name, node_url, expires_at, enabled in stale:
                 label = node_name or f"#{node_id}"
-                reason = (f"节点 {label} 已停用" if not enabled
-                          else "节点 %s 已于 %s 到期" % (
-                              label,
-                              datetime.fromtimestamp(
-                                  float(expires_at), timezone(timedelta(hours=8))
-                              ).strftime("%Y-%m-%d %H:%M")))
+                if live_urls and node_url not in live_urls:
+                    reason = f"节点 {label} 已不在 PX6 授权列表"
+                elif not enabled:
+                    reason = f"节点 {label} 已停用"
+                else:
+                    reason = "节点 %s 已于 %s 到期" % (
+                        label,
+                        datetime.fromtimestamp(
+                            float(expires_at), timezone(timedelta(hours=8))
+                        ).strftime("%Y-%m-%d %H:%M"),
+                    )
                 pick = None
                 for cand in candidates:
                     if exclusive and cand[0] in occupied:
