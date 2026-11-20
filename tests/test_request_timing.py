@@ -133,6 +133,7 @@ async def test_timing_persists_without_content_capture_and_legacy_is_unknown(tmp
         async def send(message):
             pass
         await RequestTimingMiddleware(app)({'type': 'http', 'method': 'POST', 'path': '/v1/messages'}, None, send)
+        await adapter._backend.flush_call_records()
         rows = {r['request_id']: r for r in await adapter._backend.list_call_records()}
         assert rows['legacy']['downstream_first_byte_seconds'] is None
         assert rows['new']['upstream_first_byte_seconds'] is not None
