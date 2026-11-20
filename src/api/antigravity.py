@@ -1225,6 +1225,7 @@ async def _stream_request_inner(
             return
         billing_recorded = True
         try:
+            mark_stage("recorder_lookup")
             recorder = await get_billing_recorder()
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
@@ -1527,7 +1528,9 @@ async def _stream_request_inner(
                     consume_usage_chunk("\n")
                 if usage_attempt:
                     await usage_attempt.confirm(usage_metadata)
+                mark_stage("usage_confirmed")
                 log.debug(f"[ANTIGRAVITY STREAM] 流式响应完成，模型: {model_name}")
+                mark_stage("billing_enter")
                 await record_billing_once(True, status_code=200)
                 return
             elif not need_retry:
