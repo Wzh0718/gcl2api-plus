@@ -21,7 +21,11 @@ def _configure(monkeypatch, *, enabled=True, inflight=0, rpm=0, wait=60.0):
 
 
 @pytest.fixture(autouse=True)
-def _reset():
+def _reset(monkeypatch):
+    # 默认走进程内后端；Redis 用例自己设置 REDIS_URL。
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_FLEET_BACKEND", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_FLEET_REDIS_PREFIX", raising=False)
     gate.reset_state()
     yield
     gate.reset_state()
@@ -127,3 +131,130 @@ def test_backpressure_response_uses_real_retry_after():
     response = _credential_slot_backpressure_response(error)
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "9"
+
+
+# ---------------------------------------------------------------------------
+# Redis 后端：多 worker/多副本共享同一份额度，同时保留进程内降级
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedRedis:
+    """只实现闸门用到的 register_script 的最小替身。"""
+
+    def __init__(self, acquire_results, release_result=1):
+        self._acquire_results = list(acquire_results)
+        self._release_result = release_result
+        self.acquire_calls = []
+        self.released = []
+        self.scripts = []
+
+    def register_script(self, script):
+        self.scripts.append(script)
+        if "ZADD" in script:
+            async def acquire(keys=None, args=None):
+                self.acquire_calls.append((keys, args))
+                if len(self._acquire_results) > 1:
+                    return self._acquire_results.pop(0)
+                return self._acquire_results[0]
+            return acquire
+
+        async def release(keys=None, args=None):
+            self.released.append(args[0])
+            return self._release_result
+        return release
+
+
+def _use_fake_redis(monkeypatch, fake):
+    backend = gate._RedisBackend(fake, "gcli:fleet:v1")
+    monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+
+    async def fake_backend():
+        return backend
+
+    monkeypatch.setattr(gate, "_redis_backend", fake_backend)
+    return backend
+
+
+def test_backend_defaults_to_memory_without_redis_url(monkeypatch):
+    _configure(monkeypatch, enabled=True, inflight=1, rpm=0)
+    assert gate.snapshot()["backend"] == "memory"
+
+    monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    assert gate.snapshot()["backend"] == "redis"
+
+    monkeypatch.setenv("ANTIGRAVITY_FLEET_BACKEND", "memory")
+    assert gate.snapshot()["backend"] == "memory"
+
+
+@pytest.mark.asyncio
+async def test_redis_backend_grants_permit_and_releases_in_background(monkeypatch):
+    _configure(monkeypatch, enabled=True, inflight=5, rpm=0)
+    fake = _ScriptedRedis([(1, 0, 0)])
+    _use_fake_redis(monkeypatch, fake)
+
+    await gate.acquire()
+    assert gate.snapshot()["permits_held"] == 1
+    assert len(fake.acquire_calls) == 1
+    keys, args = fake.acquire_calls[0]
+    assert keys == ["gcli:fleet:v1:inflight", "gcli:fleet:v1:tokens"]
+    assert args[1] == 5          # 在飞上限
+    assert args[2] == 0          # 未启用令牌桶
+
+    gate.release()               # 同步调用，投递到后台队列
+    for _ in range(20):
+        if fake.released:
+            break
+        await asyncio.sleep(0.01)
+    assert len(fake.released) == 1
+    assert gate.snapshot()["permits_held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_redis_token_shortage_reports_real_retry_after(monkeypatch):
+    _configure(monkeypatch, enabled=True, inflight=0, rpm=600)
+    fake = _ScriptedRedis([(0, 0, 2500)])   # 还差 2.5s 才有令牌
+    _use_fake_redis(monkeypatch, fake)
+
+    with pytest.raises(gate.FleetTimeout) as excinfo:
+        await gate.acquire(timeout=0.05)
+    assert excinfo.value.retry_after == 3
+    assert gate.snapshot()["permits_held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_redis_failure_degrades_to_memory_without_breaking_release(monkeypatch):
+    _configure(monkeypatch, enabled=True, inflight=3, rpm=0)
+
+    class Broken:
+        def register_script(self, script):
+            async def boom(keys=None, args=None):
+                raise RuntimeError("redis down")
+            return boom
+
+    _use_fake_redis(monkeypatch, Broken())
+
+    await gate.acquire()                     # 降级到进程内
+    assert gate.snapshot()["inflight"] == 1
+    assert gate.snapshot()["permits_held"] == 1
+
+    gate.release()
+    assert gate.snapshot()["inflight"] == 0
+
+    # 冷却期内不再打 Redis
+    assert gate._REDIS_DOWN_UNTIL > gate.time.monotonic()
+
+
+def test_release_without_permit_is_noop():
+    gate.release()
+    gate.release()
+    assert gate.snapshot()["inflight"] == 0
+    assert gate.snapshot()["permits_held"] == 0
+
+
+def test_slot_ttl_is_bounded(monkeypatch):
+    monkeypatch.setenv("ANTIGRAVITY_FLEET_SLOT_TTL_SECONDS", "5")
+    assert gate._slot_ttl_seconds() == gate._SLOT_TTL_SECONDS_MIN
+    monkeypatch.setenv("ANTIGRAVITY_FLEET_SLOT_TTL_SECONDS", "999999")
+    assert gate._slot_ttl_seconds() == gate._SLOT_TTL_SECONDS_MAX
+    monkeypatch.setenv("ANTIGRAVITY_FLEET_SLOT_TTL_SECONDS", "abc")
+    assert gate._slot_ttl_seconds() == gate._SLOT_TTL_SECONDS_DEFAULT
