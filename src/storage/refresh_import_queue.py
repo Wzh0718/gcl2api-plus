@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import aiosqlite
 
+from src.storage.sqlite_pragmas import connect as sqlite_connect
+
 from src.api_keys import ApiKeyCipher
 
 
@@ -69,7 +71,7 @@ class RefreshImportQueue:
     async def create_batch(self, tokens, group_id, proxy_url):
         batch_id = uuid4().hex
         cipher = self._cipher()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             await db.executemany(
                 """INSERT INTO refresh_import_items
                    (batch_id, position, status, message, payload_ciphertext, token_digest,
@@ -89,7 +91,7 @@ class RefreshImportQueue:
         return batch_id
 
     async def list_batches(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """SELECT batch_id, MIN(created_at) AS created_at, COUNT(*) AS total
@@ -98,7 +100,7 @@ class RefreshImportQueue:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def list_items(self, batch_id):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """SELECT id, position, status, message, proxy_group_id, has_custom_proxy,
@@ -109,7 +111,7 @@ class RefreshImportQueue:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def edit_item(self, item_id, refresh_token, mode, proxy_group_id, proxy_url):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT payload_ciphertext FROM refresh_import_items
@@ -146,7 +148,7 @@ class RefreshImportQueue:
             return True
 
     async def enable_item(self, item_id):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             cursor = await db.execute(
                 """UPDATE refresh_import_items SET
                        status = 'queued', message = NULL, retry_count = 0, retry_after = NULL
@@ -157,7 +159,7 @@ class RefreshImportQueue:
             return cursor.rowcount == 1
 
     async def claim_next(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """UPDATE refresh_import_items
@@ -183,7 +185,7 @@ class RefreshImportQueue:
         return json.loads(self._cipher().decrypt(claim["payload_ciphertext"]))
 
     async def find_existing(self, token, digest):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """SELECT a.filename AS file_path, a.user_email AS email, a.fixed_proxy_ip AS egress_ip
@@ -212,7 +214,7 @@ class RefreshImportQueue:
             raise ValueError("导入任务预留已失效")
 
     async def finish(self, claim, status, message=None, existing=None):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             if existing is not None:
                 await self.finish_success(
                     db, claim["id"], claim["lease_id"], existing["file_path"],
@@ -237,7 +239,7 @@ class RefreshImportQueue:
         """
         retries = int(claim.get("retry_count") or 0) + 1
         exhausted = retries >= int(max_retries)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             cursor = await db.execute(
                 """UPDATE refresh_import_items SET
                        status = ?, message = ?, retry_count = ?, retry_after = ?,
@@ -255,7 +257,7 @@ class RefreshImportQueue:
             return cursor.rowcount == 1
 
     async def disable(self, claim, message):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with sqlite_connect(self.db_path) as db:
             cursor = await db.execute(
                 """UPDATE refresh_import_items SET
                        status = 'disabled', message = ?, lease_id = NULL, lease_until = NULL

@@ -539,6 +539,7 @@ class BillingRecorder:
             unknown_usage=metrics.unknown_usage,
             dedupe_ttl_seconds=self.dedupe_ttl_seconds,
         )
+        mark_stage("billing_saved")
         if first:
             was_connected = self.redis.client is not None
             client = await self.redis._get_client()

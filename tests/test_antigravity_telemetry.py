@@ -313,7 +313,8 @@ async def test_request_history_survives_policy_change_and_links_monitor(telemetr
     await service.configure('b.json', 'send')
     storage = SimpleNamespace(_backend=db, list_telemetry_events=db.list_telemetry_events)
     monitor = CallMonitor(storage)
-    token = request_timing.set(RequestTiming(timing_id='request-one'))
+    timing = RequestTiming(timing_id='request-one')
+    token = request_timing.set(timing)
     try:
         a = await begin(service)
         b = await begin(service, 'b')
@@ -321,6 +322,9 @@ async def test_request_history_survives_policy_change_and_links_monitor(telemetr
         b.finish(200)
         await service.drain()
         await monitor.record(request_id='monitor-one', credential_name='a.json', success=True)
+        # 记录先进批量队列，请求收尾时补计时字段；这里模拟中间件 finally 的收尾。
+        await monitor.finish_timing(timing)
+        await storage._backend.flush_call_records()
     finally:
         request_timing.reset(token)
     await service.configure('a.json', 'off')

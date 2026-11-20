@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from src.storage.sqlite_pragmas import connect as sqlite_connect
+
 from log import log
 from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
 from src.rate_limits import selection_usage_resume_at
@@ -142,6 +144,15 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._success_write_lock = asyncio.Lock()
         self._stats_write_lock = asyncio.Lock()
 
+        # 逐条调用记录的后台批量写队列（见 enqueue_call_record）。
+        self._call_queue: Optional[asyncio.Queue] = None
+        self._call_writer: Optional[asyncio.Task] = None
+        self._call_dropped = 0
+        # 写入与「读前刷写」互斥：否则 flush 看不到协程已经扣押在手的批次。
+        self._call_lock = asyncio.Lock()
+        # 协程已从队列取走、还没落盘的批次数；flush 需要等它归零。
+        self._call_inflight = 0
+
         # 内存配置缓存 - 初始化时加载一次
         self._config_cache: Dict[str, Any] = {}
         self._config_loaded = False
@@ -165,7 +176,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 os.makedirs(self._credentials_dir, exist_ok=True)
 
                 # 创建数据库和表
-                async with aiosqlite.connect(self._db_path) as db:
+                async with sqlite_connect(self._db_path) as db:
                     # 启用 WAL 模式（提升并发性能）
                     await db.execute("PRAGMA journal_mode=WAL")
                     await db.execute("PRAGMA foreign_keys=ON")
@@ -853,7 +864,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                          "ON call_records(timing_id) WHERE timing_id IS NOT NULL")
 
     async def _migrate_call_records_content(self, db: aiosqlite.Connection) -> None:
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_call_records_request_id ON call_records(request_id)")
+        # 生产实测（2026-11-20）：该索引 554 MB，占 call_records 全部索引的 47%，
+        # 每次 INSERT 都要维护这棵最大的 B-tree；而它只服务面板「点开单条详情」。
+        # 详情查询改用主键 id（零额外索引成本），这里把旧索引删掉。
+        # 一次性操作：已删除后再次启动是 no-op。
+        await db.execute("DROP INDEX IF EXISTS idx_call_records_request_id")
         async with db.execute("PRAGMA table_info(call_records)") as cursor:
             columns = {row[1] for row in await cursor.fetchall()}
         for name in ("request_features", "request_details"):
@@ -1076,7 +1091,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return
 
         try:
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 async with db.execute("SELECT key, value FROM config") as cursor:
                     rows = await cursor.fetchall()
 
@@ -1095,6 +1110,18 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def close(self) -> None:
         """关闭数据库连接"""
+        writer = self._call_writer
+        if writer is not None:
+            writer.cancel()
+            try:
+                await writer
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._call_writer = None
+        try:
+            await self.flush_call_records()
+        except Exception as exc:
+            log.warning(f"[CALL MONITOR] 关闭前写入剩余调用记录失败: {type(exc).__name__}")
         self._initialized = False
         log.debug("SQLite storage closed")
 
@@ -1167,7 +1194,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         credential_name=credential_name,
                     )
 
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 current_time = time.time()
                 params: List[Any] = []
                 where_sql = "disabled = 0"
@@ -1215,7 +1242,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """Atomically take an eligible account from the queue and move it to the tail."""
         selection_usage_resume_at.set(0)
         attempted = set(excluded)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout = 5000")
             for _ in range(candidate_limit):
                 current_time = time.time()
@@ -1366,7 +1393,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             async with self._selection_lock:
-                async with aiosqlite.connect(self._db_path) as db:
+                async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     result = await db.execute(
                         f"""UPDATE {table_name}
@@ -1391,7 +1418,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
 
         try:
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 async with db.execute("""
                     SELECT filename
                     FROM credentials
@@ -1445,7 +1472,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
                 # 检查凭证是否存在
                 async with db.execute(f"""
@@ -1535,7 +1562,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if not owner or ttl <= 0:
             raise ValueError("Lease requires an owner and positive TTL")
         filename = os.path.basename(filename)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             # Contended waiters use reads only; avoid taking SQLite's writer
             # lock on every poll. Expiry/acquisition is still decided atomically below.
             async with db.execute("""
@@ -1567,7 +1594,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._get_table_name(mode)
         if not owner or ttl <= 0:
             raise ValueError("Lease requires an owner and positive TTL")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             cursor = await db.execute("""
                 UPDATE credential_refresh_leases
                 SET expires_at=(julianday('now') - 2440587.5) * 86400 + ?
@@ -1582,7 +1609,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._get_table_name(mode)
         if not owner or cooldown < 0:
             raise ValueError("Lease requires an owner and nonnegative cooldown")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             args = (mode, os.path.basename(filename), owner)
             if cooldown:
                 await db.execute("""
@@ -1603,7 +1630,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         filename = os.path.basename(filename)
         table = self._get_table_name(mode)
         state = checked_state_updates(state_updates)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             if lease_owner is not None:
                 async with db.execute("""
@@ -1644,7 +1671,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 精确匹配
                 async with db.execute(f"""
                     SELECT credential_data FROM {table_name} WHERE filename = ?
@@ -1670,7 +1697,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 "proxy_group_id": None,
                 "bound_proxy_node_id": None,
             }
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
                           a.bound_proxy_node_id, n.name, n.proxy_url,
@@ -1721,7 +1748,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 "proxy_node_name": network["bound_proxy_node_name"] if available else None,
             }
         if network["proxy_mode"] == "group" and network.get("proxy_group_id"):
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(
                     """SELECT proxy_group_id, bound_proxy_node_id
@@ -1814,7 +1841,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "eligibility_status", "eligibility_reason", "eligibility_checked_at",
             "last_403_category", "last_403_reason", "last_403_at", "updated_at",
         )
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"SELECT {', '.join(columns)} FROM antigravity_account_health WHERE credential_name = ?",
                 (filename,),
@@ -1841,7 +1868,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> bool:
         self._ensure_initialized()
         filename = os.path.basename(filename)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             return await self._egress_ip_in_use(db, egress_ip, filename)
 
     async def _egress_ip_in_use(
@@ -1892,7 +1919,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         values = {key: current.get(key) for key in allowed}
         values.update(updates)
         now = time.time()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT 1 FROM antigravity_credentials WHERE filename = ?",
                 (filename,),
@@ -1935,7 +1962,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         filename = os.path.basename(filename)
         now = time.time()
         cooldown_until = now + max(int(cooldown_seconds), 0)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT proxy_mode, bound_proxy_node_id, proxy_group_id, fixed_proxy_ip
@@ -1998,7 +2025,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             raise ValueError("代理组名称不能为空")
         if strategy not in {"round_robin", "random", "failover"}:
             raise ValueError("代理组策略必须是 round_robin、random 或 failover")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             try:
                 cursor = await db.execute(
                     """INSERT INTO proxy_groups(
@@ -2058,7 +2085,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def get_proxy_group(self, group_id: int) -> Dict[str, Any]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT id, name, description, strategy, enabled,
                           exclusive_assignment, cursor, created_at, updated_at
@@ -2117,7 +2144,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def list_proxy_groups(self) -> List[Dict[str, Any]]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT g.id, g.name, g.description, g.strategy, g.enabled,
                           g.exclusive_assignment, g.cursor, g.created_at, g.updated_at,
@@ -2195,7 +2222,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         values["updated_at"] = time.time()
         assignments = ", ".join(f"{key} = ?" for key in values)
         params = list(values.values()) + [int(group_id)]
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             if values.get("exclusive_assignment"):
                 async with db.execute(
                     """SELECT bound_proxy_node_id FROM antigravity_credentials
@@ -2220,7 +2247,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def delete_proxy_group(self, group_id: int) -> bool:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM antigravity_credentials WHERE proxy_mode = 'group' AND proxy_group_id = ?",
                 (int(group_id),),
@@ -2244,7 +2271,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         if not nodes:
             raise ValueError("至少提供一个代理节点")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             if replace:
                 await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT id FROM proxy_groups WHERE id = ?", (int(group_id),)) as cursor:
@@ -2295,7 +2322,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     imported_count += 1
             await db.execute("UPDATE proxy_groups SET updated_at = unixepoch() WHERE id = ?", (int(group_id),))
             await db.commit()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM proxy_group_nodes WHERE group_id = ?", (int(group_id),)
             ) as cursor:
@@ -2312,7 +2339,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> Optional[Dict[str, Any]]:
         """按组的切换策略挑选一个可用节点（供导入等无账号场景使用）。"""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             return await self._select_proxy_group_node(
                 db, int(group_id), advance=advance, commit=True
@@ -2364,7 +2391,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         the public exit itself, so a host match is treated as held.
         """
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             held = await self._proxy_import_reservation_holds(db)
             async with db.execute(
                 f"""SELECT n.id, n.proxy_url {self._FREE_IMPORT_NODES}
@@ -2382,7 +2409,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def count_proxy_import_nodes_held_by_reservations(self, group_id: int) -> int:
         """Count importable nodes whose exit is still inside a deletion hold."""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             held = await self._proxy_import_reservation_holds(db)
             if not held:
                 return 0
@@ -2398,7 +2425,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, group_id: int, node_id: int, proxy_url: str, egress_ip: str, lease_id: str,
     ) -> bool:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 f"""SELECT 1 {self._FREE_IMPORT_NODES}
@@ -2420,7 +2447,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def release_proxy_import_node(self, lease_id: str) -> None:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("DELETE FROM antigravity_proxy_import_leases WHERE lease_id = ?", (lease_id,))
             await db.commit()
 
@@ -2561,7 +2588,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if proxy_mode == "group":
             if not proxy_group_id:
                 raise ValueError("group 代理模式必须提供 proxy_group_id")
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 async with db.execute("SELECT id FROM proxy_groups WHERE id = ?", (int(proxy_group_id),)) as cursor:
                     if not await cursor.fetchone():
                         raise ValueError("代理组不存在")
@@ -2570,7 +2597,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if proxy_mode != "group":
             proxy_group_id = None
         filename = os.path.basename(filename)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute(
                 """UPDATE antigravity_credentials
                    SET proxy_mode = ?, proxy_url = ?, proxy_group_id = ?,
@@ -2615,7 +2642,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             proxy_url = None
         if proxy_mode != "group":
             proxy_group_id = None
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             if proxy_group_id:
                 async with db.execute("SELECT id FROM proxy_groups WHERE id = ?", (int(proxy_group_id),)) as cursor:
                     if not await cursor.fetchone():
@@ -2672,7 +2699,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def create_api_key_record(self, **values: Any) -> Dict[str, Any]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute(
                 """INSERT INTO api_keys(
                     id, name, key_prefix, secret_hash, secret_ciphertext, kind, status,
@@ -2699,7 +2726,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, api_key_id: str, *, include_secret: bool = False
     ) -> Optional[Dict[str, Any]]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"SELECT {', '.join(self.API_KEY_COLUMNS)} FROM api_keys WHERE id = ?",
                 (api_key_id,),
@@ -2717,7 +2744,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def get_api_key_by_prefix(self, key_prefix: str) -> Optional[Dict[str, Any]]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"SELECT {', '.join(self.API_KEY_COLUMNS)} FROM api_keys WHERE key_prefix = ? AND kind = 'managed'",
                 (key_prefix,),
@@ -2747,7 +2774,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if status:
             where = " WHERE status = ?"
             params.append(status)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(f"SELECT COUNT(*) FROM api_keys{where}", params) as cursor:
                 total = int((await cursor.fetchone())[0])
             async with db.execute(
@@ -2789,7 +2816,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 raise KeyError(api_key_id)
             return record
         assignments = [f"{field} = ?" for field in updates]
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT kind, status FROM api_keys WHERE id = ?", (api_key_id,)
             ) as cursor:
@@ -2814,7 +2841,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
         """Serialize admissions across workers sharing the credentials database."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             timestamp = time.time() if now is None else now
             period, start = ApiKeySchedule().period(timestamp)
@@ -2844,7 +2871,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def revoke_api_key(self, api_key_id: str) -> bool:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT kind FROM api_keys WHERE id = ?", (api_key_id,)
             ) as cursor:
@@ -2867,7 +2894,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, api_key_id: str, *, month_start: str, now: float
     ) -> bool:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT kind, reset_mode, quota_period_start, quota_used
@@ -2902,7 +2929,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def rollover_all_api_key_quotas(self, *, month_start: str, now: float) -> int:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT id, quota_used FROM api_keys
@@ -2932,7 +2959,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def reset_api_key_quota(self, api_key_id: str, *, period_start: str, now: float) -> Dict[str, Any]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT kind, status, reset_mode, quota_used
@@ -2975,7 +3002,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """Set the exact quota counter; used by migrations, tests and repair tooling."""
         self._ensure_initialized()
         normalized = f"{Decimal(str(amount)).quantize(Decimal('0.00000001')):.8f}"
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute(
                 "UPDATE api_keys SET quota_used = ?, updated_at = unixepoch() WHERE id = ?",
                 (normalized, api_key_id),
@@ -2988,7 +3015,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """Set the exact token counter; used by tests and repair tooling."""
         self._ensure_initialized()
         normalized = max(int(tokens), 0)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute(
                 "UPDATE api_keys SET quota_tokens_used = ?, updated_at = unixepoch() WHERE id = ?",
                 (normalized, api_key_id),
@@ -3028,7 +3055,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             for value in (input_cost, output_cost, cache_cost, total_cost)
         )
         daily_key = (billing_date, api_key_id, os.path.basename(credential_name), model, currency)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 "DELETE FROM billing_request_dedupe WHERE request_id IN (SELECT request_id FROM billing_request_dedupe WHERE expires_at < ? LIMIT 500)",
@@ -3129,7 +3156,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, model: str, input_price: str, output_price: str, cache_price: str, currency: str
     ) -> Dict[str, Any]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute(
                 """INSERT INTO billing_prices(model, input_price, output_price, cache_price, currency, updated_at)
                    VALUES (?, ?, ?, ?, ?, unixepoch())
@@ -3144,7 +3171,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def list_billing_prices(self) -> List[Dict[str, Any]]:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 "SELECT model, input_price, output_price, cache_price, currency, updated_at FROM billing_prices ORDER BY model"
             ) as cursor:
@@ -3157,7 +3184,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def delete_billing_price(self, model: str) -> bool:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute("DELETE FROM billing_prices WHERE model = ? AND model != 'default'", (model,))
             await db.commit()
         return result.rowcount > 0
@@ -3180,7 +3207,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         else:
             where = "model = ?"
             params = (model, page_size, offset)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT billing_date, api_key_id, credential_name, model, currency,
                           input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens
@@ -3209,7 +3236,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> bool:
         """按主键重写一行的成本列（价格变更后的历史重算）。"""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute(
                 """UPDATE billing_daily SET input_cost = ?, output_cost = ?,
                        cache_cost = ?, total_cost = ?, updated_at = unixepoch()
@@ -3231,7 +3258,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """
         self._ensure_initialized()
         usage_by_key: Dict[str, Decimal] = {}
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT api_keys.id, billing_daily.total_cost
                    FROM api_keys
@@ -3274,7 +3301,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         output_cost_e8 = self._money_e8_sql("output_cost")
         cache_cost_e8 = self._money_e8_sql("cache_cost")
         total_cost_e8 = self._money_e8_sql("total_cost")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
                           COALESCE(SUM(cache_tokens), 0), COALESCE(SUM(thought_tokens), 0),
@@ -3353,7 +3380,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if api_key_id:
             base_params.append(api_key_id)
         total_cost_e8 = self._money_e8_sql("total_cost")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"SELECT COUNT(*) FROM (SELECT {dimension}, currency FROM billing_daily WHERE billing_date BETWEEN ? AND ?{key_filter} GROUP BY {dimension}, currency)",
                 base_params,
@@ -3385,7 +3412,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         page_size = min(max(int(page_size), 1), 100)
         offset = (page - 1) * page_size
         total_cost_e8 = self._money_e8_sql("d.total_cost")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT COUNT(*) FROM (
                        SELECT api_key_id, currency FROM billing_daily
@@ -3444,7 +3471,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         page_size = min(max(int(page_size), 1), 500)
         offset = (page - 1) * page_size
         cutoff = (datetime.now(ZoneInfo("Asia/Shanghai")).date() - timedelta(days=days - 1)).isoformat()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 """SELECT billing_date, api_key_id, credential_name, model, currency,
                           input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens,
@@ -3462,7 +3489,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     # ==================== 调用监控：逐条调用记录（call_records） ====================
 
     _CALL_RECORD_COLUMNS = (
-        "request_id", "created_at", "api_key_id", "credential_name", "channel",
+        "id", "request_id", "created_at", "api_key_id", "credential_name", "channel",
         "model_name", "request_model", "upstream_model", "task_type", "success", "status_code", "gateway_seconds",
         "input_tokens", "output_tokens", "cache_tokens", "thought_tokens",
         "total_tokens", "total_cost", "currency", "request_features",
@@ -3475,8 +3502,179 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         item = dict(zip(cls._CALL_RECORD_COLUMNS, row))
         item["success"] = bool(item["success"])
         item["request_features"] = json.loads(item.get("request_features") or "{}")
-        item["timing_details"] = json.loads(item.get("timing_details") or "{}")
+        item["timing_details"] = decode_details(item.get("timing_details"))
         return item
+
+    # ==================== 调用记录批量写入 ====================
+    #
+    # 生产实测（2026-11-20）：一个请求收尾要写 5 次独立事务，其中 call_records
+    # 先 INSERT 再 UPDATE 同一行；高并发下单写锁串行排队，收尾阶段 p50 17.8s。
+    # 这里把逐条记录汇进后台队列，按时间窗口合并成一个事务提交，并且不阻塞
+    # 请求返回；队列满时丢遥测（账务不经过这条路径）。
+    _CALL_RECORD_INSERT_SQL = (
+        "INSERT INTO call_records("
+        "request_id, created_at, api_key_id, credential_name, channel, model_name,"
+        " request_model, upstream_model, task_type, success, status_code, gateway_seconds,"
+        " input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens,"
+        " total_cost, currency, request_features, request_details, timing_id,"
+        " upstream_first_byte_seconds, downstream_first_byte_seconds,"
+        " response_total_seconds, upstream_response_seconds, downstream_send_seconds,"
+        " timing_details) VALUES (" + ",".join(["?"] * 28) + ")"
+    )
+
+    @staticmethod
+    def _call_flush_interval() -> float:
+        try:
+            return max(float(os.getenv("CALL_RECORD_FLUSH_SECONDS", "0.2")), 0.02)
+        except ValueError:
+            return 0.2
+
+    @staticmethod
+    def _call_flush_batch() -> int:
+        try:
+            return max(int(os.getenv("CALL_RECORD_FLUSH_BATCH", "200")), 1)
+        except ValueError:
+            return 200
+
+    def _call_record_queue(self) -> asyncio.Queue:
+        if self._call_queue is None:
+            try:
+                limit = max(int(os.getenv("CALL_RECORD_QUEUE_MAX", "20000")), 100)
+            except ValueError:
+                limit = 20000
+            self._call_queue = asyncio.Queue(maxsize=limit)
+        return self._call_queue
+
+    def _ensure_call_writer(self) -> None:
+        if self._call_writer is not None and not self._call_writer.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._call_writer = loop.create_task(self._call_record_flush_loop())
+
+    async def enqueue_call_record(
+        self, row: Dict[str, Any], request_details: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """把一条调用记录投递到批量写队列；永不阻塞请求主流程。"""
+        self._ensure_initialized()
+        self._ensure_call_writer()
+        try:
+            # 保留行对象引用：收尾阶段（finish_timing）会往同一个 dict 里补计时字段，
+            # 复制成新 dict 会让那些字段永远写不进库。
+            self._call_record_queue().put_nowait((row, request_details or {}))
+        except asyncio.QueueFull:
+            self._call_dropped += 1
+            if self._call_dropped % 500 == 1:
+                log.warning(
+                    f"[CALL MONITOR] 写入队列已满，丢弃遥测记录（累计 {self._call_dropped} 条）"
+                )
+
+    async def _call_record_flush_loop(self) -> None:
+        queue = self._call_record_queue()
+        interval = self._call_flush_interval()
+        batch_limit = self._call_flush_batch()
+        try:
+            while True:
+                try:
+                    first = await asyncio.wait_for(queue.get(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                # 攒批窗口：拿到第一条后最多再等一个 interval，让同期收尾的
+                # 请求汇进同一事务。窗口内 finish_timing 通常已经补齐计时字段，
+                # 因此绝大多数记录只需要一次 INSERT。
+                self._call_inflight += 1
+                batch = [first]
+                deadline = time.monotonic() + interval
+                while len(batch) < batch_limit:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        batch.append(await asyncio.wait_for(queue.get(), timeout=remaining))
+                    except asyncio.TimeoutError:
+                        break
+                try:
+                    async with self._call_lock:
+                        await self._write_call_records(batch)
+                finally:
+                    self._call_inflight -= 1
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._call_writer = None
+
+    async def _write_call_records(self, batch) -> None:
+        # 先固化再序列化：从这一刻起这一行不会再被本次 INSERT 带出去，
+        # 之后 finish_timing 的补写必须走 UPDATE。否则「params 已生成、
+        # 收尾又改了同一个 dict」会静默丢掉计时字段（并发竞态）。
+        for row, _ in batch:
+            row["_flushed"] = True
+        try:
+            params = await asyncio.to_thread(self._call_record_params, batch)
+            async with sqlite_connect(self._db_path) as db:
+                await db.executemany(self._CALL_RECORD_INSERT_SQL, params)
+                await db.commit()
+        except Exception as exc:
+            # 没写成功：解除固化，让收尾路径仍有机会补写。
+            for row, _ in batch:
+                row["_flushed"] = False
+            log.warning(
+                f"[CALL MONITOR] 批量写入 {len(batch)} 条调用记录失败: {type(exc).__name__}"
+            )
+
+    @staticmethod
+    def _call_record_params(batch) -> List[Tuple[Any, ...]]:
+        params: List[Tuple[Any, ...]] = []
+        for row, details in batch:
+            params.append((
+                row.get("request_id"), float(row.get("created_at") or time.time()),
+                row.get("api_key_id") or "env",
+                os.path.basename(row.get("credential_name") or ""),
+                row.get("channel") or "antigravity", row.get("model_name") or "",
+                row.get("request_model") or "", row.get("upstream_model") or "",
+                row.get("task_type") or "chat", 1 if row.get("success") else 0,
+                row.get("status_code"), row.get("gateway_seconds"),
+                max(int(row.get("input_tokens") or 0), 0),
+                max(int(row.get("output_tokens") or 0), 0),
+                max(int(row.get("cache_tokens") or 0), 0),
+                max(int(row.get("thought_tokens") or 0), 0),
+                max(int(row.get("total_tokens") or 0), 0),
+                row.get("total_cost") or "0.00000000", row.get("currency") or "CNY",
+                json.dumps(row.get("request_features") or {}, ensure_ascii=False),
+                encode_details(details or {}),
+                row.get("timing_id"), row.get("upstream_first_byte_seconds"),
+                row.get("downstream_first_byte_seconds"), row.get("response_total_seconds"),
+                row.get("upstream_response_seconds"), row.get("downstream_send_seconds"),
+                encode_details(row.get("timing_details") or {}),
+            ))
+        return params
+
+    async def flush_call_records(self, timeout: float = 5.0) -> int:
+        """把队列里剩余的调用记录写完（关闭/退出时调用）。"""
+        queue = self._call_queue
+        if queue is None:
+            return 0
+        written = 0
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            async with self._call_lock:
+                batch = []
+                while len(batch) < self._call_flush_batch():
+                    try:
+                        batch.append(queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                if batch:
+                    await self._write_call_records(batch)
+                    written += len(batch)
+                    continue
+            # 队列空了，但协程可能正扣押着一批在攒批窗口里：等它落盘。
+            if self._call_inflight == 0:
+                break
+            await asyncio.sleep(0.02)
+        return written
 
     async def insert_call_record(
         self,
@@ -3514,7 +3712,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         # Large conversation snapshots must not block the request event loop.
         packed_details = await asyncio.to_thread(encode_details, request_details or {})
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute(
                 """INSERT INTO call_records(
                         request_id, created_at, api_key_id, credential_name, channel,
@@ -3535,7 +3733,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     json.dumps(request_features or {}, ensure_ascii=False),
                     packed_details, timing_id, upstream_first_byte_seconds,
                     downstream_first_byte_seconds, response_total_seconds,
-                    upstream_response_seconds, downstream_send_seconds, json.dumps(timing_details or {}),
+                    upstream_response_seconds, downstream_send_seconds,
+                    await asyncio.to_thread(encode_details, timing_details or {}),
                 ),
             )
             await db.commit()
@@ -3547,21 +3746,35 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         timing_details: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute(
                 "UPDATE call_records SET downstream_first_byte_seconds = ?, "
                 "response_total_seconds = ?, downstream_send_seconds = ?, timing_details = ? WHERE timing_id = ?",
-                (downstream_first_byte_seconds, response_total_seconds, downstream_send_seconds, json.dumps(timing_details or {}), timing_id),
+                (downstream_first_byte_seconds, response_total_seconds, downstream_send_seconds,
+                 await asyncio.to_thread(encode_details, timing_details or {}), timing_id),
             )
             await db.commit()
 
-    async def get_call_record_content(self, request_id: str) -> Optional[Dict[str, Any]]:
+    async def get_call_record_content(
+        self, request_id: Optional[str] = None, *, record_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """读取单条记录的请求详情。
+
+        优先按主键 ``record_id`` 查（无需额外索引）；只有历史链接才回退到
+        ``request_id`` 全表扫描——后者在 459 万行库上较慢，仅作兼容。
+        """
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
-            async with db.execute(
-                "SELECT request_features, request_details FROM call_records "
-                "WHERE request_id = ? ORDER BY id DESC LIMIT 1", (request_id,),
-            ) as cursor:
+        await self.flush_call_records()
+        if record_id is not None:
+            sql = ("SELECT request_features, request_details FROM call_records "
+                   "WHERE id = ? LIMIT 1")
+            params: Tuple[Any, ...] = (int(record_id),)
+        else:
+            sql = ("SELECT request_features, request_details FROM call_records "
+                   "WHERE request_id = ? ORDER BY id DESC LIMIT 1")
+            params = (request_id,)
+        async with sqlite_connect(self._db_path) as db:
+            async with db.execute(sql, params) as cursor:
                 row = await cursor.fetchone()
         if row is None:
             return None
@@ -3614,9 +3827,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回逐条调用记录（实时视图，支持 offset 分页）。"""
         self._ensure_initialized()
+        await self.flush_call_records()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
         columns = ", ".join(self._CALL_RECORD_COLUMNS)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT {columns} FROM call_records
                     WHERE {where}
@@ -3630,8 +3844,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def list_recent_call_records(self, *, limit: int = 1000) -> List[Dict[str, Any]]:
         """启动预热用：取最近 N 条记录（时间正序返回）。"""
         self._ensure_initialized()
+        await self.flush_call_records()
         columns = ", ".join(self._CALL_RECORD_COLUMNS)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT {columns} FROM call_records
                     ORDER BY created_at DESC, id DESC
@@ -3657,12 +3872,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         每个分组附带最近一次调用的 success/status_code（由独立的倒序查询合并）。
         """
         self._ensure_initialized()
+        await self.flush_call_records()
         if group_by not in ("api_key_id", "credential_name"):
             raise ValueError(f"不支持的聚合维度: {group_by}")
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
         if group_by == "credential_name":
             where += " AND credential_name <> ''"
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT {group_by} AS group_key, model_name,
                         COUNT(*) AS total,
@@ -3752,7 +3968,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """
         self._ensure_initialized()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, None)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT api_key_id, credential_name,
                         COUNT(*) AS total,
@@ -3870,8 +4086,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> Dict[str, int]:
         """日志/失败计数与账号、API Key 去重计数（顶部角标 / 分页总数）。"""
         self._ensure_initialized()
+        await self.flush_call_records()
         where, params = self._call_record_filters(since_ts, until_ts, failed_only, api_key_id)
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute(
                 f"""SELECT COUNT(*),
                         SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END),
@@ -3895,7 +4112,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def get_call_records_min_ts(self) -> Optional[float]:
         """最早一条调用记录的时间戳（'全部' 范围的 TPS 口径用）。"""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        await self.flush_call_records()
+        async with sqlite_connect(self._db_path) as db:
             async with db.execute("SELECT MIN(created_at) FROM call_records") as cursor:
                 row = await cursor.fetchone()
         return float(row[0]) if row and row[0] is not None else None
@@ -3903,7 +4121,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def delete_call_records_before(self, cutoff_ts: float) -> int:
         """删除早于截止时间的调用记录（保留期滚动清理），返回删除条数。"""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             result = await db.execute(
                 "DELETE FROM call_records WHERE created_at < ?", (float(cutoff_ts),)
             )
@@ -3916,7 +4134,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 async with db.execute(f"""
                     SELECT filename FROM {table_name} ORDER BY rotation_order
                 """) as cursor:
@@ -3936,7 +4154,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(f"SELECT credential_data FROM {table_name} WHERE filename=?", (filename,)) as cursor:
                     old_row = await cursor.fetchone()
@@ -4020,7 +4238,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
             log.debug(f"[DB] SQL参数: set_clauses={set_clauses}, values={values}")
 
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 精确匹配更新
                 sql_exact = f"""
                     UPDATE {table_name}
@@ -4056,7 +4274,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 精确匹配
                 if mode == "geminicli":
                     async with db.execute(f"""
@@ -4147,7 +4365,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 if mode == "geminicli":
                     async with db.execute(f"""
                         SELECT filename, disabled, error_codes, last_success,
@@ -4269,7 +4487,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 根据 mode 选择表名
             table_name = self._get_table_name(mode)
 
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 先计算全局统计数据（不受筛选条件影响）
                 global_stats = {"total": 0, "normal": 0, "disabled": 0}
                 async with db.execute(f"""
@@ -4508,7 +4726,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 根据 mode 选择表名
             table_name = self._get_table_name(mode)
 
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 查询所有凭证的文件名和邮箱（不加载完整凭证数据）
                 query = f"""
                     SELECT filename, user_email
@@ -4575,7 +4793,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
 
         try:
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 if key == "antigravity_account_usage":
                     await db.execute("BEGIN IMMEDIATE")
                     async with db.execute("SELECT value FROM config WHERE key = ?", (key,)) as cursor:
@@ -4621,7 +4839,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
 
         try:
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 await db.execute("DELETE FROM config WHERE key = ?", (key,))
                 await db.commit()
 
@@ -4651,7 +4869,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 精确匹配
                 async with db.execute(f"""
                     SELECT error_codes, error_messages FROM {table_name} WHERE filename = ?
@@ -4712,7 +4930,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         try:
             table_name = self._get_table_name(mode)
             json_path = '$.' + json.dumps(model_name, ensure_ascii=False)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 # 原子修改指定键，避免并发写不同模型时整量 JSON 覆盖。
                 if cooldown_until is None:
                     expression = "json_remove(COALESCE(model_cooldowns, '{}'), :path)"
@@ -4761,7 +4979,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 result = await db.execute(f"""
                     UPDATE {table_name}
                     SET model_cooldowns = '{{}}',
@@ -4803,7 +5021,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 成功响应可能在短时间内大量并发到达。这里只允许一个 SQLite
             # 成功状态事务持有连接，防止 aiosqlite 连接/线程堆积耗尽 nofile。
             async with self._success_write_lock:
-                async with aiosqlite.connect(self._db_path) as db:
+                async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
 
                     # 条件写入：只有 error_codes 非空时才触发
@@ -4896,7 +5114,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         try:
             # 与成功状态写入同理：串行化轻量统计写入，避免高并发下连接堆积
             async with self._stats_write_lock:
-                async with aiosqlite.connect(self._db_path) as db:
+                async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     await db.execute("""
                         INSERT INTO credential_model_stats
@@ -4965,7 +5183,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         table_name = self._get_table_name(mode)
 
         try:
-            async with aiosqlite.connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path) as db:
                 if date:
                     query = f"""
                         SELECT s.credential_name, s.model_name,

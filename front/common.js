@@ -4061,14 +4061,18 @@ async function showCallMonitorContent(index) {
         content.textContent = '当前已开启脱敏。请先关闭列表上方的“脱敏”，再查看请求原文。';
         return;
     }
-    if (!record?.request_id) {
+    if (!record?.request_id && record?.id == null) {
         content.textContent = '这条记录没有可用的请求标识，请刷新列表后重试。';
         return;
     }
-    dialog.querySelector('[data-request]').textContent = record.request_id;
+    dialog.querySelector('[data-request]').textContent = record.request_id || `#${record.id}`;
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-        const response = await fetch(`./call-monitor/content?request_id=${encodeURIComponent(record.request_id)}`, {
+        // 优先用主键 id：面板列表的每行都带 id，走主键查询不必维护 request_id 索引。
+        const contentQuery = record?.id != null
+            ? `record_id=${encodeURIComponent(record.id)}`
+            : `request_id=${encodeURIComponent(record.request_id)}`;
+        const response = await fetch(`./call-monitor/content?${contentQuery}`, {
             headers: getAuthHeaders(), cache: 'no-store', signal: controller.signal
         });
         const data = await response.json();

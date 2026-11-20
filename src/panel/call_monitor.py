@@ -368,14 +368,22 @@ async def call_monitor_telemetry(
 
 @router.get("/content")
 async def call_monitor_content(
-    request_id: str, _token: str = Depends(verify_panel_token),
+    request_id: Optional[str] = None,
+    record_id: Optional[int] = None,
+    _token: str = Depends(verify_panel_token),
 ):
-    """Full content is loaded on demand behind panel authentication."""
+    """Full content is loaded on demand behind panel authentication.
+
+    面板列表里的行都带主键 ``id``，按 id 查详情无需额外索引；``request_id``
+    只保留给历史链接兼容（无索引时是一次表扫描）。
+    """
+    if record_id is None and not request_id:
+        raise HTTPException(status_code=422, detail="需要 record_id 或 request_id")
     storage = await get_storage_adapter()
     getter = getattr(getattr(storage, "_backend", None), "get_call_record_content", None)
     if getter is None:
         raise HTTPException(status_code=404, detail="当前存储不支持请求详情")
-    content = await getter(request_id)
+    content = await getter(request_id, record_id=record_id)
     if content is None:
         raise HTTPException(status_code=404, detail="记录不存在或已超过保留期")
     capture_id = content.get("request_features", {}).get("capture_id")
