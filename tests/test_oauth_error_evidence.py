@@ -52,7 +52,7 @@ def record(response=None, **kwargs):
 
 @pytest.mark.parametrize('body', [
     {'error': 'invalid_grant', 'error_description': 'short-secret/+ short-secret%2F%2B client-secret user@example.com https://host/?code=hidden-code access_token=access-token-abc code=code-xyz ' + 'z'*80,
-     'error_subtype': {'nested': 'secret'}, 'access_token': 'unknown-token', 'extra': 'hidden'},
+     'error_subtype': {'nested': 'secret'}, 'access_token': 'unknown-token', 'extra': 'unlisted-field-value'},
     ['private-value'], 'private-value',
 ])
 def test_only_redacted_allowlisted_fields_are_logged(body):
@@ -63,7 +63,7 @@ def test_only_redacted_allowlisted_fields_are_logged(body):
     # 断言串必须足够独特：事件里带 24 位随机 hex（event_id/credential_ref 等），
     # 用 'abc'/'xyz' 这类 3 字符做子串检查会偶发撞进随机值（CI 已因此误报）。
     for secret in ('short-secret', 'client-secret', 'user@example.com', 'hidden-code',
-                   'unknown-token', 'private-value', 'proxy-password',
+                   'unlisted-field-value', 'unknown-token', 'private-value', 'proxy-password',
                    'access-token-abc', 'code-xyz', 'z'*80):
         assert secret not in output
     assert event['error_subtype'] is None
