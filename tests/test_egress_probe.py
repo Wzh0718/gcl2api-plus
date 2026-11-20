@@ -64,13 +64,19 @@ async def test_429_cooldown_is_capped_to_keep_other_routes_probeable(fake_clock)
     fetch = AsyncMock(return_value=httpx.Response(429, headers={'Retry-After': '1200'}))
     first = await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)
     assert first.status == 429 and first.error_type is None
-    short_circuit = await probe.observe_egress('https://echo.test/other', 'two', fetch, parse)
-    assert short_circuit.cached and short_circuit.status == 429
-    assert fetch.await_count == 1
-    # A provider asking for 20 minutes must not freeze the pool that long.
-    fake_clock[0] += probe.COOLDOWN_MAX + 1
-    await probe.observe_egress('https://echo.test/ip', 'two', fetch, parse)
+    # A different route keeps its own schedule: one throttled exit must not stop
+    # the rest of the pool from being probed.
+    other = await probe.observe_egress('https://echo.test/ip', 'two', fetch, parse)
+    assert other.status == 429 and not other.cached
     assert fetch.await_count == 2
+    # The throttled route itself is held, and a provider asking for 20 minutes
+    # must not freeze it that long.
+    held = await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)
+    assert held.cached and held.status == 429
+    assert fetch.await_count == 2
+    fake_clock[0] += probe.COOLDOWN_MAX + 1
+    await probe.observe_egress('https://echo.test/ip', 'one', fetch, parse)
+    assert fetch.await_count == 3
 
 
 @pytest.mark.asyncio
