@@ -102,6 +102,8 @@ class StorageBackend(Protocol):
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
     async def update_antigravity_account_health(self, filename: str, **updates) -> Dict[str, Any]: ...
     async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False) -> bool: ...
+    async def disable_orphan_proxy_nodes(self, group_id: int, keep_urls: set) -> int: ...
+    async def rebind_expired_proxy_accounts(self, group_id: int, *, now: Optional[float] = None, live_urls: Optional[set] = None) -> Dict[str, Any]: ...
 
 
 class StorageAdapter:
@@ -294,6 +296,20 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.invalidate_antigravity_proxy_binding(
             filename, cooldown_seconds, require_replacement=require_replacement
+        )
+
+    # PX6 定时同步（src/px6_refresh.py）直接走适配器，必须在此转发，
+    # 否则导入密钥后的首轮同步会因 AttributeError 返回 500。
+    async def disable_orphan_proxy_nodes(self, group_id: int, keep_urls: set) -> int:
+        self._ensure_initialized()
+        return await self._backend.disable_orphan_proxy_nodes(group_id, keep_urls)
+
+    async def rebind_expired_proxy_accounts(
+        self, group_id: int, *, now: Optional[float] = None, live_urls: Optional[set] = None
+    ) -> Dict[str, Any]:
+        self._ensure_initialized()
+        return await self._backend.rebind_expired_proxy_accounts(
+            group_id, now=now, live_urls=live_urls
         )
 
     async def create_proxy_group(self, **kwargs) -> Dict[str, Any]:

@@ -157,10 +157,17 @@ class CallMonitor:
                         and timing.request_info.get("transport") != "stream")
         if defer_insert:
             timing.pending_monitor_row = row
+        elif timing is not None:
+            # 立即入队（row 是同一个对象引用）：批量写协程每 0.2s 落一次盘，
+            # 期间 finish_timing() 补的计时字段会跟着这一行一起写出去，
+            # 正常路径只需要一次 INSERT。极少数「已被写出去才收尾」的情况
+            # 才退化成一次 UPDATE（见 finish_timing）。
+            timing.call_row = row
+            timing.call_details = details
+            await self._enqueue(row, details)
         else:
-            await self._insert_record(row, details)
-            if timing is not None:
-                timing.has_persisted_monitor_rows = True
+            # 无计时上下文（非模型请求、脚本调用）：直接落库，读路径立即可见。
+            await self._enqueue(row, details, buffered=False)
         agy_upstream_limit = channel == "antigravity" and rate_limit is not None and rate_limit.source == "upstream"
         if status_code is not None and (status_code != 429 or agy_upstream_limit):
             try:
@@ -177,11 +184,27 @@ class CallMonitor:
             await self._maybe_cleanup()
         mark_stage("monitor_finished")
 
-    async def _insert_record(self, row, details):
+    async def _enqueue(
+        self,
+        row: Dict[str, Any],
+        details: Optional[Dict[str, Any]] = None,
+        *,
+        buffered: bool = True,
+    ) -> None:
+        """投递调用记录；失败不影响请求主流程。
+
+        ``buffered=True`` 走存储后端的批量队列（正常请求路径，不阻塞返回）；
+        ``False`` 直接落库，适用于没有计时上下文的场景。
+        """
         try:
+            if buffered:
+                enqueue = self._backend_method("enqueue_call_record")
+                if enqueue is not None:
+                    await enqueue(row, details or {})
+                    return
             insert = self._backend_method("insert_call_record")
             if insert is not None:
-                await insert(**row, request_details=details)
+                await insert(**row, request_details=details or {})
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 写入调用记录失败: {type(exc).__name__}")
 
@@ -196,15 +219,27 @@ class CallMonitor:
         timing.pending_monitor_row = None
         if pending is not None:
             pending.update(values)
-            await self._insert_record(pending, {})
+            await self._enqueue(pending, {})
             await self._maybe_cleanup()
-        if not timing.has_persisted_monitor_rows:
+        if pending is not None and timing.call_row is None:
             return
         # Existing bounded deque only; no per-request lookup cache is retained.
         async with self._lock:
             for row in self._buffer:
                 if row.get("timing_id") == timing.timing_id:
                     row.update(values)
+        row = getattr(timing, "call_row", None)
+        if row is not None:
+            # 计时字段回填到同一个行对象上：若批量协程还没把它写出去，
+            # 下次 flush 就会带上完整字段（零额外事务）。
+            row.update(values)
+            timing.call_row = None
+            timing.call_details = None
+            if row.pop("_flushed", False):
+                update = self._backend_method("update_call_record_timing")
+                if update is not None:
+                    await update(timing.timing_id, **values)
+            return
         update = self._backend_method("update_call_record_timing")
         if update is not None:
             await update(timing.timing_id, **values)
@@ -271,15 +306,20 @@ class CallMonitor:
                 limit=page_size,
                 offset=offset,
             )
-            counters = await count_fn(
-                since_ts=since_ts,
-                until_ts=until_ts,
-                failed_only=failed_only,
-                api_key_id=api_key_id,
-            )
+            counters = await count_fn(since_ts=since_ts, until_ts=until_ts)
+            total = counters["failed" if failed_only else "logs"]
+            if api_key_id:
+                filtered = await count_fn(
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                    failed_only=failed_only,
+                    api_key_id=api_key_id,
+                )
+                total = filtered["logs"]
             return {
                 "records": records,
-                "total": int(counters.get("logs", 0)),
+                "total": int(total),
+                "counters": counters,
                 "page": page,
                 "page_size": page_size,
                 "degraded": False,
@@ -293,6 +333,7 @@ class CallMonitor:
         return {
             "records": rows[offset : offset + page_size],
             "total": len(rows),
+            "counters": self.buffer_counters(since_ts=since_ts),
             "page": page,
             "page_size": page_size,
             "degraded": True,

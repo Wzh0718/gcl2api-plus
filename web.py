@@ -157,6 +157,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"403复检服务启动失败: {e}")
 
+    # 启动 PX6 代理池定时同步（未保存 key 时自动跳过）
+    try:
+        from src.px6_refresh import px6_refresh_service
+        await px6_refresh_service.start()
+    except Exception as e:
+        log.error(f"PX6 同步服务启动失败: {e}")
+
     # 调用监控：预热内存缓冲并按保留期执行一次启动清理
     try:
         from src.call_monitor import get_call_monitor
@@ -206,6 +213,13 @@ async def lifespan(app: FastAPI):
         await recheck_service.stop()
     except Exception as e:
         log.error(f"关闭403复检服务时出错: {e}")
+
+    # 停止 PX6 定时同步
+    try:
+        from src.px6_refresh import px6_refresh_service
+        await px6_refresh_service.stop()
+    except Exception as e:
+        log.error(f"关闭 PX6 同步服务时出错: {e}")
 
     # 停止内存回收任务
     if _memory_trim_task and not _memory_trim_task.done():

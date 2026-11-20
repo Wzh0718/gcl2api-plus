@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Any, Literal, Optional
+
+from log import log
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field, SecretStr
@@ -257,6 +259,8 @@ class PX6ImportRequest(BaseModel):
     api_key: SecretStr
     protocol: Literal["http", "socks5"] = "http"
     replace: bool = False
+    # 勾选后把 key 用本地 Fernet 主密钥加密写入 config，供定时同步复用。
+    remember: bool = False
 
 
 @router.post("/proxy-groups/px6/preview")
@@ -288,9 +292,47 @@ async def import_px6_proxies(
         imported = await storage.import_proxy_group_nodes(group_id, result["nodes"], replace=payload.replace)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    remembered = False
+    if payload.remember:
+        from src.px6_refresh import refresh_interval, save_api_key, sync_once
+
+        remembered = await save_api_key(payload.api_key.get_secret_value())
+        # 组 id 也记下来，避免以后按名称匹配时选错组。
+        await storage.set_config("px6_group_id", int(group_id))
+        # 立即按新 key 跑一轮：补上 expires_at，并把已到期节点上的账号迁走。
+        summary = await sync_once(group_id)
+        imported = {**imported, "sync": summary}
+        log.info(f"[PX6] 已保存密钥并启用定时同步（interval={await refresh_interval()}s）")
     from fastapi.responses import JSONResponse
-    return JSONResponse({**imported, "count": len(result["nodes"]), "items": result["items"]},
-                        headers={"Cache-Control": "no-store"})
+    return JSONResponse({**imported, "count": len(result["nodes"]), "items": result["items"],
+                         "key_saved": remembered}, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/proxy-groups/px6/status")
+async def px6_status(_token: str = Depends(verify_panel_token)):
+    """面板展示 PX6 密钥是否已保存、上次同步结果与间隔。"""
+    from src.px6_refresh import key_status
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(await key_status(), headers={"Cache-Control": "no-store"})
+
+
+class PX6SyncRequest(BaseModel):
+    group_id: Optional[int] = None
+
+
+@router.post("/proxy-groups/px6/sync")
+async def px6_sync(
+    payload: PX6SyncRequest | None = None,
+    _token: str = Depends(verify_panel_token),
+):
+    """手动触发一次同步（不等定时任务）。"""
+    from src.px6_refresh import sync_once
+
+    from fastapi.responses import JSONResponse
+    summary = await sync_once(payload.group_id if payload else None)
+    status = 200 if not summary.get("error") else 400
+    return JSONResponse(summary, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/creds/network/batch")
