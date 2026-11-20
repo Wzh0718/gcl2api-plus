@@ -115,3 +115,33 @@ def test_missing_redis_url_disables_client_without_importing_or_logging_secrets(
 
     assert create_redis_client_from_env(redis_module) is None
     assert redis_module.calls == []
+
+
+def test_socket_timeouts_default_to_three_seconds(monkeypatch):
+    from src.redis_config import DEFAULT_REDIS_TIMEOUT_SECONDS, redis_socket_timeouts
+
+    monkeypatch.delenv("REDIS_SOCKET_CONNECT_TIMEOUT", raising=False)
+    monkeypatch.delenv("REDIS_SOCKET_TIMEOUT", raising=False)
+
+    # 1 秒在高并发下会被 DNS 排队打穿（见 2026-11-20 生产排查），默认给 3 秒。
+    assert DEFAULT_REDIS_TIMEOUT_SECONDS >= 3.0
+    assert redis_socket_timeouts() == (
+        DEFAULT_REDIS_TIMEOUT_SECONDS,
+        DEFAULT_REDIS_TIMEOUT_SECONDS,
+    )
+
+
+def test_socket_timeouts_are_env_overridable_and_clamped(monkeypatch):
+    from src.redis_config import DEFAULT_REDIS_TIMEOUT_SECONDS, redis_socket_timeouts
+
+    monkeypatch.setenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT", "0.5")
+    assert redis_socket_timeouts() == (5.0, 0.5)
+
+    for broken in ("0", "-1", "abc", "600"):
+        monkeypatch.setenv("REDIS_SOCKET_CONNECT_TIMEOUT", broken)
+        monkeypatch.setenv("REDIS_SOCKET_TIMEOUT", broken)
+        assert redis_socket_timeouts() == (
+            DEFAULT_REDIS_TIMEOUT_SECONDS,
+            DEFAULT_REDIS_TIMEOUT_SECONDS,
+        ), broken

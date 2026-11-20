@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from log import log
 from src.rate_limits import RateLimit
-from src.redis_config import create_redis_client_from_env
+from src.redis_config import create_redis_client_from_env, redis_socket_timeouts
 
 
 MONEY_QUANTUM = Decimal("0.00000001")
@@ -124,10 +124,11 @@ class _RedisBillingMirror:
             return None
         self._checked = True
         try:
+            connect_timeout, socket_timeout = redis_socket_timeouts()
             self.client = create_redis_client_from_env(
                 decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=1,
+                socket_connect_timeout=connect_timeout,
+                socket_timeout=socket_timeout,
             )
             if self.client is None:
                 return None

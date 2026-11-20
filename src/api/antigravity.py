@@ -41,7 +41,7 @@ from src.httpx_client import (
 )
 from src.stream_guard import aclose_quietly
 from src.models import Model, model_to_dict
-from src.redis_config import create_redis_client_from_env
+from src.redis_config import create_redis_client_from_env, redis_socket_timeouts
 from src.antigravity_error_classifier import (
     Antigravity403Decision,
     classify_antigravity_403,
@@ -140,7 +140,12 @@ async def _get_redis():
         if _redis_checked:
             return _redis_client
         try:
-            client = create_redis_client_from_env(decode_responses=True)
+            connect_timeout, socket_timeout = redis_socket_timeouts()
+            client = create_redis_client_from_env(
+                decode_responses=True,
+                socket_connect_timeout=connect_timeout,
+                socket_timeout=socket_timeout,
+            )
             if client is not None:
                 try:
                     await client.ping()
