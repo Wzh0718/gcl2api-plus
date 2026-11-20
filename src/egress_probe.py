@@ -27,6 +27,11 @@ COOLDOWN_DEFAULT = 30.0
 COOLDOWN_MAX = 60.0
 MIN_INTERVAL = 2.0
 MAX_ENTRIES = 1024
+# Throttling is applied per route first so one unlucky exit cannot stop the
+# other exits of the same batch from being probed. Only a sustained streak of
+# throttled answers, which means the echo provider is refusing the deployment
+# as a whole, escalates to a provider-wide hold.
+PROVIDER_TRIP_STREAK = 5
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,12 @@ class _State:
     def __init__(self):
         self.lock = asyncio.Lock()
         self.cache = OrderedDict()
+        # Per-route holds: a throttled answer says nothing about the other exits.
         self.cooldowns = OrderedDict()
+        # Provider-wide hold, armed only after PROVIDER_TRIP_STREAK throttled
+        # answers in a row, so a deployment-wide refusal still short-circuits.
+        self.provider_cooldowns = OrderedDict()
+        self.provider_streak = OrderedDict()
         self.next_start = 0.0
 
 
@@ -101,9 +111,13 @@ async def observe_egress(url, proxy_url, fetch, parse):
         if existing and existing[0] > now:
             state.cache.move_to_end(key)
             return replace(existing[1], cached=True)
-        if state.cooldowns.get(provider, 0) > now:
+        if state.provider_cooldowns.get(provider, 0) > now:
             # `error_type` stays empty on purpose: a throttled echo is not a
             # probe failure, and callers treat error_type as a hard failure.
+            return Observation(status=429, cached=True)
+        if state.cooldowns.get(key, 0) > now:
+            # This route itself was throttled moments ago; other routes keep
+            # their own schedule instead of inheriting this hold.
             return Observation(status=429, cached=True)
         delay = state.next_start - now
         if delay > 0:
@@ -118,10 +132,19 @@ async def observe_egress(url, proxy_url, fetch, parse):
             if response.status_code == 200:
                 ip, country = parse(response)
                 result = Observation(200, ip, country, time.time())
+                # A working route proves the provider is not refusing us.
+                state.provider_streak.pop(provider, None)
             else:
                 result = Observation(response.status_code)
                 if response.status_code in (429, 503):
-                    _put(state.cooldowns, provider, time.monotonic() + _retry_after(getattr(response, 'headers', {})))
+                    hold = _retry_after(getattr(response, 'headers', {}))
+                    _put(state.cooldowns, key, time.monotonic() + hold)
+                    streak = int(state.provider_streak.get(provider, 0)) + 1
+                    _put(state.provider_streak, provider, streak)
+                    if streak >= PROVIDER_TRIP_STREAK:
+                        # Every recent answer was throttled: stop probing the
+                        # provider for a while instead of burning the budget.
+                        _put(state.provider_cooldowns, provider, time.monotonic() + hold)
         except Exception as exc:
             result = Observation(status=0, error_type=type(exc).__name__)
         if result.status == 200:
