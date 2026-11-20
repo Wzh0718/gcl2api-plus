@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from threading import Event
 
 import httpx
 import pytest
 
 from src.capture_config import capture_policies, capture_settings, validate_capture_value
-from src.request_capture import capture_request, get_capture_store
+from src.request_capture import capture_request, capture_writer_lifespan, get_capture_store
 from src.httpx_client import post_async, stream_post_async, http_client
 
 
@@ -20,20 +21,64 @@ def enabled(tmp_path, monkeypatch):
     return get_capture_store()
 
 
-async def run_request(app, payload=None, path="/antigravity/v1/chat/completions"):
+async def run_request(app, payload=None, path="/antigravity/v1/chat/completions", *, drain=True):
     raw = json.dumps(payload or {"model": "test", "messages": [{"role": "user", "content": "hello"}]}).encode()
     async def receive():
         return {"type": "http.request", "body": raw}
     sent = []
     async def send(message):
         sent.append(message)
-    await capture_request({"type": "http", "method": "POST", "path": path,
-                           "headers": [(b"content-type", b"application/json")]}, receive, send, app)
+    scope = {"type": "http", "method": "POST", "path": path,
+             "headers": [(b"content-type", b"application/json")]}
+    if drain:
+        async with capture_writer_lifespan():
+            await capture_request(scope, receive, send, app)
+    else:
+        await capture_request(scope, receive, send, app)
     return sent
 
 
 def rows(store, name):
     return store.query(name, capture_policies()[name], limit=1000)
+
+
+@pytest.mark.asyncio
+async def test_blocked_evidence_writer_does_not_delay_inference(enabled, monkeypatch):
+    from src.request_capture import capture_post
+
+    loop = asyncio.get_running_loop()
+    write_started = asyncio.Event()
+    release_write = Event()
+    original_write = enabled.write
+
+    def blocked_write(*args, **kwargs):
+        loop.call_soon_threadsafe(write_started.set)
+        assert release_write.wait(timeout=5)
+        return original_write(*args, **kwargs)
+
+    @capture_post
+    async def upstream(url, **kwargs):
+        await write_started.wait()
+        return httpx.Response(200, json={"ok": True})
+
+    async def app(scope, receive, send):
+        await receive()
+        response = await upstream("https://test/generateContent", json={"model": "m"})
+        await send({"type": "http.response.start", "status": response.status_code, "headers": []})
+        await send({"type": "http.response.body", "body": response.content})
+
+    monkeypatch.setattr(enabled, "write", blocked_write)
+    async with capture_writer_lifespan():
+        try:
+            sent = await asyncio.wait_for(run_request(app, drain=False), timeout=2)
+            assert sent[-1]["body"] == b'{"ok":true}'
+            assert not rows(enabled, "attempts")
+        finally:
+            release_write.set()
+
+    assert [row["phase"] for row in reversed(rows(enabled, "attempts"))] == [
+        "started", "finished", "final",
+    ]
 
 
 @pytest.mark.asyncio
