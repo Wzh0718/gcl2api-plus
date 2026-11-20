@@ -325,6 +325,7 @@ async def get_creds_status_common(
             cred_info["egress_ip"] = summary.get("egress_ip")
             cred_info["egress_country"] = summary.get("egress_country")
             cred_info["binding_status"] = summary.get("binding_status", "unchecked")
+            cred_info["binding_reason"] = summary.get("eligibility_reason")
             cred_info["eligibility_status"] = summary.get(
                 "eligibility_status", "unchecked"
             )

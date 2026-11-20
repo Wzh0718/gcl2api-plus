@@ -1176,6 +1176,7 @@ async def _stream_request_inner(
             return
         billing_recorded = True
         try:
+            mark_stage("recorder_lookup")
             recorder = await get_billing_recorder()
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
@@ -1447,7 +1448,9 @@ async def _stream_request_inner(
                     consume_usage_chunk("\n")
                 if usage_attempt:
                     await usage_attempt.confirm(usage_metadata)
+                mark_stage("usage_confirmed")
                 log.debug(f"[ANTIGRAVITY STREAM] 流式响应完成，模型: {model_name}")
+                mark_stage("billing_enter")
                 await record_billing_once(True, status_code=200)
                 return
             elif not need_retry:
@@ -2246,6 +2249,7 @@ async def non_stream_request(
                     f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
                 )
 
+            mark_stage("post_enter")
             response = await post_async(
                 url=target_url,
                 json=final_payload,
@@ -2254,9 +2258,11 @@ async def non_stream_request(
                 transport="antigravity",
                 timeout=300.0
             )
+            mark_stage("post_exit")
             upstream_elapsed = time.monotonic() - attempt_started
             if usage_attempt and response.status_code not in (403, 429):
                 await usage_attempt.confirm_response(response)
+            mark_stage("usage_confirmed")
 
             status_code = response.status_code
 
@@ -2296,6 +2302,8 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=time.monotonic() - gateway_started
                     )
+                    mark_stage("credential_saved")
+                    mark_stage("billing_enter")
                     await record_billing_once(True, _safe_response_json(response) if response.content else None, status_code=200)
                     downstream = Response(
                         content=response.content,

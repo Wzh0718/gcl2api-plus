@@ -8,6 +8,28 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+
+from src.storage.sqlite_pragmas import apply_sync_pragmas
+
+# 账号用量表的写操作原本走 asyncio.to_thread，默认线程池只有 min(32, cpu+4)
+# 个槽（4 核上是 8）。生产实测（2026-11-20）185 个在飞请求收尾时全部排在
+# 这 8 个槽上，收尾阶段 p50 17.8s。这里换成专用线程池，避免与其它阻塞调用
+# 抢默认执行器；SQLite 写锁本身仍然是串行的，但至少不在这里排队。
+_DB_WORKERS = max(int(os.getenv("SQLITE_THREAD_WORKERS", "32") or 32), 4)
+_DB_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _db_executor() -> ThreadPoolExecutor:
+    global _DB_EXECUTOR
+    if _DB_EXECUTOR is None:
+        _DB_EXECUTOR = ThreadPoolExecutor(max_workers=_DB_WORKERS, thread_name_prefix="sqlite-w")
+    return _DB_EXECUTOR
+
+
+async def _in_db_thread(fn, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_db_executor(), fn, *args)
 import time
 
 from log import log
@@ -76,13 +98,14 @@ async def get_usage_settings(*, for_admission: bool = False):
     from config import get_config_value
 
     if for_admission and int(os.getenv("WORKERS", "1")) > 1:
-        return await asyncio.to_thread(_shared_settings, _db_path(), int(time.monotonic()))
+        return await _in_db_thread(_shared_settings, _db_path(), int(time.monotonic()))
     return validate_usage_settings(await get_config_value(CONFIG_KEY, DEFAULT_USAGE_LIMITS))
 
 
 @lru_cache(maxsize=8)
 def _initialize(path: Path) -> None:
-    with closing(sqlite3.connect(path, timeout=2)) as db, db:
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        apply_sync_pragmas(db)
         db.execute("""
             CREATE TABLE IF NOT EXISTS account_usage (
                 account TEXT NOT NULL,
@@ -152,7 +175,8 @@ def _effective_limits(global_limits, exempt, overrides):
 
 def _set_account_usage_policy(path: Path, account: str, mode: str, limits: dict | None) -> bool:
     overrides = None if mode == "off" else json.dumps(limits or {})
-    with closing(sqlite3.connect(path, timeout=2)) as db, db:
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        apply_sync_pragmas(db)
         result = db.execute(
             """UPDATE antigravity_credentials
                SET usage_resume_at = 0, usage_limit_disabled = ?, usage_limit_overrides = COALESCE(?, usage_limit_overrides)
@@ -163,7 +187,7 @@ def _set_account_usage_policy(path: Path, account: str, mode: str, limits: dict 
 
 
 async def set_account_usage_policy(account: str, *, mode: str, limits: dict | None) -> bool:
-    return await asyncio.to_thread(_set_account_usage_policy, _db_path(), account, mode, limits)
+    return await _in_db_thread(_set_account_usage_policy, _db_path(), account, mode, limits)
 
 
 def _read_usage_state(path: Path, accounts: list[str], now: int, global_limits: dict):
@@ -183,7 +207,7 @@ async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bo
     try:
         global_limits = await get_usage_settings(for_admission=True)
         now = int(time.time())
-        policies, totals = await asyncio.to_thread(
+        policies, totals = await _in_db_thread(
             _read_usage_state, _db_path(), accounts, now, global_limits,
         )
     except (sqlite3.Error, OSError, ValueError) as exc:
@@ -219,7 +243,8 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
     global_tracking = _should_track(global_limits, {})
     if not global_tracking and not path.is_file():
         return None
-    with closing(sqlite3.connect(path, timeout=2)) as db, db:
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        apply_sync_pragmas(db)
         if not global_tracking:
             _, overrides = _account_policies(db, [account]).get(account, (False, {}))
             if not _should_track(global_limits, overrides):
@@ -269,7 +294,8 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
 
 
 def _undo_admission(path: Path, account: str, bucket: int) -> None:
-    with closing(sqlite3.connect(path, timeout=2)) as db, db:
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        apply_sync_pragmas(db)
         db.execute(
             "UPDATE account_usage SET requests = requests - 1 WHERE account = ? AND bucket = ?",
             (account, bucket),
@@ -277,7 +303,8 @@ def _undo_admission(path: Path, account: str, bucket: int) -> None:
 
 
 def _confirm(path: Path, account: str, tokens: int) -> None:
-    with closing(sqlite3.connect(path, timeout=2)) as db, db:
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        apply_sync_pragmas(db)
         _add(db, account, int(time.time()), 0, tokens)
 
 
@@ -300,7 +327,7 @@ class AccountUsageAttempt:
         tokens = usage.output_tokens + usage.thought_tokens
         if tokens:
             try:
-                await asyncio.to_thread(_confirm, self.path, self.account, tokens)
+                await _in_db_thread(_confirm, self.path, self.account, tokens)
             except sqlite3.Error as exc:
                 self.confirmed = False
                 log.error(f"[ACCOUNT USAGE] Failed to record confirmed tokens: {type(exc).__name__}")
@@ -319,14 +346,14 @@ async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
     try:
         limits = await get_usage_settings(for_admission=True)
         path = _db_path()
-        reservation = asyncio.create_task(asyncio.to_thread(_admit, path, account, limits))
+        reservation = asyncio.create_task(_in_db_thread(_admit, path, account, limits))
         try:
             bucket = await asyncio.shield(reservation)
         except asyncio.CancelledError:
             try:
                 bucket = await reservation
                 if bucket is not None:
-                    await asyncio.to_thread(_undo_admission, path, account, bucket)
+                    await _in_db_thread(_undo_admission, path, account, bucket)
             except AccountUsageLimitReached:
                 pass
             except (sqlite3.Error, OSError, ValueError) as exc:

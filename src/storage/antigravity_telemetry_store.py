@@ -7,6 +7,8 @@ import uuid
 
 import aiosqlite
 
+from src.storage.sqlite_pragmas import connect as sqlite_connect
+
 
 def subject_ref(account):
     email = (account.get("user_email") or "").strip().lower()
@@ -52,7 +54,7 @@ class AntigravityTelemetryStore:
         binding = {"installation_id": snapshot.installation_id,
                    "environment_ref": snapshot.environment, "user_agent": snapshot.user_agent,
                    "route_ref": snapshot.route_ref, "native_transport": snapshot.native_transport}
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             # Do not recreate event history after its owning account was deleted.
             await db.execute("""INSERT INTO antigravity_telemetry_events
                 SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS
@@ -73,7 +75,7 @@ class AntigravityTelemetryStore:
         ids = list(dict.fromkeys(value for value in timing_ids if value))[:200]
         if not ids:
             return []
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(f"""SELECT * FROM antigravity_telemetry_events
                 WHERE timing_id IN ({','.join('?' for _ in ids)}) AND created_at >= ?
@@ -98,7 +100,7 @@ class AntigravityTelemetryStore:
             params = (access_token, access_token)
         else:
             return None
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(f"""SELECT a.id account_id, a.filename, a.user_email,
                 a.disabled, a.credential_data, p.subject_ref, p.installation_id, p.mode,
@@ -118,7 +120,7 @@ class AntigravityTelemetryStore:
     async def save_telemetry_identity(self, expected, email):
         """Bind userinfo only to the unchanged credential that supplied it."""
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT credential_data FROM antigravity_credentials WHERE id=? AND filename=? AND disabled=0 AND COALESCE(user_email,'')=''",
                                   (expected["account_id"], expected["filename"])) as cursor:
@@ -134,7 +136,7 @@ class AntigravityTelemetryStore:
         subject = subject_ref(expected)
         if mode != "off" and (not subject or expected["disabled"]):
             raise ValueError("账号身份尚未就绪或账号已停用，暂不能配置遥测")
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute("SELECT id,user_email,disabled,credential_data FROM antigravity_credentials WHERE filename=?",
                                   (os.path.basename(filename),)) as cursor:
@@ -170,7 +172,7 @@ class AntigravityTelemetryStore:
 
     async def record_telemetry_outcome(self, account_id, policy_revision, outcome, status=None):
         self._ensure_initialized()
-        async with aiosqlite.connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path) as db:
             await db.execute("""UPDATE antigravity_telemetry_profiles
                 SET last_outcome=?,last_http_status=?,last_event_at=?
                 WHERE account_id=? AND policy_revision=?""",
