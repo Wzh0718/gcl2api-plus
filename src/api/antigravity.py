@@ -2350,6 +2350,7 @@ async def non_stream_request(
                     f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
                 )
 
+            mark_stage("post_enter")
             response = await post_async(
                 url=target_url,
                 json=final_payload,
@@ -2358,9 +2359,11 @@ async def non_stream_request(
                 transport="antigravity",
                 timeout=300.0
             )
+            mark_stage("post_exit")
             upstream_elapsed = time.monotonic() - attempt_started
             if usage_attempt:
                 await usage_attempt.confirm_response(response)
+            mark_stage("usage_confirmed")
 
             status_code = response.status_code
 
@@ -2401,6 +2404,8 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=time.monotonic() - gateway_started
                     )
+                    mark_stage("credential_saved")
+                    mark_stage("billing_enter")
                     await record_billing_once(True, _safe_response_json(response) if response.content else None, status_code=200)
                     downstream = Response(
                         content=response.content,

@@ -46,7 +46,8 @@ def get_inflight_requests() -> int:
 _STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api_started",
                           "first_upstream_send", "last_upstream_send", "last_upstream_data",
                           "billing_started", "billing_saved", "billing_enter", "recorder_lookup",
-                          "usage_confirmed", "monitor_started", "monitor_finished"})
+                          "post_enter", "post_exit", "usage_confirmed", "credential_saved",
+                          "monitor_started", "monitor_finished"})
 
 
 def mark_stage(name, *, replace=False):
