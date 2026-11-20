@@ -4,7 +4,7 @@ Panel模块 - 整合所有控制面板路由
 
 from fastapi import APIRouter
 
-from . import api_keys, auth, call_monitor, cli_version, creds, config_routes, logs, version, root, billing, proxy_groups, warmup
+from . import api_keys, auth, call_monitor, creds, config_routes, logs, version, root, billing, proxy_groups, warmup
 
 
 def create_router() -> APIRouter:
@@ -26,7 +26,6 @@ def create_router() -> APIRouter:
     router.include_router(warmup.router)
     router.include_router(api_keys.router)
     router.include_router(version.router)
-    router.include_router(cli_version.router)
 
     return router
 
