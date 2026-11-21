@@ -5350,13 +5350,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         SELECT 1 FROM antigravity_account_health h WHERE h.credential_name = ?
                         AND (h.last_403_category IS NOT NULL OR
                              h.eligibility_status IN ('geo_blocked','account_blocked','validation_required','error')
-                             OR h.binding_status IN ('proxy_drift','proxy_failed')))
+                             OR h.binding_status IN ('proxy_drift','proxy_failed'))),
+                        COALESCE(c.transient_error_count, 0)
                     FROM antigravity_credentials c WHERE c.filename = ?
                 """, (filename, filename))
                 if rows:
-                    errors, raw_cooldowns, unhealthy = rows[0]
+                    errors, raw_cooldowns, unhealthy, transient_count = rows[0]
                     cooldowns = json.loads(raw_cooldowns or '{}')
-                    if (errors in (None, '', '[]') and not unhealthy and
+                    if (errors in (None, '', '[]') and not unhealthy and not transient_count and
                             (model_name not in cooldowns or model_name in _active_model_cooldowns(cooldowns, time.time()))):
                         return
             # 成功响应可能在短时间内大量并发到达。这里只允许一个 SQLite
@@ -5420,17 +5421,16 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                               )
                         """, (filename,))
 
-                        # 一次真实成功说明上游 5xx 已经过去：清掉瞬时冷却窗口
-                        # 与累计次数，账号立即回到正常的轮转权重。
+                        # 一次成功只清降权计数，不动冷却窗口。
+                        # 5xx 之后紧接着返回的 200 往往来自冷却前发出的在飞请求，
+                        # 它不能证明上游已恢复；窗口必须走完，否则降温形同虚设。
                         await db.execute("""
                             UPDATE antigravity_credentials
-                            SET transient_hold_until = 0,
-                                transient_error_count = 0,
+                            SET transient_error_count = 0,
                                 transient_error_at = 0,
                                 updated_at = unixepoch()
                             WHERE filename = ?
-                              AND (COALESCE(transient_hold_until, 0) > 0
-                                   OR COALESCE(transient_error_count, 0) > 0)
+                              AND COALESCE(transient_error_count, 0) > 0
                         """, (filename,))
 
                     await db.commit()
