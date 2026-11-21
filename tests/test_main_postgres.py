@@ -391,3 +391,24 @@ async def test_pg_single_select_releases_connection_and_reports_repository_opera
         assert count >= 1 and held_ms >= longest_ms > 0
     async with db.connect('check_transaction_mode') as session:
         assert not session.conn.autocommit
+
+@pytest.mark.asyncio
+async def test_pg_settlement_resets_month_once_with_concurrent_requests(pg_store):
+    service = ApiKeyService(pg_store)
+    created = await service.create_key(name='month rollover')
+    key = (await service.authenticate(created['api_key'])).api_key_id
+    db = pg_store._backend._db_path
+    async with db.connect() as session:
+        await session.execute("UPDATE api_keys SET reset_mode='monthly', quota_used='3.00000000',quota_tokens_used=100,quota_period_start='2026-10-01' WHERE id=?", (key,))
+        await session.commit()
+    async def settle(i):
+        return await pg_store.record_billing_usage(request_id=f'month-{i}', api_key_id=key,
+            billing_date='2026-11-01', credential_name='a', model='m', currency='CNY',
+            input_tokens=1, output_tokens=0, cache_tokens=0, thought_tokens=0, total_tokens=1,
+            input_cost='0.00000001', output_cost='0', cache_cost='0', total_cost='0.00000001',
+            success=False, unknown_usage=True, dedupe_ttl_seconds=600)
+    assert sum(await asyncio.gather(*(settle(i % 4) for i in range(8)))) == 4
+    async with db.connect() as session:
+        assert await session.execute_fetchall('SELECT amount_before,amount_after FROM api_key_quota_events WHERE api_key_id=?', (key,)) == [('3.00000000','0.00000000')]
+        assert await session.execute_fetchall('SELECT quota_used,quota_tokens_used,quota_period_start FROM api_keys WHERE id=?', (key,)) == [('0.00000004',4,'2026-11-01')]
+        assert await session.execute_fetchall('SELECT total_cost,failed_count,unknown_usage_count FROM billing_daily WHERE api_key_id=?',(key,)) == [('0.00000004',4,4)]
