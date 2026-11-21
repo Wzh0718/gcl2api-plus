@@ -97,6 +97,7 @@ class PostgresManager(SQLiteManager):
                 self._sync_key = (main_dsn(), database.schema)
                 open_sync_pool(self._sync_key)
                 self._initialized = True
+                log.info(f"PostgreSQL main pool ready: max_size={database.pool.max_size} per worker")
             except BaseException:
                 await self._claim_pool.close()
                 await database.pool.close()

@@ -81,6 +81,7 @@ services:
 
       # Optional main PostgreSQL store (also supported via service env_file).
       # - MAIN_POSTGRES_DSN=${MAIN_POSTGRES_DSN}
+      # - MAIN_POSTGRES_POOL_MAX_SIZE=${MAIN_POSTGRES_POOL_MAX_SIZE:-100}
       # - MAIN_POSTGRES_SCHEMA=${MAIN_POSTGRES_SCHEMA:-gcli_main}
       # Existing incremental statistics stores keep MODEL_STATS_POSTGRES_DSN.
 
