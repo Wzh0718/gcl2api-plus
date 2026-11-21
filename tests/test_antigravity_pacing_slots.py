@@ -140,6 +140,8 @@ async def test_stream_releases_slot_when_consumer_abandons(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_non_stream_releases_slot(monkeypatch):
+    from src.request_timing import RequestTiming, request_timing
+
     cred = _patch_common(monkeypatch)
 
     async def fake_post(**kwargs):
@@ -147,7 +149,18 @@ async def test_non_stream_releases_slot(monkeypatch):
 
     monkeypatch.setattr(agy, "post_async", fake_post)
 
-    response = await agy.non_stream_request(_body())
+    timing = RequestTiming()
+    token = request_timing.set(timing)
+    try:
+        response = await agy.non_stream_request(_body())
+    finally:
+        request_timing.reset(token)
+    stages = [timing.stages[name] for name in (
+        "api_started", "initial_selection_done", "initial_wrap_start", "initial_wrap_done",
+        "first_slot_acquired", "first_admission_start", "post_enter",
+    )]
+    assert stages == sorted(stages)
+    assert timing.phase_ms["credential_recheck"] >= 0
     assert response.status_code == 200
     assert _inflight(cred[0]) == 0
 
