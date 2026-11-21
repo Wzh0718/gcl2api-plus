@@ -101,7 +101,7 @@ class AntigravityTelemetryStore:
             params = (access_token, access_token)
         else:
             return None
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(f"""SELECT a.id account_id, a.filename, a.user_email,
                 a.disabled, a.credential_data, p.subject_ref, p.installation_id, p.mode,
