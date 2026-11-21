@@ -1194,7 +1194,7 @@ async def get_antigravity_403_recheck_interval() -> int:
 async def get_antigravity_transient_hold_seconds() -> int:
     """上游 5xx 后该账号的就地冷却时长（秒）。
 
-    5xx 是服务端瞬时错误，只冷却、不封号；默认 10 分钟，窗口内由其他账号接单。
+    500/502 使用配置时长，503 按连续失败窗口从 15 秒逐级退避至此上限（默认 600 秒）。
     """
     env_value = os.getenv("ANTIGRAVITY_TRANSIENT_HOLD_SECONDS")
     if env_value:

@@ -126,7 +126,7 @@ async def handle_error_with_retry(
     if mode == "antigravity" and status_code == 400:
         return False
 
-    # 上游 5xx 是服务端瞬时错误，不构成账号证据：就地冷却该账号（默认 600s），
+    # 上游 5xx 触发账号冷却；503 按连续失败窗口退避，其余使用配置时长。
     # 本次请求换号重试。放在自动封禁之前，保证配置里残留 500/502/503 也不生效。
     if mode == "antigravity" and status_code in (500, 502, 503):
         # Give a single-account pool one retry before imposing the local hold.

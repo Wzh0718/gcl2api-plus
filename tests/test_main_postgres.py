@@ -583,3 +583,53 @@ async def test_pg_geminicli_success_clears_only_its_model(pg_store):
     assert row[:2] == ("[]", "{}")
     assert json.loads(row[2]) == {"other": 9999999999}
     assert row[3] > 0
+
+
+async def test_pg_503_backoff_coalesces_parallel_failures_and_resets(pg_store):
+    import time
+
+    name = "backoff.json"
+    await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    backend = pg_store._backend
+    for seconds in (15, 30, 45, 45):
+        start = time.time()
+        deadlines = await asyncio.gather(*(
+            backend.hold_antigravity_transient(name, 45, 503) for _ in range(4)
+        ))
+        assert max(deadlines) == min(deadlines)
+        assert deadlines[0] - start == pytest.approx(seconds, abs=2)
+        async with backend._db_path.connect() as conn:
+            await conn.execute("UPDATE antigravity_credentials SET transient_hold_until=0 WHERE filename=?", (name,))
+            await conn.commit()
+    await backend.record_success(name, "m", "antigravity")
+    assert await backend.hold_antigravity_transient(name, 45, 503) - time.time() == pytest.approx(15, abs=2)
+
+
+@pytest.mark.parametrize("status", ["error", "geo_blocked"])
+async def test_pg_skips_recent_exclusive_probe_failure_then_rechecks(pg_store, status):
+    import time
+
+    backend = pg_store._backend
+    for name in ("probe.json", "ready.json"):
+        await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    async with backend._db_path.connect() as db:
+        [(group,)] = await db.execute_fetchall("INSERT INTO proxy_groups (name,exclusive_assignment) VALUES ('probe',1) RETURNING id")
+        [(node,)] = await db.execute_fetchall(
+            "INSERT INTO proxy_group_nodes (group_id,proxy_url) VALUES (?,?) RETURNING id",
+            (group, "http://example.invalid:3128"),
+        )
+        await db.execute("UPDATE antigravity_credentials SET proxy_mode='group',proxy_group_id=?,bound_proxy_node_id=? WHERE filename='probe.json'", (group, node))
+        await db.execute("INSERT INTO antigravity_account_health (credential_name, eligibility_status,eligibility_checked_at) VALUES ('probe.json',?,?)", (status,time.time()))
+        await db.commit()
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    states = await backend.get_all_credential_states("antigravity")
+    assert rank_antigravity_image_candidates(states, model_name="m") == ["ready.json"]
+    for _ in range(3):
+        picked = await backend.get_next_available_credential("antigravity", "m")
+        assert picked[0] == "ready.json"
+    async with backend._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_account_health SET eligibility_checked_at=? WHERE credential_name='probe.json'", (time.time()-61,))
+        await db.commit()
+    picked = await backend.get_next_available_credential("antigravity", "m")
+    assert picked[0] == "probe.json"

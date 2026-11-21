@@ -91,6 +91,8 @@ def rank_antigravity_image_candidates(
             continue
         if state.get("warmup_status") in {"paused", "account_forbidden"}:
             continue
+        if max(state.get("transient_hold_until") or 0, state.get("probe_retry_at") or 0) > current_time:
+            continue
         cooldowns = state.get("model_cooldowns") or {}
         cooldown_until = cooldowns.get(model_name)
         if isinstance(cooldown_until, (int, float)) and cooldown_until > current_time:
@@ -502,7 +504,7 @@ class CredentialManager:
         from .antigravity_account_health import account_health_has_negative_evidence
         from .antigravity_account_health import account_health_is_fresh_eligible
 
-        from src.storage.sqlite_manager import SelectedAntigravityCredential
+        from src.storage.sqlite_manager import EXCLUSIVE_PROBE_RETRY_SECONDS, SelectedAntigravityCredential
 
         selected = isinstance(credential_data, SelectedAntigravityCredential) and credential_data.filename == credential_name
         if selected:
@@ -531,6 +533,8 @@ class CredentialManager:
         if health is None:
             health = await self._storage_adapter.get_antigravity_account_health(credential_name)
         ttl_seconds = await get_antigravity_network_check_ttl_seconds()
+        if exclusive and health.get("eligibility_status") in {"geo_blocked", "error"}:
+            ttl_seconds = min(ttl_seconds, EXCLUSIVE_PROBE_RETRY_SECONDS)
         if not force and account_health_check_is_fresh(
             health, ttl_seconds=ttl_seconds
         ):

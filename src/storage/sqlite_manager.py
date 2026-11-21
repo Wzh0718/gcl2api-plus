@@ -33,6 +33,7 @@ from src.storage.refresh_import_queue import RefreshImportQueue
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
+EXCLUSIVE_PROBE_RETRY_SECONDS = 60
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -1387,6 +1388,20 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                   AND w.status IN ('paused', 'account_forbidden')
             )
             AND COALESCE(transient_hold_until, 0) <= ?"""
+        # The exclusive gate would reject these recent results after claiming.
+        # Leave other accounts all their selection attempts; recheck this route
+        # after a short interval even when the success TTL is much longer.
+        where_sql += """ AND NOT EXISTS (
+            SELECT 1 FROM antigravity_account_health h
+            WHERE h.credential_name = antigravity_credentials.filename
+              AND h.eligibility_status IN ('geo_blocked','error')
+              AND h.eligibility_checked_at BETWEEN ? AND ?
+              AND (fixed_proxy_ip IS NOT NULL OR EXISTS (
+                SELECT 1 FROM proxy_groups g WHERE g.id = proxy_group_id
+                  AND g.exclusive_assignment = 1
+              ))
+        )"""
+        params.extend((current_time - EXCLUSIVE_PROBE_RETRY_SECONDS, current_time))
         if credential_name:
             where_sql += " AND filename = ?"
             params.append(credential_name)
@@ -4760,8 +4775,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
                                c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
-                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at
+                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at,
+                               c.transient_hold_until,
+                               CASE WHEN (c.fixed_proxy_ip IS NOT NULL OR g.exclusive_assignment = 1)
+                                    AND h.eligibility_status IN ('geo_blocked','error')
+                                    THEN h.eligibility_checked_at + {EXCLUSIVE_PROBE_RETRY_SECONDS} END
                         FROM {table_name} c
+                        LEFT JOIN proxy_groups g ON g.id = c.proxy_group_id
+                        LEFT JOIN antigravity_account_health h ON h.credential_name = c.filename
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
                     """) as cursor:
@@ -4794,6 +4815,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
                                 "usage_resume_at": row[14],
+                                "transient_hold_until": row[15],
+                                "probe_retry_at": row[16],
                                 "routing_turn": max(int(row[13] or 0), 0),
                                 "routing_count": (
                                     max(int(row[12] or 0), 0)
@@ -5488,16 +5511,38 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         hold_until = now + max(float(seconds or 0), 0.0)
         try:
             async with sqlite_connect(self._db_path) as db:
-                await db.execute("""
-                    UPDATE antigravity_credentials
-                    SET transient_hold_until = CASE
-                            WHEN COALESCE(transient_hold_until, 0) > ? THEN transient_hold_until
-                            ELSE ? END,
-                        transient_error_count = COALESCE(transient_error_count, 0) + 1,
-                        transient_error_at = ?,
-                        updated_at = ?
-                    WHERE filename = ?
-                """, (hold_until, hold_until, now, now, filename))
+                if status_code == 503:
+                    # The UPDATE holds the account row lock. In-flight failures
+                    # from the same hold window do not advance the staircase.
+                    cap = max(float(seconds or 0), 0.0)
+                    delays = [min(delay, cap) for delay in (15, 30, 60, 120, 240, 480)]
+                    async with db.execute("""
+                        UPDATE antigravity_credentials
+                        SET transient_hold_until = CASE WHEN transient_hold_until > ? THEN transient_hold_until
+                            ELSE ? + CASE transient_error_count
+                                WHEN 0 THEN ? WHEN 1 THEN ? WHEN 2 THEN ?
+                                WHEN 3 THEN ? WHEN 4 THEN ? WHEN 5 THEN ? ELSE ? END END,
+                            transient_error_count = transient_error_count +
+                                CASE WHEN transient_hold_until > ? THEN 0 ELSE 1 END,
+                            transient_error_at = ?, updated_at = ?
+                        WHERE filename = ?
+                        RETURNING transient_hold_until
+                    """, (now, now, *delays, cap, now, now, now, filename)) as cursor:
+                        row = await cursor.fetchone()
+                        if row is None:
+                            return 0.0
+                        hold_until = row[0]
+                else:
+                    await db.execute("""
+                        UPDATE antigravity_credentials
+                        SET transient_hold_until = CASE
+                                WHEN COALESCE(transient_hold_until, 0) > ? THEN transient_hold_until
+                                ELSE ? END,
+                            transient_error_count = COALESCE(transient_error_count, 0) + 1,
+                            transient_error_at = ?,
+                            updated_at = ?
+                        WHERE filename = ?
+                    """, (hold_until, hold_until, now, now, filename))
                 await db.commit()
             log.warning(
                 f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "

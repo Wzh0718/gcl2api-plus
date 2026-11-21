@@ -19,6 +19,7 @@ from src.operational_audit import emit as audit
 
 SUCCESS_TTL = 1800.0
 FAILURE_TTL = 300.0
+READ_ERROR_TTL = 60.0
 # A single transient 429 must not freeze every probe for the whole provider:
 # batch imports and health checks share this state, and a 5 minute hold turned
 # one throttled node into "no free egress IP" for the entire batch.
@@ -149,6 +150,8 @@ async def observe_egress(url, proxy_url, fetch, parse):
             result = Observation(status=0, error_type=type(exc).__name__)
         if result.status == 200:
             ttl = SUCCESS_TTL
+        elif result.error_type in {"ReadError", "ReadTimeout"}:
+            ttl = READ_ERROR_TTL
         elif result.status == 429:
             # The throttle window is short; retry the same route once it passes.
             ttl = RATE_LIMIT_TTL

@@ -219,6 +219,21 @@ class AntigravityNetworkCheckTests(unittest.IsolatedAsyncioTestCase):
             ("203.0.113.9", None),
         )
 
+    async def test_ip_echo_read_failure_is_inconclusive(self):
+        import httpx
+        from src.antigravity_account_health import check_antigravity_account_health
+
+        storage = _FakeHealthStorage()
+        with patch("src.antigravity_account_health.get_async", AsyncMock(side_effect=httpx.ReadError("echo"))):
+            result = await check_antigravity_account_health(
+                storage=storage, credential_name="account.json", access_token="test",
+                network={"proxy_mode": "group", "proxy_url": "http://proxy.example:8080"},
+                ip_check_url="https://echo.example", api_base_url="https://upstream.example",
+            )
+        self.assertEqual(result["binding_status"], "unchecked")
+        self.assertEqual(result["eligibility_status"], "error")
+        self.assertIn("ReadError", result["eligibility_reason"])
+
     async def test_check_uses_bound_proxy_for_ip_and_eligibility(self):
         from src.antigravity_account_health import check_antigravity_account_health
 
