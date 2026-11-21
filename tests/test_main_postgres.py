@@ -451,3 +451,112 @@ async def test_pg_batch_skips_cancelled_waiters_and_keeps_filter_groups_separate
         assert await db.execute_fetchall(
             "SELECT call_count FROM antigravity_credentials ORDER BY filename"
         ) == [(1,), (1,)]
+
+
+async def test_pg_success_isolated_by_account_and_rechecks_cooldown(pg_store):
+    import time
+    from src.request_timing import RequestTiming, request_timing
+
+    backend = pg_store._backend
+    db = backend._db_path
+    for name in ("a.json", "b.json"):
+        assert await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    active_until = time.time() + 600
+    async with db.connect() as setup:
+        await setup.execute("""UPDATE antigravity_credentials SET error_codes='[429]',
+            model_cooldowns='{"m":1}', transient_error_count=2, transient_hold_until=?""", (active_until,))
+        await setup.execute("""INSERT INTO antigravity_account_health (credential_name,binding_status)
+            VALUES ('a.json','proxy_drift'), ('b.json','proxy_failed')""")
+        await setup.commit()
+
+    async with db.connect() as blocking:
+        await blocking.execute("UPDATE antigravity_credentials SET model_cooldowns=? WHERE filename='a.json'",
+                               (json.dumps({"m": active_until}),))
+        pid = (await blocking.execute_fetchall("SELECT pg_backend_pid()"))[0][0]
+        state = RequestTiming()
+        token = request_timing.set(state)
+        try:
+            first = asyncio.create_task(backend.record_success("a.json", "m", "antigravity"))
+        finally:
+            request_timing.reset(token)
+        try:
+            async with asyncio.timeout(3):
+                while True:
+                    (blocked,) = await db.single_row(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE %s=ANY(pg_blocking_pids(pid)))",
+                        (pid,), operation="test_blocker",
+                    )
+                    if blocked:
+                        break
+                    await asyncio.sleep(.01)
+            await asyncio.wait_for(backend.record_success("b.json", "m", "antigravity"), 2)
+            assert not first.done()
+        finally:
+            await blocking.commit()
+            await first
+    async with db.connect() as session:
+        rows = await session.execute_fetchall("""SELECT filename,error_codes,model_cooldowns,
+            transient_error_count,transient_hold_until,binding_status,eligibility_status
+            FROM antigravity_credentials JOIN antigravity_account_health ON filename=credential_name
+            ORDER BY filename""")
+    assert [(r[0],r[1],json.loads(r[2]),*r[3:]) for r in rows] == [
+        ("a.json","[]",{"m": active_until},0,active_until,"healthy","eligible"),
+        ("b.json","[]",{},0,active_until,"healthy","eligible"),
+    ]
+    assert state.phase_ms["success_lock_wait"] > 0
+
+
+async def test_pg_readiness_uses_only_current_claim_evidence(pg_store, monkeypatch):
+    import time
+    from unittest.mock import AsyncMock
+    from src.credential_manager import CredentialManager
+
+    backend = pg_store._backend
+    name = "test.json"
+    assert await pg_store.store_credential(name, {"access_token": "t"}, mode="antigravity")
+    async with backend._db_path.connect() as db:
+        await db.execute("""INSERT INTO antigravity_account_health
+            (credential_name,binding_status,eligibility_status,eligibility_checked_at)
+            VALUES (?,'healthy','eligible',?)""", (name,time.time()))
+        [(group,)] = await db.execute_fetchall("INSERT INTO proxy_groups (name) VALUES ('test') RETURNING id")
+        [(node,)] = await db.execute_fetchall(
+            "INSERT INTO proxy_group_nodes (group_id,proxy_url) VALUES (?,?) RETURNING id",
+            (group, "http://example.invalid:3128"),
+        )
+        await db.execute("""UPDATE antigravity_credentials SET proxy_mode='group',proxy_group_id=?,
+            bound_proxy_node_id=? WHERE filename=?""", (group,node,name))
+        await db.commit()
+    manager = CredentialManager()
+    manager._storage_adapter = pg_store
+    monkeypatch.setattr(manager, "_ensure_initialized", AsyncMock())
+    monkeypatch.setattr("config.get_antigravity_network_check_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr("config.get_antigravity_network_check_ttl_seconds", AsyncMock(return_value=600))
+    monkeypatch.setattr(pg_store, "resolve_credential_network", AsyncMock(side_effect=AssertionError("duplicate lookup")))
+    monkeypatch.setattr(pg_store, "get_antigravity_account_health", AsyncMock(side_effect=AssertionError("duplicate lookup")))
+    _, data = await backend.get_next_available_credential("antigravity","m")
+    ready = await manager.ensure_antigravity_account_ready(name, data)
+    assert ready["access_token"] == "t"
+    assert ready["proxy_url"] == "http://example.invalid:3128"
+    assert ready["proxy_node_id"] == node
+    async with backend._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_account_health SET binding_status='proxy_drift' WHERE credential_name=?", (name,))
+        await db.commit()
+    _, data = await backend.get_next_available_credential("antigravity","m")
+    assert await manager.ensure_antigravity_account_ready(name,data) is None
+
+
+async def test_pg_geminicli_success_clears_only_its_model(pg_store):
+    backend = pg_store._backend
+    assert await pg_store.store_credential("gem.json", {"project_id": "test"}, mode="geminicli")
+    async with backend._db_path.connect() as db:
+        await db.execute("""UPDATE credentials SET error_codes='[403]', error_messages='{"m":"failed"}',
+            model_cooldowns='{"m":9999999999,"other":9999999999}' WHERE filename='gem.json'""")
+        await db.commit()
+    await backend.record_success("gem.json", "m")
+    async with backend._db_path.connect() as db:
+        (row,) = await db.execute_fetchall(
+            "SELECT error_codes,error_messages,model_cooldowns,last_success FROM credentials WHERE filename='gem.json'"
+        )
+    assert row[:2] == ("[]", "{}")
+    assert json.loads(row[2]) == {"other": 9999999999}
+    assert row[3] > 0
