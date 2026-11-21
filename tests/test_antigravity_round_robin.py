@@ -194,3 +194,22 @@ async def test_post_claim_work_does_not_hold_the_selection_lock(manager, monkeyp
     finally:
         release.set()
         assert await pending == NAMES[0]
+
+
+@pytest.mark.asyncio
+async def test_claim_timeout_preserves_turn_and_next_claim_succeeds(manager, monkeypatch):
+    import sqlite3
+    from src.storage import sqlite_manager
+
+    monkeypatch.setattr(sqlite_manager, "BUSY_TIMEOUT_MS", 35)
+    async with aiosqlite.connect(manager._db_path) as writer:
+        await writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError) as error:
+            await asyncio.wait_for(asyncio.to_thread(
+                manager._claim_antigravity_row, None, set(), NAMES[0]
+            ), timeout=2)
+        assert error.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        await writer.rollback()
+    assert await select(manager, credential_name=NAMES[0]) == NAMES[0]
+    states = await manager.get_all_credential_states(mode="antigravity")
+    assert states[NAMES[0]]["call_count"] == 1
