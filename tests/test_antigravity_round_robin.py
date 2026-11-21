@@ -171,3 +171,26 @@ async def test_image_ranking_and_atomic_mark_advance_the_same_persistent_rotatio
     assert Counter(selected) == dict.fromkeys(NAMES, 3)
     states = await manager.get_all_credential_states(mode="antigravity")
     assert all("routing_turn" in state for state in states.values())
+
+
+@pytest.mark.asyncio
+async def test_post_claim_work_does_not_hold_the_selection_lock(manager, monkeypatch):
+    group = await manager.create_proxy_group(name="test-group")
+    await manager.import_proxy_group_nodes(group["id"], [{"proxy_url": "http://local.example:8080"}])
+    await manager.update_credential_network(NAMES[0], proxy_mode="group", proxy_group_id=group["id"])
+    original = manager.resolve_credential_network
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held_resolution(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "resolve_credential_network", held_resolution)
+    pending = asyncio.create_task(select(manager, credential_name=NAMES[0]))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert await asyncio.wait_for(select(manager, credential_name=NAMES[1]), 2) == NAMES[1]
+    finally:
+        release.set()
+        assert await pending == NAMES[0]
