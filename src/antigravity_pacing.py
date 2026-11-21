@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Dict
 
 from log import log
+from src.request_timing import database_timing_scope, measure_phase
 
 _LOCKS: Dict[str, asyncio.Lock] = {}
 _NEXT_FREE: Dict[str, float] = {}
@@ -197,7 +198,8 @@ async def acquire_credential_slot(credential_name: str) -> float:
     # 全池闸门先于账号闸门：极端负载下先在闸前排队吸收，排不下才快速失败，
     # 并带上按令牌补充速度算出的 Retry-After（而不是恒为 1 秒的热重试）。
     try:
-        await fleet_acquire()
+        with measure_phase("slot_fleet"):
+            await fleet_acquire()
     except FleetTimeout as exc:
         error = CredentialSlotWaitTimeout(credential_name)
         from src.rate_limits import RateLimit
@@ -206,7 +208,12 @@ async def acquire_credential_slot(credential_name: str) -> float:
         error.retry_after = exc.retry_after
         raise error from None
 
-    warmup = await acquire_dynamic_warmup_slot(credential_name)
+    try:
+        with measure_phase("slot_warmup"), database_timing_scope("slot_warmup"):
+            warmup = await acquire_dynamic_warmup_slot(credential_name)
+    except BaseException:
+        fleet_release()
+        raise
     if not warmup.get("acquired"):
         fleet_release()
         raise CredentialSlotWaitTimeout(credential_name, warmup=True)
@@ -243,7 +250,8 @@ async def acquire_credential_slot(credential_name: str) -> float:
             if slot.inflight < slot.limit:
                 continue
             try:
-                await asyncio.wait_for(slot.wakeup.wait(), remaining)
+                with measure_phase("slot_account_wait"):
+                    await asyncio.wait_for(slot.wakeup.wait(), remaining)
             except asyncio.TimeoutError:
                 continue
 

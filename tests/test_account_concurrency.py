@@ -127,3 +127,16 @@ async def test_concurrency_api_persists_and_validates_limits(tmp_path, monkeypat
     assert await reopened.get_config('antigravity_account_concurrency:a.json') == {
         'request_concurrency': None, 'image_task_concurrency': 3,
     }
+
+@pytest.mark.asyncio
+async def test_cancel_during_warmup_returns_fleet_permit(monkeypatch):
+    from unittest.mock import Mock
+    from src import antigravity_dynamic_warmup as warmup, antigravity_fleet_gate as fleet
+
+    monkeypatch.setattr(fleet, 'acquire', AsyncMock())
+    release = Mock()
+    monkeypatch.setattr(fleet, 'release', release)
+    monkeypatch.setattr(warmup, 'acquire_dynamic_warmup_slot', AsyncMock(side_effect=asyncio.CancelledError))
+    with pytest.raises(asyncio.CancelledError):
+        await pacing.acquire_credential_slot('a.json')
+    release.assert_called_once_with()

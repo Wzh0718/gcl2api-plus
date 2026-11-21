@@ -34,7 +34,7 @@ class AntigravityWarmupStore:
     async def get_antigravity_warmup(self, filename: str) -> Dict[str, Any]:
         self._ensure_initialized()
         filename = os.path.basename(filename)
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
                 """SELECT status, level, success_count, window_started_at,
                           next_start_at, config_json
