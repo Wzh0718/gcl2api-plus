@@ -60,7 +60,6 @@ PROXY_NODE_FAILURE_COOLDOWN_SECONDS = 300
 # 避免组游标立刻把同一个 IP 又发回来。
 REGION_REJECTED_NODE_COOLDOWN_SECONDS = 600
 # 一次请求内同一账号最多换几次 IP；覆盖「连续几个节点都不在可用地区」的情况。
-REGION_REBIND_ATTEMPTS = 2
 
 # 判定为「节点不可达」的错误特征（SOCKS/连接层错误，非 HTTP 状态错误）
 _PROXY_CONNECT_ERROR_MARKERS = (
@@ -604,18 +603,6 @@ class CredentialManager:
             credential_data,
             network=network, current_health=health,
         )
-        if exclusive and result.get("eligibility_status") == "geo_blocked":
-            # The rejection is IP-specific and the binding itself is fine:
-            # keep the account and move it to another free node in its group.
-            rotated = await self.rotate_antigravity_egress(
-                credential_name, attempts=REGION_REBIND_ATTEMPTS, verify=True
-            )
-            if rotated is not None:
-                result = rotated
-                network = await self._storage_adapter.resolve_credential_network(
-                    credential_name, mode="antigravity"
-                ) or network
-                credential_data.update(network)
         if exclusive and not usable_exclusive_route(result):
             log.warning(
                 "[ANTIGRAVITY HEALTH] exclusive account failed strict fresh gate: "
@@ -719,21 +706,9 @@ class CredentialManager:
         self,
         credential_name: str,
         *,
-        attempts: int = 1,
-        verify: bool = False,
         cooldown_seconds: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """地区资格拒绝：把同一账号换到组内另一个空闲出口 IP。
-
-        上游明确返回 ``UNSUPPORTED_LOCATION`` / ``LOCATION_RESTRICTED`` 时，
-        代理绑定本身是正常的，结论只针对当前出口 IP。因此账号继续参与调度，
-        只换节点：旧节点计入冷却（避免组游标立刻发回同一个 IP），新节点由
-        组的空闲节点选择逻辑分配，账号原有的健康结论一并清空。
-
-        ``verify=True`` 用于请求前的健康检查路径：换完节点后重新探测资格，
-        只有新 IP 仍然被地区拒绝时才继续换，最多 ``attempts`` 次。
-        返回换绑后的健康快照；账号不是组绑定、或组内没有空闲节点时返回 None。
-        """
+        """Repair a failed group proxy binding using a free replacement node."""
         await self._ensure_initialized()
         network = await self._storage_adapter.get_credential_network(
             credential_name, mode="antigravity"
@@ -749,70 +724,29 @@ class CredentialManager:
             if cooldown_seconds is None
             else max(int(cooldown_seconds), 0)
         )
-        last_health: Optional[Dict[str, Any]] = None
-        for _ in range(max(int(attempts), 1)):
-            try:
-                rotated = await self._storage_adapter.invalidate_antigravity_proxy_binding(
-                    credential_name,
-                    cooldown_seconds=cooldown,
-                    require_replacement=True,
-                )
-            except Exception as exc:  # noqa: BLE001 - a failed rebind keeps the caller's retry path
-                log.warning(
-                    "[ANTIGRAVITY REGION] rebind failed: "
-                    f"credential={credential_name}, error={type(exc).__name__}: {exc}"
-                )
-                return None
-            if not rotated:
-                if not network.get("bound_proxy_node_id"):
-                    # Nothing to cool: the account has no node yet. Assign one
-                    # from the group instead of parking it on a rejected route.
-                    assigned = await self._storage_adapter.resolve_credential_network(
-                        credential_name, mode="antigravity"
-                    )
-                    if assigned and assigned.get("proxy_url"):
-                        log.warning(
-                            "[ANTIGRAVITY REGION] bound a fresh node for unbound "
-                            f"account: credential={credential_name}"
-                        )
-                        if not verify:
-                            return await self._storage_adapter.get_antigravity_account_health(
-                                credential_name
-                            )
-                        last_health = await self.check_antigravity_account_health(
-                            credential_name
-                        )
-                        if last_health.get("eligibility_status") != "geo_blocked":
-                            return last_health
-                        continue
-                log.warning(
-                    "[ANTIGRAVITY REGION] no free node in group: "
-                    f"credential={credential_name}"
-                )
-                return None
-            log.warning(
-                "[ANTIGRAVITY REGION] location rejection; rotated egress: "
-                f"credential={credential_name}, group={network.get('proxy_group_id')}"
+        try:
+            rotated = await self._storage_adapter.invalidate_antigravity_proxy_binding(
+                credential_name,
+                cooldown_seconds=cooldown,
+                require_replacement=True,
             )
-            if not verify:
-                return await self._storage_adapter.get_antigravity_account_health(
-                    credential_name
-                )
-            try:
-                last_health = await self.check_antigravity_account_health(
-                    credential_name
-                )
-            except Exception as exc:  # noqa: BLE001 - the request path re-validates
-                log.warning(
-                    "[ANTIGRAVITY REGION] post-rotation check failed: "
-                    f"credential={credential_name}, error={type(exc).__name__}"
-                )
-                return await self._storage_adapter.get_antigravity_account_health(
-                    credential_name
-                )
-            if last_health.get("eligibility_status") != "geo_blocked":
-                return last_health
-        return last_health
+        except Exception as exc:  # noqa: BLE001 - a failed rebind keeps the caller's retry path
+            log.warning(
+                "[ANTIGRAVITY REGION] rebind failed: "
+                f"credential={credential_name}, error={type(exc).__name__}: {exc}"
+            )
+            return None
+        if not rotated:
+            log.warning(
+                "[ANTIGRAVITY REGION] no free node in group: "
+                f"credential={credential_name}"
+            )
+            return None
+        log.warning(
+            "[ANTIGRAVITY REGION] repaired failed proxy binding: "
+            f"credential={credential_name}, group={network.get('proxy_group_id')}"
+        )
+        return await self._storage_adapter.get_antigravity_account_health(credential_name)
 
     async def reload_antigravity_credential(
         self, credential_name: str

@@ -20,6 +20,7 @@ _LOCATION_MARKERS = (
     "not currently available in your location",
     "not available in your location",
     "unsupported location",
+    "location is not supported",
     "unsupported country",
     "region is not supported",
     "country is not supported",
@@ -104,6 +105,9 @@ def classify_antigravity_403(
             tos_violation=True,
         )
 
+    if _contains_any(normalized, _LOCATION_MARKERS):
+        return Antigravity403Decision(category="geo_blocked")
+
     if binding_status in {"proxy_drift", "proxy_failed"}:
         return Antigravity403Decision(
             category=binding_status,
@@ -118,13 +122,6 @@ def classify_antigravity_403(
             cooldown_model=True,
         )
 
-    if _contains_any(normalized, _LOCATION_MARKERS):
-        return Antigravity403Decision(
-            category="geo_blocked",
-            invalidate_binding=True,
-            retry_after_rebind=True,
-        )
-
     if _contains_any(normalized, _MODEL_MARKERS) or (
         "model " in normalized
         and any(word in normalized for word in ("not available", "not permitted"))
@@ -136,11 +133,7 @@ def classify_antigravity_403(
 
     # 缓存的地区结论只能补充模糊 403，不能覆盖本次响应里更具体的模型证据。
     if eligibility_status == "geo_blocked":
-        return Antigravity403Decision(
-            category="geo_blocked",
-            invalidate_binding=True,
-            retry_after_rebind=True,
-        )
+        return Antigravity403Decision(category="geo_blocked")
 
     health_confirmed = (
         binding_status == "healthy" and eligibility_status == "eligible"
