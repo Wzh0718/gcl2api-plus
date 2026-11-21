@@ -8,6 +8,7 @@ import os
 import sqlite3
 from contextlib import closing
 import time
+from time import monotonic, sleep
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,7 +18,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from src.request_timing import measured_db_lock
-from src.storage.sqlite_pragmas import apply_sync_pragmas, connect as sqlite_connect
+from src.storage.sqlite_pragmas import BUSY_TIMEOUT_MS, apply_sync_pragmas, connect as sqlite_connect
 
 from log import log
 from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
@@ -1342,7 +1343,19 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
         with closing(sqlite3.connect(self._db_path, isolation_level=None)) as db:
             apply_sync_pragmas(db)
-            db.execute("BEGIN IMMEDIATE")
+            # A single claimant per manager competes with unrelated SQLite writers.
+            # Long SQLite busy-handler sleeps leave the whole FIFO stalled.
+            deadline = monotonic() + BUSY_TIMEOUT_MS / 1000
+            db.execute("PRAGMA busy_timeout=2")
+            while True:
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or monotonic() >= deadline:
+                        raise
+                    sleep(0.001)
+            db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             row = db.execute(f"""
                 SELECT filename, credential_data, model_cooldowns,
                        enable_credit, proxy_mode, proxy_url,
