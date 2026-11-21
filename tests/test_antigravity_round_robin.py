@@ -213,3 +213,18 @@ async def test_claim_timeout_preserves_turn_and_next_claim_succeeds(manager, mon
     assert await select(manager, credential_name=NAMES[0]) == NAMES[0]
     states = await manager.get_all_credential_states(mode="antigravity")
     assert states[NAMES[0]]["call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unchanged_group_binding_can_be_read_while_another_writer_is_active(manager):
+    group = await manager.create_proxy_group(name="group")
+    await manager.import_proxy_group_nodes(group["id"], [{"proxy_url": "http://local.example:8080"}])
+    await manager.update_credential_network(NAMES[0], proxy_mode="group", proxy_group_id=group["id"])
+    bound = await manager.resolve_credential_network(NAMES[0])
+    assert bound["proxy_url"]
+    async with aiosqlite.connect(manager._db_path) as writer:
+        await writer.execute("BEGIN IMMEDIATE")
+        current = await asyncio.wait_for(manager.resolve_credential_network(NAMES[0]), 1)
+        assert current["proxy_node_id"] == bound["proxy_node_id"]
+        assert current["proxy_url"] == bound["proxy_url"]
+        await writer.rollback()

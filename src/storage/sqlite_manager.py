@@ -1747,7 +1747,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                           COALESCE(g.enabled = 1 AND n.enabled = 1 AND n.group_id = a.proxy_group_id
                             AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
                             AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), 0),
-                          a.fixed_proxy_ip
+                          a.fixed_proxy_ip, n.expires_at
                    FROM antigravity_credentials a
                    LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                    LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
@@ -1772,6 +1772,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "exclusive_assignment": bool(row[6]),
             "bound_proxy_available": bool(row[7]),
             "fixed_proxy_ip": row[8],
+            "bound_proxy_expires_at": row[9],
         }
 
     async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
@@ -1790,6 +1791,19 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 "proxy_node_name": network["bound_proxy_node_name"] if available else None,
             }
         if network["proxy_mode"] == "group" and network.get("proxy_group_id"):
+            expires_at = network.get("bound_proxy_expires_at")
+            if network.get("bound_proxy_available") and (
+                expires_at is None or expires_at > time.time() + PROXY_EXPIRY_LEAD_SECONDS
+            ):
+                # The joined snapshot already establishes that this binding can
+                # be reused. Take the writer lock only when a change is possible.
+                return {
+                    **network,
+                    "proxy_url": network["bound_proxy_url"],
+                    "proxy_node_id": network["bound_proxy_node_id"],
+                    "proxy_node_name": network["bound_proxy_node_name"],
+                    "proxy_expires_at": expires_at,
+                }
             async with sqlite_connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(
