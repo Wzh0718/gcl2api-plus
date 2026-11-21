@@ -258,5 +258,6 @@ class PostgresDatabase:
                 await conn.set_autocommit(False)
 
     async def execute_fetchall(self, query, values=()):
-        async with self.connect("execute_fetchall") as db:
+        # The success-state reader issues a single SELECT per checkout.
+        async with self.connect("execute_fetchall", single_select=True) as db:
             return await db.execute_fetchall(query, values)

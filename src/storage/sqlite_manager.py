@@ -3003,7 +3003,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, api_key_id: str, *, include_secret: bool = False
     ) -> Optional[Dict[str, Any]]:
         self._ensure_initialized()
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
                 f"SELECT {', '.join(self.API_KEY_COLUMNS)} FROM api_keys WHERE id = ?",
                 (api_key_id,),
@@ -4596,7 +4596,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with sqlite_connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path, single_select=True) as db:
                 # 精确匹配
                 if mode == "geminicli":
                     async with db.execute(f"""
