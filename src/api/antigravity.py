@@ -78,6 +78,12 @@ from src.dingtalk_alert import (
 
 SESSION_TTL_SECONDS = 6 * 60 * 60
 MAX_SESSION_STATES = 1024
+# 无显式 sessionId 时的会话复用：同一「账号 × 调用方 × 模型 × 时间桶」共享一条
+# trajectory，让 request_step 自然递增（真实客户端不会 100% 停在 step=1）。
+# 比例由 ANTIGRAVITY_SESSION_REUSE_RATIO 控制，0 = 完全保持旧行为。
+SESSION_REUSE_BUCKET_SECONDS = 900
+SESSION_MAX_STEPS = 30
+_MAX_SESSION_LOCKS = 4096
 IMAGE_MODEL_CACHE_TTL_SECONDS = 5 * 60
 MAX_IMAGE_MODEL_CACHE_ENTRIES = 128
 IMAGE_MODEL_CAPACITY_MARKER = "MODEL_CAPACITY_EXHAUSTED"
@@ -182,17 +188,38 @@ def _session_key(
     request_payload: Dict[str, Any],
     model: str = "",
     credential_key: Optional[str] = None,
+    *,
+    reuse_ratio: float = 0.0,
+    bucket_seconds: int = SESSION_REUSE_BUCKET_SECONDS,
 ) -> str:
-    # sessionId is the existing explicit continuation contract. Without it,
-    # identical text is not evidence that two requests belong to one conversation.
+    """Resolve the upstream conversation key.
+
+    ``sessionId`` is the explicit continuation contract and always wins.
+    Without it, identical text is still not evidence that two requests belong
+    to one conversation — but a caller that never sends ``sessionId`` produces
+    ``request_step == 1`` forever, which no real client does. So a fraction of
+    uncorrelated traffic (``reuse_ratio``) is bucketed by
+    account × caller × model × time window and shares one trajectory.
+    """
     from src.claude_routing import current_api_key_id
 
     session_id = request_payload.get("sessionId")
-    identity = [credential_key or "", current_api_key_id(), model, str(session_id)]
-    if not session_id:
+    if session_id:
+        identity = [credential_key or "", current_api_key_id(), model, str(session_id)]
+        digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+        return f"explicit:v2:{digest}"
+
+    # 未开启复用：保持旧行为（一次请求一条 trajectory）。
+    if reuse_ratio <= 0:
         return "request:" + uuid.uuid4().hex
+
+    bucket = int(time.time() // max(int(bucket_seconds), 60))
+    identity = [credential_key or "", current_api_key_id(), model, str(bucket)]
     digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
-    return f"explicit:v2:{digest}"
+    # 按稳定哈希决定本次是否落在复用组，避免同一调用方忽真忽假。
+    if int(digest[:8], 16) % 1000 >= int(reuse_ratio * 1000):
+        return "request:" + uuid.uuid4().hex
+    return f"derived:v1:{digest}"
 
 
 def _prune_session_states(now: float) -> None:
@@ -238,13 +265,17 @@ def _make_new_state(
     )
 
 
-# One server-side operation covers initialization, allocation and TTL renewal.
+# One server-side operation covers initialization, allocation, step cap and TTL renewal.
 _SESSION_ALLOCATE_LUA = """
 local raw = redis.call('GET', KEYS[1])
 local state
+local max_steps = tonumber(ARGV[4])
 if raw then
     state = cjson.decode(raw)
     state.step_index = state.step_index + 1
+    if max_steps and state.step_index > max_steps then
+        state = cjson.decode(ARGV[1])
+    end
     state.last_used_at = tonumber(ARGV[2])
 else
     state = cjson.decode(ARGV[1])
@@ -255,46 +286,82 @@ return result
 """
 
 
+# Same-conversation allocations are serialized so concurrent requests cannot
+# receive out-of-order step numbers (the upstream compares last_step_index).
+_session_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _session_lock(key: str) -> asyncio.Lock:
+    lock = _session_locks.get(key)
+    if lock is None:
+        if len(_session_locks) > _MAX_SESSION_LOCKS:
+            _session_locks.clear()
+        lock = asyncio.Lock()
+        _session_locks[key] = lock
+    return lock
+
+
 async def _get_session_state(
     request_payload: Dict[str, Any],
     model: str = "",
     credential_key: Optional[str] = None,
 ) -> AntigravitySessionState:
+    from config import (
+        get_antigravity_session_bucket_seconds,
+        get_antigravity_session_max_steps,
+        get_antigravity_session_reuse_ratio,
+    )
+
     now = time.time()
-    key = _session_key(request_payload, model, credential_key)
+    reuse_ratio = await get_antigravity_session_reuse_ratio()
+    max_steps = await get_antigravity_session_max_steps()
+    bucket_seconds = await get_antigravity_session_bucket_seconds()
+    key = _session_key(
+        request_payload,
+        model,
+        credential_key,
+        reuse_ratio=reuse_ratio,
+        bucket_seconds=bucket_seconds,
+    )
     first_user_text = _extract_first_user_text(request_payload)
     from src.operational_audit import reference
     def allocated(state, backend):
         return replace(state, allocation_backend=backend, allocation_key_ref=reference(key))
 
-    if not request_payload.get("sessionId"):
+    # 未开启复用（或无显式 sessionId）时仍是一条请求一条 trajectory。
+    if key.startswith("request:"):
         return allocated(_make_new_state(first_user_text, now, credential_key), "new_request")
 
-    redis = await _get_redis()
-    if redis is not None:
-        redis_key = f"{_REDIS_KEY_PREFIX}{key}"
-        try:
-            initial = _make_new_state(first_user_text, now, credential_key)
-            raw = await redis.eval(
-                _SESSION_ALLOCATE_LUA, 1, redis_key,
-                json.dumps(initial.__dict__), str(now), SESSION_TTL_SECONDS,
-            )
-            return allocated(AntigravitySessionState(**json.loads(raw)), "redis")
-        except Exception as e:
-            log.warning(
-                f"[SESSION] Redis error, falling back to memory: {type(e).__name__}"
-            )
+    async with _session_lock(key):
+        redis = await _get_redis()
+        if redis is not None:
+            redis_key = f"{_REDIS_KEY_PREFIX}{key}"
+            try:
+                initial = _make_new_state(first_user_text, now, credential_key)
+                raw = await redis.eval(
+                    _SESSION_ALLOCATE_LUA, 1, redis_key,
+                    json.dumps(initial.__dict__), str(now), SESSION_TTL_SECONDS,
+                    str(max_steps),
+                )
+                return allocated(AntigravitySessionState(**json.loads(raw)), "redis")
+            except Exception as e:
+                log.warning(
+                    f"[SESSION] Redis error, falling back to memory: {type(e).__name__}"
+                )
 
-    # 内存回退
-    _prune_session_states(now)
-    state = _session_states.get(key)
-    if state:
-        state.step_index += 1
-        state.last_used_at = now
+        # 内存回退
+        _prune_session_states(now)
+        state = _session_states.get(key)
+        if state:
+            state.step_index += 1
+            if state.step_index > max_steps:
+                state = _make_new_state(first_user_text, now, credential_key)
+            state.last_used_at = now
+            _session_states[key] = state
+            return allocated(state, "memory")
+        state = _make_new_state(first_user_text, now, credential_key)
+        _session_states[key] = state
         return allocated(state, "memory")
-    state = _make_new_state(first_user_text, now, credential_key)
-    _session_states[key] = state
-    return allocated(state, "memory")
 
 
 def _generate_request_id(conversation_id: str, trajectory_id: str, step: int) -> str:
