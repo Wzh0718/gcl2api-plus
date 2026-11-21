@@ -1315,15 +1315,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await worker
                 raise
 
-    _SELECT_CREDENTIAL = """
+    _CREDENTIAL_ORDER = "COALESCE(routing_turn, 0), COALESCE(rotation_order, 0), filename"
+    _SELECT_CREDENTIAL = f"""
                 SELECT filename, credential_data, model_cooldowns,
                        enable_credit, proxy_mode, proxy_url,
                        proxy_group_id
                 FROM antigravity_credentials
-                WHERE {where_sql} AND usage_resume_at <= ?
-                ORDER BY COALESCE(routing_turn, 0) ASC,
-                         COALESCE(rotation_order, 0) ASC,
-                         filename ASC
+                WHERE {{where_sql}} AND usage_resume_at <= ?
+                ORDER BY {_CREDENTIAL_ORDER}
                 LIMIT 1
             """
     _RESUME_CREDENTIAL = """

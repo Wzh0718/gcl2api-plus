@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+from contextvars import Context
 from datetime import datetime
 import os
 import time
@@ -23,6 +24,8 @@ from src.storage.refresh_import_queue import RefreshImportQueue
 from src.request_timing import add_phase_ms, measure_pg, measure_phase
 from src.storage.sqlite_manager import ROUTING_WINDOW_SECONDS, SQLiteManager
 
+_MAX_CLAIMS_PER_BATCH = 64
+
 DDL = Path(__file__).resolve().parents[2] / "scripts" / "postgres"
 
 
@@ -39,6 +42,8 @@ class PostgresManager(SQLiteManager):
             claim_connections = int(os.getenv("MAIN_POSTGRES_CLAIM_CONNECTIONS", "4"))
             if not 1 <= claim_connections <= 16:
                 raise ValueError("MAIN_POSTGRES_CLAIM_CONNECTIONS must be between 1 and 16")
+            self._claim_batches = {}
+            self._claim_tasks = set()
             self._claim_slots = asyncio.Semaphore(claim_connections)
             self._claim_pool = AsyncConnectionPool(
                 main_dsn(), min_size=0, max_size=claim_connections, open=False,
@@ -100,6 +105,8 @@ class PostgresManager(SQLiteManager):
     async def close(self):
         if not self._initialized:
             return
+        if self._claim_tasks:
+            await asyncio.gather(*self._claim_tasks)
         self._success_reader = None
         try:
             await super().close()
@@ -160,46 +167,112 @@ class PostgresManager(SQLiteManager):
                 return row, 0, False
 
     async def _claim_active(self, model_name, attempted, credential_name):
-        # Overlap client round trips. The transaction advisory lock orders rotations.
-        # Each command gets a new READ COMMITTED snapshot after the advisory lock.
-        async with AsyncExitStack() as stack:
-            with measure_phase("selection_lock_wait"):
-                # Waiters retain request cancellation semantics instead of expiring
-                # as failed pool checkouts when a burst fills the rotation queue.
-                with measure_pg("local_queue"):
-                    await stack.enter_async_context(self._claim_slots)
-                with measure_pg("claim_pool"):
-                    conn = await stack.enter_async_context(self._claim_pool.connection())
-            now = time.time()
-            cutoff = now - ROUTING_WINDOW_SECONDS
-            where, params = self._claim_filter(model_name, attempted, credential_name, now)
-            candidate = self._SELECT_CREDENTIAL.format(where_sql=where) + " FOR UPDATE"
-            resume = self._RESUME_CREDENTIAL.format(where_sql=where)
-            advance = self._ADVANCE_TURN_SQL.format(target="(SELECT filename FROM candidate)")
-            query = f"""
-                WITH candidate AS ({candidate}), claimed AS (
-                    {advance}
-                    RETURNING filename, credential_data, model_cooldowns, enable_credit,
-                              proxy_mode, proxy_url, proxy_group_id
-                )
-                SELECT c.*, CASE WHEN c.filename IS NULL THEN ({resume}) END,
-                       extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000
-                FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed c ON true"""
-            with safe_database_errors(), measure_pg("claim_roundtrip"):
-                async with conn.pipeline():
-                    async with conn.transaction():
-                        lock = await conn.execute(
-                            "SELECT extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000 "
-                            "FROM pg_advisory_xact_lock(72210440)"
-                        )
-                        result = await conn.execute(pg_query(query), (*params, cutoff, now, cutoff, *params))
+        # Coalesce only live requests with identical eligibility. A free connection
+        # starts immediately; no batching timer and no preallocated credentials.
+        key = (model_name, frozenset(attempted), credential_name)
+        waiters = self._claim_batches.get(key)
+        if waiters is None:
+            waiters = self._claim_batches[key] = []
+            task = asyncio.create_task(self._run_claim_batch(key, waiters), context=Context())
+            self._claim_tasks.add(task)
+            task.add_done_callback(self._claim_tasks.discard)
+        future = asyncio.get_running_loop().create_future()
+        waiters.append(future)
+        if len(waiters) == _MAX_CLAIMS_PER_BATCH:
+            del self._claim_batches[key]
+        entered = time.monotonic()
+        result, granted, connected, lock_ms, sql_ms, roundtrip = await future
+        queued = max(0.0, granted - entered) * 1000
+        pool_ms = (connected - granted) * 1000
+        add_phase_ms("credential_pg_local_queue", queued)
+        add_phase_ms("credential_pg_claim_pool", pool_ms)
+        add_phase_ms("selection_lock_wait", queued + pool_ms + lock_ms)
+        add_phase_ms("credential_pg_claim_roundtrip", roundtrip)
+        add_phase_ms("credential_pg_advisory_server", lock_ms)
+        add_phase_ms("credential_pg_claim_sql_server", sql_ms)
+        add_phase_ms("selection_locked_work", sql_ms)
+        return result
+
+    async def _run_claim_batch(self, key, waiters):
+        try:
+            async with self._claim_slots:
+                granted = time.monotonic()
+                async with self._claim_pool.connection() as conn:
+                    connected = time.monotonic()
+                    if self._claim_batches.get(key) is waiters:
+                        del self._claim_batches[key]
+                    active = [future for future in waiters if not future.cancelled()]
+                    if not active:
+                        return
+                    rows, resume, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active))
+            roundtrip = (time.monotonic() - connected) * 1000
+            for index, future in enumerate(active):
+                if not future.done():
+                    row = rows[index % len(rows)] if rows else None
+                    future.set_result(((row, resume, False), granted, connected, lock_ms, sql_ms, roundtrip))
+        except asyncio.CancelledError:
+            for future in waiters:
+                future.cancel()
+            raise
+        except Exception as exc:
+            for future in waiters:
+                if not future.done():
+                    future.set_exception(exc)
+        finally:
+            if self._claim_batches.get(key) is waiters:
+                del self._claim_batches[key]
+
+    async def _rotate_batch(self, conn, key, count):
+        model_name, attempted, credential_name = key
+        now = time.time()
+        cutoff = now - ROUTING_WINDOW_SECONDS
+        where, params = self._claim_filter(model_name, attempted, credential_name, now)
+        resume = self._RESUME_CREDENTIAL.format(where_sql=where)
+        # The ordered candidates are one round. Position p receives turns
+        # p, p + width, ... up to count, exactly as consecutive single claims.
+        query = f"""
+            WITH candidates AS MATERIALIZED (
+                SELECT filename, routing_turn, rotation_order FROM antigravity_credentials
+                WHERE {where} AND usage_resume_at <= ?
+                ORDER BY {self._CREDENTIAL_ORDER} LIMIT ? FOR UPDATE
+            ), ranked AS (
+                SELECT filename, row_number() OVER (ORDER BY {self._CREDENTIAL_ORDER}) AS pos,
+                       count(*) OVER () AS width FROM candidates
+            ), turns AS (
+                SELECT *, (?::bigint - pos) / width AS extra FROM ranked
+            ), claimed AS (
+                UPDATE antigravity_credentials a SET
+                    call_count = coalesce(a.call_count, 0) + 1 + t.extra,
+                    routing_turn = (SELECT coalesce(max(routing_turn), 0) FROM antigravity_credentials)
+                                   + t.pos + t.extra * t.width,
+                    routing_window_count = CASE WHEN coalesce(a.routing_window_started_at, 0) <= ?
+                        THEN 0 ELSE coalesce(a.routing_window_count, 0) END + 1 + t.extra,
+                    routing_window_started_at = CASE WHEN coalesce(a.routing_window_started_at, 0) <= ?
+                        THEN ? ELSE a.routing_window_started_at END,
+                    updated_at = unixepoch()
+                FROM turns t WHERE a.filename = t.filename
+                RETURNING a.filename, a.credential_data, a.model_cooldowns, a.enable_credit,
+                          a.proxy_mode, a.proxy_url, a.proxy_group_id, t.pos
+            )
+            SELECT c.filename, c.credential_data, c.model_cooldowns, c.enable_credit,
+                   c.proxy_mode, c.proxy_url, c.proxy_group_id,
+                   CASE WHEN c.filename IS NULL THEN ({resume}) END,
+                   extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000
+            FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed c ON true ORDER BY c.pos"""
+        with safe_database_errors():
+            async with conn.pipeline():
+                async with conn.transaction():
+                    lock = await conn.execute(
+                        "SELECT extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000 "
+                        "FROM pg_advisory_xact_lock(72210440)"
+                    )
+                    result = await conn.execute(pg_query(query), (*params, count, count, cutoff, cutoff, now, *params))
             (lock_ms,) = await lock.fetchone()
-            row = await result.fetchone()
-            add_phase_ms("credential_pg_advisory_server", lock_ms)
-            add_phase_ms("selection_lock_wait", lock_ms)
-            add_phase_ms("credential_pg_claim_sql_server", row[-1])
-            add_phase_ms("selection_locked_work", row[-1])
-            return (row[:7] if row[0] is not None else None), row[-2] or 0, False
+            records = await result.fetchall()
+        rows = [row[:7] for row in records if row[0] is not None]
+        resume_at = records[0][-2] or 0
+        sql_ms = max(row[-1] for row in records)
+        return rows, resume_at, lock_ms, sql_ms
 
     @staticmethod
     def _money_e8_sql(column):
