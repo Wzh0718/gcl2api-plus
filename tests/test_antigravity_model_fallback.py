@@ -821,3 +821,28 @@ async def test_client_model_survives_normalization_and_fallback(monkeypatch, mod
     assert records[0]['request_model'] == 'gemini-3-flash-preview'
     assert records[0]['model'] == execution_model
     assert records[0]['upstream_model'] == 'physical-model'
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_exhausted_chain_preserves_retry_header_and_reason(monkeypatch, streaming):
+    import time
+    from src.rate_limits import selection_retry_at, selection_usage_resume_at
+
+    chain = ["gemini-A", "gemini-B", "gemini-C"]
+    _patch_common(monkeypatch, chain)
+    _patch_text_transport(monkeypatch, lambda *_: pytest.fail("exhausted chain sent upstream"))
+    attempted = []
+    earliest = int(time.time()) + 30
+
+    async def unavailable(*, mode, model_name):
+        attempted.append(model_name)
+        # Last hop has no known deadline; B has an account-wide usage limit.
+        selection_retry_at.set({chain[0]: earliest + 90, chain[1]: earliest, chain[2]: 0}[model_name])
+        selection_usage_resume_at.set(earliest if model_name == chain[1] else 0)
+
+    monkeypatch.setattr(agy.credential_manager, "get_valid_credential", unavailable)
+    response = await _run_text_request(streaming, chain[0])
+    assert attempted == chain
+    assert response.status_code == 429
+    assert response.rate_limit.reason == "account_usage_limit"
+    assert 28 <= int(response.headers["retry-after"]) <= 30

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 from contextlib import AsyncExitStack
 from contextvars import Context
 from datetime import datetime
@@ -219,8 +220,8 @@ class PostgresManager(SQLiteManager):
             selection_retry_at.set(outcome.retry_at)
             add_phase_ms("credential_cooldown_cache_hit", (time.monotonic() - entered) * 1000)
             return None, outcome.usage_resume_at, False
-        selection_retry_at.set(0)
-        result, granted, connected, lock_ms, sql_ms, roundtrip = outcome
+        result, retry_at, granted, connected, lock_ms, sql_ms, roundtrip = outcome
+        selection_retry_at.set(retry_at)
         queued = max(0.0, granted - entered) * 1000
         pool_ms = (connected - granted) * 1000
         add_phase_ms("credential_pg_local_queue", queued)
@@ -256,7 +257,7 @@ class PostgresManager(SQLiteManager):
                     blocked = set()
                     if snapshot is not None and snapshot[0] > time.time():
                         blocked, _ = cache.selection(snapshot[1], model, excluded, pinned, time.time())
-                    rows, resume, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active), blocked)
+                    rows, resume, retry_at, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active), blocked)
             roundtrip = (time.monotonic() - connected) * 1000
             if (snapshot is None and time.monotonic() >= self._next_cooldown_refresh
                     and (self._cooldown_refresh is None or self._cooldown_refresh.done())):
@@ -265,7 +266,7 @@ class PostgresManager(SQLiteManager):
             for index, future in enumerate(active):
                 if not future.done():
                     row = rows[index % len(rows)] if rows else None
-                    future.set_result(((row, resume, False), granted, connected, lock_ms, sql_ms, roundtrip))
+                    future.set_result(((row, resume, False), retry_at, granted, connected, lock_ms, sql_ms, roundtrip))
         except asyncio.CancelledError:
             for future in waiters:
                 future.cancel()
@@ -283,8 +284,22 @@ class PostgresManager(SQLiteManager):
         now = time.time()
         cutoff = now - ROUTING_WINDOW_SECONDS
         where, params = self._claim_filter(model_name, attempted, credential_name, now)
-        resume = self._RESUME_CREDENTIAL.format(where_sql=where)
-        resume_params = params
+        # A cold Redis roster must give the same retry deadline as a cache hit.
+        # Evaluate this aggregate only when the claim returns no account.
+        eligible, eligible_params = self._claim_filter(None, attempted, credential_name, now, include_held=True)
+        resume = f"""
+            SELECT ARRAY[
+                MIN(usage_resume_at) FILTER (
+                    WHERE usage_resume_at > ? AND hold_until <= ? AND model_until <= ?
+                ),
+                MIN(GREATEST(usage_resume_at, hold_until, model_until))
+            ] FROM (
+                SELECT usage_resume_at, COALESCE(transient_hold_until, 0) AS hold_until,
+                       COALESCE(gcli_cooldown(model_cooldowns, ?), 0) AS model_until
+                FROM antigravity_credentials WHERE {eligible}
+            ) AS deadlines"""
+        path = "$." + json.dumps(model_name, ensure_ascii=False) if model_name else None
+        resume_params = (now, now, now, path, *eligible_params[:-1])
         if blocked:
             where += " AND NOT (filename = ANY(?::text[]))"
             params = [*params[:-1], sorted(blocked), params[-1]]
@@ -337,9 +352,10 @@ class PostgresManager(SQLiteManager):
             if row[0] is not None:
                 network = self._resolved_network(self._network_from_row(row[7:-3]))
                 rows.append((*row[:7], network, row[-3] or {}))
-        resume_at = records[0][-2] or 0
+        usage_at, retry_at = records[0][-2] or (None, None)
+        retry_at = retry_at if retry_at and retry_at > now and math.isfinite(retry_at) else 0
         sql_ms = max(row[-1] for row in records)
-        return rows, resume_at, lock_ms, sql_ms
+        return rows, int(usage_at or 0), retry_at, lock_ms, sql_ms
 
     @staticmethod
     def _money_e8_sql(column):

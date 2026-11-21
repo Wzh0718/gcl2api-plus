@@ -60,6 +60,7 @@ async def pg_store(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite3, "connect", unexpected)
     monkeypatch.setattr(aiosqlite, "connect", unexpected)
     adapter = StorageAdapter()
+    monkeypatch.setattr("src.storage_adapter._storage_adapter", adapter)
     try:
         await adapter.initialize()
         assert adapter.get_backend_type() == "postgresql"
@@ -786,3 +787,40 @@ async def test_redis_marker_exists_only_for_its_model(pg_store):
     await cache.publish(time.time(), [("a.json", 0, 0, {})])
     await cache.publish(now, rows)
     assert await cache.client.exists(first, second) == 0
+
+
+async def test_chain_uses_earliest_recovery_with_cold_and_warm_roster(pg_store, monkeypatch):
+    import time
+    from unittest.mock import AsyncMock
+    from src.api import antigravity as api
+
+    store = pg_store._backend
+    models = ["gemini-A", "gemini-B", "gemini-C"]
+    now = int(time.time())
+    await pg_store.store_credential("shared.json", {"project_id": "test"}, mode="antigravity")
+    async with store._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_credentials SET model_cooldowns=?, usage_resume_at=?",
+                         (json.dumps(dict(zip(models, [now + 120, now + 15, now + 90]))), now + 30))
+        await db.commit()
+    monkeypatch.setattr(api, "get_antigravity_model_fallback_chain", AsyncMock(return_value=models))
+    monkeypatch.setattr(api.credential_manager, "get_valid_credential", store.get_next_available_credential)
+
+    # A single cold claim must know both deadlines before any Redis refresh finishes.
+    assert await store.get_next_available_credential("antigravity", models[1]) is None
+    assert 28 <= int(api._account_pool_429().headers["retry-after"]) <= 30
+    await store._cooldown_refresh
+    claim = AsyncMock(wraps=store._rotate_batch)
+    monkeypatch.setattr(store, "_rotate_batch", claim)
+    assert await api._select_text_credential(models[0]) == (models[1], None)
+    assert 28 <= int(api._account_pool_429().headers["retry-after"]) <= 30
+    claim.assert_not_awaited()
+
+    # B becomes available on the same account while A and C stay blocked.
+    await store.set_model_cooldown("shared.json", models[1], None, mode="antigravity")
+    async with store._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_credentials SET usage_resume_at=0")
+        await db.commit()
+    await store._refresh_cooldowns()
+    chosen, result = await api._select_text_credential(models[0])
+    assert chosen == models[1] and result[0] == "shared.json"
+    claim.assert_awaited_once()
