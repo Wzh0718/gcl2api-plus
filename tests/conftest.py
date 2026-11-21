@@ -13,3 +13,15 @@ import pytest
 def _disable_antigravity_pacing(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "false")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_test_backend(monkeypatch):
+    """主库生产只跑 PostgreSQL；测试显式声明使用 SQLite 临时库。
+
+    与 ``StorageAdapter.initialize`` 的 fail-fast 配套：没有这个显式开关，
+    缺 ``MAIN_POSTGRES_DSN`` 时适配器会拒绝启动。
+    """
+    monkeypatch.setenv("MAIN_STORAGE_BACKEND", "sqlite")
+    monkeypatch.delenv("MAIN_POSTGRES_DSN", raising=False)
+    yield
