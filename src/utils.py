@@ -351,7 +351,7 @@ async def authenticate_antigravity_key(
     key: Optional[str] = Query(None),
 ):
     """Authenticate Antigravity calls with a managed key or the legacy env key."""
-    from src.request_timing import mark_stage
+    from src.request_timing import database_timing_scope, mark_stage
     mark_stage("auth_started")
     # Some Gemini clients incorrectly append the API key as
     # ``...:generateContent/key=<token>`` instead of using ``?key=<token>``.
@@ -384,7 +384,8 @@ async def authenticate_antigravity_key(
         from src.storage_adapter import get_storage_adapter
 
         storage = await get_storage_adapter()
-        principal = await ApiKeyService(storage).authenticate(token)
+        with database_timing_scope("auth"):
+            principal = await ApiKeyService(storage).authenticate(token)
         from src.request_capture import capture_context
         if (capture := capture_context.get()) is not None:
             capture.api_key_id = principal.api_key_id
