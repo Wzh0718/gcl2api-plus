@@ -2248,6 +2248,7 @@ async def non_stream_request(
 
     # 1. 获取有效凭证
     model_name, cred_result = await _select_text_credential(model_name)
+    mark_stage("initial_selection_done")
 
     if not cred_result:
         # 文本号池暂时不可用返回429，不作为内部故障。
@@ -2290,6 +2291,7 @@ async def non_stream_request(
 
     # 构建 CLI 格式请求体
     inner_request = body.get("request", body)
+    mark_stage("initial_wrap_start")
     final_payload, request_id = await wrap_cli_request(
         inner_request, model_name, project_id,
         user_email=credential_data.get("user_email"),
@@ -2297,6 +2299,7 @@ async def non_stream_request(
         credential_data=credential_data,
     )
 
+    mark_stage("initial_wrap_done")
     # 3. 调用post_async进行请求
     retry_config = await get_retry_config()
     max_retries = retry_config["max_retries"]
@@ -2418,10 +2421,13 @@ async def non_stream_request(
             with measure_phase("slot_acquire"):
                 pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
-            if (
-                current_file in rate_limited_credentials
-                or not await _text_credential_is_available(current_file, model_name)
-            ):
+            mark_stage("first_slot_acquired")
+            with measure_phase("credential_recheck"):
+                unavailable = (
+                    current_file in rate_limited_credentials
+                    or not await _text_credential_is_available(current_file, model_name)
+                )
+            if unavailable:
                 log.info(f"[ANTIGRAVITY] 跳过预选后已冷却或429失败的凭证: {current_file} / {model_name}")
                 rate_limited_credentials.add(current_file)
                 if retry_config["retry_enabled"] and attempt < max_retries and await refresh_credential_fast():
@@ -2430,6 +2436,7 @@ async def non_stream_request(
                 response = _upstream_403_to_503(last_error_response) if last_error_response is not None else _account_pool_429()
                 await record_billing_once(False, response=response)
                 return response
+            mark_stage("first_admission_start")
             with measure_phase("usage_admission"):
                 usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)

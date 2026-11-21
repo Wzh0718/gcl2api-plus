@@ -114,7 +114,9 @@ _STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api
                           "first_upstream_send", "last_upstream_send", "last_upstream_data",
                           "billing_started", "billing_saved", "billing_enter", "recorder_lookup",
                           "post_enter", "post_exit", "usage_confirmed", "credential_saved",
-                          "monitor_started", "monitor_finished"})
+                          "monitor_started", "monitor_finished", "initial_selection_done",
+                          "initial_wrap_start", "initial_wrap_done", "first_slot_acquired",
+                          "first_admission_start"})
 
 
 def mark_stage(name, *, replace=False):
