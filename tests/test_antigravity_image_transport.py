@@ -1472,7 +1472,7 @@ async def test_image_slot_wait_timeout_returns_429_without_releasing_owner(monke
 
     monkeypatch.setattr(antigravity, "_post_image_generate", unexpected_post)
     pacing.reset_state()
-    await pacing.acquire_credential_slot("ultra.json")
+    await pacing.acquire_limited_credential_slot("ultra.json")
 
     response = await antigravity.non_stream_request(
         {
@@ -1489,7 +1489,7 @@ async def test_image_slot_wait_timeout_returns_429_without_releasing_owner(monke
     assert manager.releases == [("ultra.json", "lease-ultra")]
     assert manager.outcomes == []
     assert pacing._SLOTS["ultra.json"].inflight == 1
-    pacing.release_credential_slot("ultra.json")
+    pacing.release_limited_credential_slot("ultra.json")
     pacing.reset_state()
 
 
@@ -1569,7 +1569,7 @@ async def test_image_busy_account_switches_to_idle_account(monkeypatch):
 
     monkeypatch.setattr(antigravity, "_post_image_generate", fake_post)
     pacing.reset_state()
-    await pacing.acquire_credential_slot("ultra.json")
+    await pacing.acquire_limited_credential_slot("ultra.json")
     try:
         response = await antigravity.non_stream_request(
             {
@@ -1581,7 +1581,7 @@ async def test_image_busy_account_switches_to_idle_account(monkeypatch):
             }
         )
     finally:
-        pacing.release_credential_slot("ultra.json")
+        pacing.release_limited_credential_slot("ultra.json")
         pacing.reset_state()
 
     assert response.status_code == 200

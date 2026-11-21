@@ -311,7 +311,7 @@ class StorageAdapter:
     async def hold_antigravity_transient(
         self, filename: str, seconds: float = 600, status_code: Optional[int] = None
     ) -> float:
-        """上游 5xx 的就地冷却：不封号，只在窗口内跳过该账号并累计降权计数。"""
+        """上游 5xx 的就地冷却：不封号，只在窗口内跳过该账号并累计错误计数。"""
         self._ensure_initialized()
         return await self._backend.hold_antigravity_transient(
             filename, seconds=seconds, status_code=status_code

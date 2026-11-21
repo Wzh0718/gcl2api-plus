@@ -1213,7 +1213,7 @@ function buildCredStatusBadges(credInfo, manager) {
         } else {
             statusBadges += '<span class="status-badge" style="background-color: #616161; color: white;" title="当前已关闭Credit模式">Credit: OFF</span>';
         }
-        statusBadges += `<span class="status-badge proxy-policy-badge" title="配置的并发上限；实际容量仍受请求节奏开关、429 自动收紧和养号限制影响">在飞: ${Number(credInfo.request_concurrency || 15)} · 图片任务: ${Number(credInfo.image_task_concurrency || 1)}</span>`;
+        statusBadges += `<span class="status-badge proxy-policy-badge" title="配置的并发上限；实际容量仍受请求节奏开关、429 自动收紧和养号限制影响">图片/融合并发: ${Number(credInfo.request_concurrency || 15)} · 图片任务: ${Number(credInfo.image_task_concurrency || 1)}</span>`;
         const proxyLabels = { inherit: '全局代理', custom: '专属代理', direct: '直连' };
         const proxyLabel = credInfo.proxy_mode === 'group'
             ? `代理组: ${proxyGroupName(credInfo.proxy_group_id)}`
@@ -1526,9 +1526,9 @@ function openAccountConcurrencyDialog(filename) {
     dialog.innerHTML = `<form class="proxy-policy-form">
         <div class="proxy-dialog-head"><h3 id="accountConcurrencyTitle">账号并发设置</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
         <p class="proxy-dialog-copy">${escapeHtml(current.user_email || filename)}</p>
-        <label class="proxy-dialog-field"><span>每账号并发上限（在飞请求）</span><input name="requestConcurrency" type="number" min="1" max="64" step="1" placeholder="留空跟随全局，当前 ${Number(current.request_concurrency || 15)}"></label>
+        <label class="proxy-dialog-field"><span>图片和提示词融合的单账号并发上限</span><input name="requestConcurrency" type="number" min="1" max="64" step="1" placeholder="留空跟随全局，当前 ${Number(current.request_concurrency || 15)}"></label>
         <label class="proxy-dialog-field"><span>同时执行的图片任务数</span><input name="imageTaskConcurrency" type="number" min="1" max="64" step="1" required></label>
-        <p class="proxy-dialog-copy">两项均支持 1–64。图片任务包含完整生成过程；每次上游请求还受在飞上限约束。在飞上限在请求节奏控制开启时生效，429 自动收紧及养号限制继续生效。下调不会中断正在执行的任务，后续任务等待空位。</p>
+        <p class="proxy-dialog-copy">两项均支持 1–64。图片任务包含完整生成过程；图片与提示词融合请求共用单账号在飞上限。普通文本请求按可用账号轮转。在飞上限在请求节奏控制开启时生效，429 自动收紧及养号限制继续生效。下调不会中断正在执行的任务，后续任务等待空位。</p>
         <p data-error role="alert" class="proxy-dialog-copy"></p>
         <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">取消</button><button type="submit">保存并实时生效</button></div>
     </form>`;

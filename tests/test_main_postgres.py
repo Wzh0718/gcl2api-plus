@@ -412,3 +412,16 @@ async def test_pg_settlement_resets_month_once_with_concurrent_requests(pg_store
         assert await session.execute_fetchall('SELECT amount_before,amount_after FROM api_key_quota_events WHERE api_key_id=?', (key,)) == [('3.00000000','0.00000000')]
         assert await session.execute_fetchall('SELECT quota_used,quota_tokens_used,quota_period_start FROM api_keys WHERE id=?', (key,)) == [('0.00000004',4,'2026-11-01')]
         assert await session.execute_fetchall('SELECT total_cost,failed_count,unknown_usage_count FROM billing_daily WHERE api_key_id=?',(key,)) == [('0.00000004',4,4)]
+
+
+async def test_pg_uniform_rotation_under_concurrent_load(pg_store):
+    from collections import Counter
+
+    names = [f"account-{index}.json" for index in range(38)]
+    for name in names:
+        assert await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    selected = await asyncio.gather(*(
+        pg_store._backend.get_next_available_credential("antigravity", "model")
+        for _ in range(76)
+    ))
+    assert Counter(row[0] for row in selected) == dict.fromkeys(names, 2)

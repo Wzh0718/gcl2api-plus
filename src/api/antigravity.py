@@ -1320,7 +1320,7 @@ async def _stream_request_inner(
         usage_metadata = upstream_model = None
         usage_remainder = ""
 
-        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）。
+        # 文本请求轮转发放，只执行全池准入、养号检查和发起错峰。
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
@@ -1328,6 +1328,12 @@ async def _stream_request_inner(
             pace_credential,
             release_credential_slot,
         )
+
+        if image_request:
+            from src.antigravity_pacing import (
+                acquire_limited_credential_slot as acquire_credential_slot,
+                release_limited_credential_slot as release_credential_slot,
+            )
 
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
         pacing_waited = 0.0
@@ -1848,12 +1854,12 @@ async def _non_stream_image_request_inner(
         if headers:
             auth_headers.update(headers)
 
-        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
+        # 图片请求同时受单账号在飞上限约束。
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
-            acquire_credential_slot,
+            acquire_limited_credential_slot,
             pace_credential,
-            release_credential_slot,
+            release_limited_credential_slot,
         )
 
         pacing_waited = 0.0
@@ -1861,7 +1867,7 @@ async def _non_stream_image_request_inner(
         started = time.monotonic()  # 兜底：槽位获取异常时 except 分支仍有耗时基准
         slot_acquired = False
         try:
-            pacing_waited += await acquire_credential_slot(current_file)
+            pacing_waited += await acquire_limited_credential_slot(current_file)
             slot_acquired = True
             pacing_waited += await pace_credential(current_file)
             started = time.monotonic()
@@ -1901,7 +1907,7 @@ async def _non_stream_image_request_inner(
         finally:
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
-                release_credential_slot(current_file)
+                release_limited_credential_slot(current_file)
                 await release_dynamic_warmup_slot(current_file)
 
         response = call_result.response
@@ -2283,7 +2289,7 @@ async def non_stream_request(
     while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
 
-        # 每账号请求节奏：毫秒级发起错峰 + 并发闸门（默认 15 在飞/账号）
+        # 文本请求轮转发放，只执行全池准入、养号检查和发起错峰
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
             acquire_credential_slot,

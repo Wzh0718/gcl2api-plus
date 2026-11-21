@@ -7,7 +7,7 @@
 新语义：
 - 5xx 不封号，账号进入 ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``（默认 600s）窗口；
 - 窗口内选择器跳过该账号，请求换号重试；
-- 每命中一次累计 ``transient_error_count``，选择排序中每次让出 3 个轮转位；
+- 每命中一次累计 ``transient_error_count``，冷却到期后平等参与轮转；
 - 一次真实成功把窗口与计数清零。
 """
 
@@ -85,7 +85,7 @@ async def test_hold_window_excludes_account_then_releases_it(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_repeated_5xx_lowers_rotation_priority(tmp_path, monkeypatch):
+async def test_expired_5xx_holds_rejoin_even_rotation(tmp_path, monkeypatch):
     manager = await make_manager(tmp_path, monkeypatch)
 
     for _ in range(3):
@@ -97,9 +97,9 @@ async def test_repeated_5xx_lowers_rotation_priority(tmp_path, monkeypatch):
         assert item is not None
         order.append(item[0])
 
-    # b.json 无计数，应当在 4 次轮转里明显更靠前。
-    assert order[0] == "b.json", order
-    assert order.count("b.json") >= order.count("a.json"), order
+    assert set(order[:2]) == {"a.json", "b.json"}
+    assert order[:2] == order[2:]
+
 
 
 @pytest.mark.asyncio
