@@ -34,3 +34,12 @@ def upstream_rate_limit(error_body: str | None) -> RateLimit:
     if any(marker in body for marker in ('QUOTA_EXHAUSTED', 'quotaResetTimeStamp', 'quotaResetDelay')):
         return RateLimit('upstream', 'quota_exhausted')
     return RateLimit('upstream', 'rate_limited')
+
+
+def retry_after_headers(response):
+    """Carry a retry deadline across protocol conversion of a 429 response."""
+    if getattr(response, "status_code", None) == 429:
+        value = getattr(response, "headers", {}).get("retry-after")
+        if value is not None:
+            return {"Retry-After": value}
+    return {}
