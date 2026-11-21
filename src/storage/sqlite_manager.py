@@ -5,6 +5,8 @@ SQLite 存储管理器
 import asyncio
 import json
 import os
+import sqlite3
+from contextlib import closing
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -15,7 +17,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from src.request_timing import measured_db_lock
-from src.storage.sqlite_pragmas import connect as sqlite_connect
+from src.storage.sqlite_pragmas import apply_sync_pragmas, connect as sqlite_connect
 
 from log import log
 from src.api_key_schedule import ApiKeySchedule, LIMIT_FIELDS
@@ -1206,13 +1208,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             if mode == "antigravity":
                 # 排队发生在打开 aiosqlite 连接之前，避免同进程高并发同时
                 # 占用大量 FD，并绕开 SQLite busy_timeout 的退避延迟。
-                async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
-                    return await self._get_next_antigravity_credential(
-                        model_name=model_name,
-                        excluded=excluded,
-                        candidate_limit=candidate_limit,
-                        credential_name=credential_name,
-                    )
+                return await self._get_next_antigravity_credential(
+                    model_name=model_name,
+                    excluded=excluded,
+                    candidate_limit=candidate_limit,
+                    credential_name=credential_name,
+                )
 
             async with sqlite_connect(self._db_path) as db:
                 current_time = time.time()
@@ -1262,117 +1263,118 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """Atomically take an eligible account from the queue and move it to the tail."""
         selection_usage_resume_at.set(0)
         attempted = set(excluded)
-        async with sqlite_connect(self._db_path) as db:
-            await db.execute("PRAGMA busy_timeout = 5000")
-            for _ in range(candidate_limit):
-                current_time = time.time()
-                params: List[Any] = [current_time, current_time]
-                where_sql = """disabled = 0
-                    AND (
-                        COALESCE(proxy_mode, 'inherit') <> 'group'
-                        OR EXISTS (
-                            SELECT 1
-                            FROM proxy_groups pg
-                            JOIN proxy_group_nodes pn ON pn.group_id = pg.id
-                            WHERE pg.id = proxy_group_id
-                              AND pg.enabled = 1
-                              AND pn.enabled = 1
-                              AND (fixed_proxy_ip IS NULL OR pn.id = bound_proxy_node_id)
-                              AND (pn.cooldown_until IS NULL OR pn.cooldown_until <= ?)
-                              AND (pn.expires_at IS NULL OR pn.expires_at > ?)
-                        )
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM antigravity_warmup_accounts w
-                        WHERE w.credential_name = antigravity_credentials.filename
-                          AND w.status IN ('paused', 'account_forbidden')
-                    )"""
-                if credential_name:
-                    where_sql += " AND filename = ?"
-                    params.append(credential_name)
-                if model_name:
-                    json_path = '$."' + model_name.replace("\\", "\\\\").replace('"', '\\"') + '"'
-                    where_sql += " AND (json_extract(model_cooldowns, ?) IS NULL OR json_extract(model_cooldowns, ?) <= ?)"
-                    params.extend((json_path, json_path, current_time))
-                if attempted:
-                    attempted_list = sorted(attempted)
-                    where_sql += f" AND filename NOT IN ({','.join('?' for _ in attempted_list)})"
-                    params.extend(attempted_list)
-
-                routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
-                await db.execute("BEGIN IMMEDIATE")
-                try:
-                    async with db.execute(f"""
-                        SELECT filename, credential_data, model_cooldowns,
-                               enable_credit, proxy_mode, proxy_url,
-                               proxy_group_id
-                        FROM antigravity_credentials
-                        WHERE {where_sql} AND usage_resume_at <= ?
-                        ORDER BY COALESCE(routing_turn, 0) ASC,
-                                 COALESCE(rotation_order, 0) ASC,
-                                 filename ASC
-                        LIMIT 1
-                    """, [*params, current_time]) as cursor:
-                        row = await cursor.fetchone()
-                    if not row:
-                        async with db.execute(f"""
-                            SELECT MIN(usage_resume_at) FROM antigravity_credentials
-                            WHERE {where_sql} AND usage_resume_at > ?
-                        """, [*params, current_time]) as cursor:
-                            resume_at, = await cursor.fetchone()
-                        selection_usage_resume_at.set(resume_at or 0)
-                        await db.rollback()
-                        return None
-                    filename = row[0]
-                    # 静默窗口内的账号不参与本小时调度。放在 SELECT 之后、
-                    # 计数写入之前，既不改 SQL，也不消耗一次上游尝试。
-                    from src.antigravity_pacing import is_dormant
-
-                    if is_dormant(filename):
-                        attempted.add(filename)
-                        await db.rollback()
-                        continue
-                    await db.execute(
-                        """UPDATE antigravity_credentials
-                           SET call_count = COALESCE(call_count, 0) + 1,
-                               routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
-                                               FROM antigravity_credentials),
-                               routing_window_started_at = CASE
-                                   WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
-                                   ELSE routing_window_started_at
-                               END,
-                               routing_window_count = CASE
-                                   WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
-                                   ELSE COALESCE(routing_window_count, 0) + 1
-                               END,
-                               updated_at = unixepoch()
-                           WHERE filename = ?""",
-                        (routing_cutoff, current_time, routing_cutoff, filename),
-                    )
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
-
-                filename, credential_json, _, enable_credit, proxy_mode, proxy_url, proxy_group_id = row
-                credential_data = json.loads(credential_json)
-                credential_data["enable_credit"] = bool(enable_credit)
-                credential_data["proxy_mode"] = proxy_mode or "inherit"
-                credential_data["proxy_url"] = proxy_url
-                credential_data["proxy_group_id"] = proxy_group_id
-                if credential_data["proxy_mode"] == "group":
-                    if not proxy_group_id:
-                        attempted.add(filename)
-                        continue
-                    network = await self.resolve_credential_network(
-                        filename, mode="antigravity"
-                    )
-                    if not network.get("proxy_url"):
-                        attempted.add(filename)
-                        continue
-                    credential_data.update(network)
-                return filename, credential_data
+        for _ in range(candidate_limit):
+            async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
+                row, resume_at, dormant = await asyncio.to_thread(
+                    self._claim_antigravity_row, model_name, attempted, credential_name
+                )
+            if row is None:
+                selection_usage_resume_at.set(resume_at)
+                return None
+            if dormant:
+                attempted.add(row[0])
+                continue
+            filename, credential_json, _, enable_credit, proxy_mode, proxy_url, proxy_group_id = row
+            credential_data = json.loads(credential_json)
+            credential_data["enable_credit"] = bool(enable_credit)
+            credential_data["proxy_mode"] = proxy_mode or "inherit"
+            credential_data["proxy_url"] = proxy_url
+            credential_data["proxy_group_id"] = proxy_group_id
+            if credential_data["proxy_mode"] == "group":
+                if not proxy_group_id:
+                    attempted.add(filename)
+                    continue
+                network = await self.resolve_credential_network(
+                    filename, mode="antigravity"
+                )
+                if not network.get("proxy_url"):
+                    attempted.add(filename)
+                    continue
+                credential_data.update(network)
+            return filename, credential_data
         return None
+
+    def _claim_antigravity_row(self, model_name, attempted, credential_name):
+        """Select and advance one row in one worker call and one SQLite transaction."""
+        from src.antigravity_pacing import is_dormant
+
+        current_time = time.time()
+        params: List[Any] = [current_time, current_time]
+        where_sql = """disabled = 0
+            AND (
+                COALESCE(proxy_mode, 'inherit') <> 'group'
+                OR EXISTS (
+                    SELECT 1
+                    FROM proxy_groups pg
+                    JOIN proxy_group_nodes pn ON pn.group_id = pg.id
+                    WHERE pg.id = proxy_group_id
+                      AND pg.enabled = 1
+                      AND pn.enabled = 1
+                      AND (fixed_proxy_ip IS NULL OR pn.id = bound_proxy_node_id)
+                      AND (pn.cooldown_until IS NULL OR pn.cooldown_until <= ?)
+                      AND (pn.expires_at IS NULL OR pn.expires_at > ?)
+                )
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM antigravity_warmup_accounts w
+                WHERE w.credential_name = antigravity_credentials.filename
+                  AND w.status IN ('paused', 'account_forbidden')
+            )"""
+        if credential_name:
+            where_sql += " AND filename = ?"
+            params.append(credential_name)
+        if model_name:
+            json_path = '$."' + model_name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+            where_sql += " AND (json_extract(model_cooldowns, ?) IS NULL OR json_extract(model_cooldowns, ?) <= ?)"
+            params.extend((json_path, json_path, current_time))
+        if attempted:
+            attempted_list = sorted(attempted)
+            where_sql += f" AND filename NOT IN ({','.join('?' for _ in attempted_list)})"
+            params.extend(attempted_list)
+
+        routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
+        with closing(sqlite3.connect(self._db_path, isolation_level=None)) as db:
+            apply_sync_pragmas(db)
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(f"""
+                SELECT filename, credential_data, model_cooldowns,
+                       enable_credit, proxy_mode, proxy_url,
+                       proxy_group_id
+                FROM antigravity_credentials
+                WHERE {where_sql} AND usage_resume_at <= ?
+                ORDER BY COALESCE(routing_turn, 0) ASC,
+                         COALESCE(rotation_order, 0) ASC,
+                         filename ASC
+                LIMIT 1
+            """, [*params, current_time]).fetchone()
+            if row is None:
+                resume_at, = db.execute(f"""
+                    SELECT MIN(usage_resume_at) FROM antigravity_credentials
+                    WHERE {where_sql} AND usage_resume_at > ?
+                """, [*params, current_time]).fetchone()
+                return None, resume_at or 0, False
+            filename = row[0]
+            if is_dormant(filename):
+                return row, 0, True
+            db.execute(
+                """UPDATE antigravity_credentials
+                   SET call_count = COALESCE(call_count, 0) + 1,
+                       routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                       FROM antigravity_credentials),
+                       routing_window_started_at = CASE
+                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                           ELSE routing_window_started_at
+                       END,
+                       routing_window_count = CASE
+                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
+                           ELSE COALESCE(routing_window_count, 0) + 1
+                       END,
+                       updated_at = unixepoch()
+                   WHERE filename = ?""",
+                (routing_cutoff, current_time, routing_cutoff, filename),
+            )
+            db.commit()
+            return row, 0, False
 
     async def mark_credential_selected(
         self,
