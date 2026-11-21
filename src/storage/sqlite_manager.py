@@ -372,7 +372,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 usage_resume_at INTEGER NOT NULL DEFAULT 0,
                 usage_limit_overrides TEXT NOT NULL DEFAULT '{}',
 
-                -- 上游 5xx 的就地冷却与降权计数（不改变 disabled）
+                -- 上游 5xx 的就地冷却与错误计数（不改变 disabled）
                 transient_hold_until REAL NOT NULL DEFAULT 0,
                 transient_error_count INTEGER NOT NULL DEFAULT 0,
                 transient_error_at REAL NOT NULL DEFAULT 0,
@@ -1321,7 +1321,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                        proxy_group_id
                 FROM antigravity_credentials
                 WHERE {where_sql} AND usage_resume_at <= ?
-                ORDER BY COALESCE(routing_turn, 0) + COALESCE(transient_error_count, 0) * 3 ASC,
+                ORDER BY COALESCE(routing_turn, 0) ASC,
                          COALESCE(rotation_order, 0) ASC,
                          filename ASC
                 LIMIT 1
@@ -3003,7 +3003,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self, api_key_id: str, *, include_secret: bool = False
     ) -> Optional[Dict[str, Any]]:
         self._ensure_initialized()
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
                 f"SELECT {', '.join(self.API_KEY_COLUMNS)} FROM api_keys WHERE id = ?",
                 (api_key_id,),
@@ -4596,7 +4596,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
-            async with sqlite_connect(self._db_path) as db:
+            async with sqlite_connect(self._db_path, single_select=True) as db:
                 # 精确匹配
                 if mode == "geminicli":
                     async with db.execute(f"""
@@ -5421,7 +5421,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                               )
                         """, (filename,))
 
-                        # 一次成功只清降权计数，不动冷却窗口。
+                        # 一次成功只清错误计数，不动冷却窗口。
                         # 5xx 之后紧接着返回的 200 往往来自冷却前发出的在飞请求，
                         # 它不能证明上游已恢复；窗口必须走完，否则降温形同虚设。
                         await db.execute("""
@@ -5448,7 +5448,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         上游 5xx 是服务端瞬时错误，不构成封号证据：选择器在窗口内跳过该账号，
         窗口到期自动放回；每命中一次累计 ``transient_error_count``，
-        选择 SQL 每 1 次让出 3 个轮转位，达成「计数降权」。
+        恢复后按正常轮转顺序选号。
         """
         self._ensure_initialized()
         filename = os.path.basename(filename)

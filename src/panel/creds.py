@@ -11,6 +11,7 @@ import sqlite3
 import time
 import zipfile
 from datetime import datetime
+from math import ceil
 from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Response
@@ -1893,21 +1894,44 @@ async def test_credential(
             }
 
         # 第一次测试：使用 gemini-2.5-flash
-        response = await post_async(
-            url=f"{api_base_url}/v1internal:generateContent",
-            json={
-                "model": test_model,
-                "project": project_id,
-                "request": {
-                    "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
-                    "generationConfig": {"maxOutputTokens": 1}
-                }
-            },
-            headers=headers,
-            timeout=30.0,
-            proxy_url=credentials.proxy_url if mode == "antigravity" else ...,
-            transport="antigravity" if mode == "antigravity" else None,
-        )
+        async def send_probe():
+            return await post_async(
+                url=f"{api_base_url}/v1internal:generateContent",
+                json={
+                    "model": test_model,
+                    "project": project_id,
+                    "request": {
+                        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                        "generationConfig": {"maxOutputTokens": 1}
+                    }
+                },
+                headers=headers,
+                timeout=30.0,
+                proxy_url=credentials.proxy_url if mode == "antigravity" else ...,
+                transport="antigravity" if mode == "antigravity" else None,
+            )
+
+        retry_headers = {}
+        response = await send_probe()
+        if mode == "antigravity" and response.status_code == 503:
+            from src.api.utils import get_retry_config
+            from src.api.antigravity import _resolve_error_cooldown
+
+            retry = await get_retry_config()
+            if retry["retry_enabled"]:
+                for _ in range(retry["max_retries"]):
+                    deadline = await _resolve_error_cooldown(
+                        503, response.text, filename, headers=response.headers
+                    )
+                    # Keep a long upstream cooldown visible to the operator.
+                    delay = max(retry["retry_interval"], (deadline or 0) - time.time())
+                    if delay > max(30, retry["retry_interval"]):
+                        retry_headers["Retry-After"] = str(ceil(delay))
+                        break
+                    await asyncio.sleep(delay)
+                    response = await send_probe()
+                    if response.status_code != 503:
+                        break
 
         # 返回实际的状态码和详细信息
         status_code = response.status_code
@@ -1983,15 +2007,27 @@ async def test_credential(
                 # 打印详细错误内容到日志
                 log.error(f"凭证测试错误详情 - 文件: {filename}, 模式: {mode}, 状态码: {status_code}, 错误内容: {error_text}")
 
-                # 使用覆盖模式保存错误（与 credential_manager 保持一致）
-                error_codes = [status_code]
-                error_messages = {str(status_code): error_text if error_text else f"HTTP {status_code}"}
+                if mode == "antigravity" and status_code == 403:
+                    from src.api.antigravity import _handle_antigravity_403
 
-                # 更新状态
-                await storage_adapter.update_credential_state(filename, {
-                    "error_codes": error_codes,
-                    "error_messages": error_messages
-                }, mode=mode)
+                    handling = await _handle_antigravity_403(
+                        credential_name=filename, credential_data=credential_data,
+                        model_name=test_model, error_text=error_text,
+                    )
+                    await credential_manager.record_api_call_result(
+                        filename, False, error_code=403, error_message=error_text,
+                        mode=mode, model_name=test_model, cooldown_until=handling.cooldown_until,
+                    )
+                else:
+                    # 使用覆盖模式保存错误（与 credential_manager 保持一致）
+                    error_codes = [status_code]
+                    error_messages = {str(status_code): error_text if error_text else f"HTTP {status_code}"}
+
+                    # 更新状态
+                    await storage_adapter.update_credential_state(filename, {
+                        "error_codes": error_codes,
+                        "error_messages": error_messages
+                    }, mode=mode)
 
                 log.info(f"已保存测试错误信息: {filename} - 错误码 {status_code}")
             except Exception as e:
@@ -2002,6 +2038,7 @@ async def test_credential(
 
         return JSONResponse(
             status_code=status_code,
+            headers=retry_headers,
             content={
                 "success": False,
                 "status_code": status_code,

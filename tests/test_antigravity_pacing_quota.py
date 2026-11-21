@@ -116,7 +116,7 @@ async def test_concurrency_defaults_to_fifteen(monkeypatch):
 async def test_slot_allows_configured_concurrency_without_wait(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "3")
     for _ in range(3):
-        assert await pacing.acquire_credential_slot("acc-a") < 0.01
+        assert await pacing.acquire_limited_credential_slot("acc-a") < 0.01
     assert pacing._SLOTS["acc-a"].inflight == 3
 
 
@@ -124,10 +124,10 @@ async def test_slot_allows_configured_concurrency_without_wait(monkeypatch):
 async def test_slot_wait_timeout_applies_backpressure(monkeypatch):
     """并发占满且无人释放：等待上限后抛出背压异常，不超额占用槽位。"""
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
-    await pacing.acquire_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
     t0 = time.monotonic()
     with pytest.raises(pacing.CredentialSlotWaitTimeout):
-        await pacing.acquire_credential_slot("acc-a")
+        await pacing.acquire_limited_credential_slot("acc-a")
     elapsed = time.monotonic() - t0
     assert elapsed >= 0.09  # 等到配置的 0.1 秒等待上限
     assert elapsed < 0.5
@@ -138,15 +138,15 @@ async def test_slot_wait_timeout_applies_backpressure(monkeypatch):
 async def test_slot_release_wakes_waiter(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS", "5")
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
-    await pacing.acquire_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
 
     async def _release_soon():
         await asyncio.sleep(0.05)
-        pacing.release_credential_slot("acc-a")
+        pacing.release_limited_credential_slot("acc-a")
 
     releaser = asyncio.create_task(_release_soon())
     t0 = time.monotonic()
-    await pacing.acquire_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
     elapsed = time.monotonic() - t0
     await releaser
     assert elapsed < 1.0  # 由 release 唤醒，而不是等满上限
@@ -156,9 +156,9 @@ async def test_slot_release_wakes_waiter(monkeypatch):
 @pytest.mark.asyncio
 async def test_slot_release_is_idempotent_at_zero(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "2")
-    await pacing.acquire_credential_slot("acc-a")
-    pacing.release_credential_slot("acc-a")
-    pacing.release_credential_slot("acc-a")  # 多余释放不应变负
+    await pacing.acquire_limited_credential_slot("acc-a")
+    pacing.release_limited_credential_slot("acc-a")
+    pacing.release_limited_credential_slot("acc-a")  # 多余释放不应变负
     assert pacing._SLOTS["acc-a"].inflight == 0
 
 
@@ -168,14 +168,14 @@ async def test_slot_disabled_bypasses_gate(monkeypatch):
 
     monkeypatch.setattr(config, "get_antigravity_pacing_enabled_sync", lambda: False)
     for _ in range(20):
-        assert await pacing.acquire_credential_slot("acc-a") == 0.0
+        assert await pacing.acquire_limited_credential_slot("acc-a") == 0.0
     assert "acc-a" not in pacing._SLOTS
 
 
 @pytest.mark.asyncio
 async def test_429_tightens_concurrency_and_success_restores(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "4")
-    await pacing.acquire_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
     slot = pacing._SLOTS["acc-a"]
     slot.limit = 4
 
@@ -187,22 +187,22 @@ async def test_429_tightens_concurrency_and_success_restores(monkeypatch):
     pacing.note_success("acc-a")
     assert slot.limit == 2  # 成功后 +1 恢复
 
-    pacing.release_credential_slot("acc-a")
+    pacing.release_limited_credential_slot("acc-a")
     assert slot.inflight == 0
 
 
 @pytest.mark.asyncio
 async def test_concurrency_config_lower_applies_immediately(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "8")
-    await pacing.acquire_credential_slot("acc-a")
-    pacing.release_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
+    pacing.release_limited_credential_slot("acc-a")
     slot = pacing._SLOTS["acc-a"]
     assert slot.limit == 8
 
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "2")
-    await pacing.acquire_credential_slot("acc-a")
+    await pacing.acquire_limited_credential_slot("acc-a")
     assert slot.limit == 2  # 面板下调立即生效
-    pacing.release_credential_slot("acc-a")
+    pacing.release_limited_credential_slot("acc-a")
 
 
 def test_quota_guard_snapshot_and_threshold():

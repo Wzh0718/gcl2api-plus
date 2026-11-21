@@ -228,3 +228,11 @@ async def test_unchanged_group_binding_can_be_read_while_another_writer_is_activ
         assert current["proxy_node_id"] == bound["proxy_node_id"]
         assert current["proxy_url"] == bound["proxy_url"]
         await writer.rollback()
+
+@pytest.mark.asyncio
+async def test_76_concurrent_claims_split_evenly_across_38_accounts(manager):
+    names = [f"account-{index}.json" for index in range(38)]
+    for name in names[len(NAMES):]:
+        await manager.store_credential(name, {"access_token": "test"}, mode="antigravity")
+    selected = await asyncio.gather(*(select(manager) for _ in range(76)))
+    assert Counter(selected) == dict.fromkeys(names, 2)

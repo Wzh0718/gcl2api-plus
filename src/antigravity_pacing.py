@@ -1,20 +1,7 @@
-"""Antigravity 每账号请求节奏：并发闸门 + 起始错峰 + 429 自适应收紧。
+"""Antigravity 请求准入与发起节奏。
 
-动机演变：
-- 2026-10-21（封控对齐）：真实官方客户端的请求间隔天然不均匀，网关多账号轮转
-  发出的请求「恒定间隔 / 瞬时并发」是上游行为指纹识别的明显信号，因此引入
-  每账号间隔 + 抖动。
-- 2026-10-22（效率优化）：硬间隔把每个账号锁成串行（1500ms → 0.67 rps），
-  而单账号实际可承载 15 个并发，业务侧表现为「每个请求先随机等 1~2 秒」。
-  节奏控制因此拆成两层：
-
-1. acquire/release_credential_slot()：**每账号并发闸门**（默认 15 个在飞请求），
-   这是真实的容量约束。并发占满时等待释放；等待超过配置的排队上限（默认 30 秒）后
-   抛出背压异常，由 API 层优先改选其他账号，无候选时才返回 429。
-2. pace_credential()：取得槽位后、实际上游发起前的毫秒级错峰 + 抖动
-   （默认 80ms ± 50%），只用于打散瞬时齐发，不再限制吞吐。
-3. 429 自适应：同一账号瞬时 429 使并发上限对半收紧（下限 1），成功后每次 +1，
-   逐步恢复到配置值——用上游真实信号找容量上限，而不是靠猜固定间隔。
+所有请求使用全池许可与养号租约。普通文本直接使用轮转分配的账号。
+图片与提示词融合另外占用单账号槽位，瞬时 429 收紧其上限，成功后逐步恢复。
 """
 
 import asyncio
@@ -175,17 +162,10 @@ async def pace_credential(credential_name: str) -> float:
 
 
 async def acquire_credential_slot(credential_name: str) -> float:
-    """获取账号的养号租约和本地并发槽位；返回本地等待秒数。"""
+    """获取全池许可和养号租约，普通文本轮转无需等待账号槽位。"""
     if not credential_name:
         return 0.0
-    from config import (
-        get_antigravity_pacing_enabled_sync,
-        get_antigravity_pacing_slot_wait_seconds_sync,
-    )
-    from src.antigravity_dynamic_warmup import (
-        acquire_dynamic_warmup_slot,
-        release_dynamic_warmup_slot,
-    )
+    from src.antigravity_dynamic_warmup import acquire_dynamic_warmup_slot
 
     if is_dormant(credential_name):
         log.debug(f"[PACING] 账号 {credential_name} 处于静默窗口，本轮跳过")
@@ -217,6 +197,21 @@ async def acquire_credential_slot(credential_name: str) -> float:
     if not warmup.get("acquired"):
         fleet_release()
         raise CredentialSlotWaitTimeout(credential_name, warmup=True)
+    return 0.0
+
+
+async def acquire_limited_credential_slot(credential_name: str) -> float:
+    """图片及账号绑定的辅助请求另行占用单账号并发槽位。"""
+    if not credential_name:
+        return 0.0
+    from src.antigravity_fleet_gate import release as fleet_release
+    from config import (
+        get_antigravity_pacing_enabled_sync,
+        get_antigravity_pacing_slot_wait_seconds_sync,
+    )
+    from src.antigravity_dynamic_warmup import release_dynamic_warmup_slot
+
+    await acquire_credential_slot(credential_name)
     try:
         if not get_antigravity_pacing_enabled_sync():
             return 0.0
@@ -277,12 +272,16 @@ def apply_account_concurrency(credential_name: str) -> None:
 
 
 def release_credential_slot(credential_name: str) -> None:
-    """释放并发槽位与全池许可。纯同步，可在 finally / 取消路径安全调用。"""
+    """归还本次请求的全池许可。"""
     if not credential_name:
         return
     from src.antigravity_fleet_gate import release as fleet_release
 
     fleet_release()
+
+
+def release_limited_credential_slot(credential_name: str) -> None:
+    release_credential_slot(credential_name)
     slot = _SLOTS.get(credential_name)
     if slot is None:
         return

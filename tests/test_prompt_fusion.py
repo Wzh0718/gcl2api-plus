@@ -211,11 +211,11 @@ async def test_generate_uses_selected_account_without_recursion(monkeypatch, fin
         'response': {'candidates': [{'finishReason': finish, 'content': {'parts': [{'text': output}]}}]}}))
     monkeypatch.setattr(httpx_client, 'post_async', post)
     acquire = AsyncMock()
-    monkeypatch.setattr(antigravity_pacing, 'acquire_credential_slot', acquire)
+    monkeypatch.setattr(antigravity_pacing, 'acquire_limited_credential_slot', acquire)
     monkeypatch.setattr(antigravity_pacing, 'pace_credential', AsyncMock())
     from unittest.mock import Mock
     release = Mock()
-    monkeypatch.setattr(antigravity_pacing, 'release_credential_slot', release)
+    monkeypatch.setattr(antigravity_pacing, 'release_limited_credential_slot', release)
     recorder = Mock(record=AsyncMock())
     monkeypatch.setattr(billing, 'get_billing_recorder', AsyncMock(return_value=recorder))
     credential = {'access_token': 'test-token', 'project_id': 'test-project', 'proxy_mode': 'direct'}
