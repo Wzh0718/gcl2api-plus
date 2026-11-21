@@ -466,40 +466,37 @@ async def test_concurrent_antigravity_selection_opens_one_sqlite_connection(
             mode="antigravity",
         )
 
-    original_connect = sqlite_module.aiosqlite.connect
+    import threading
+    original_connect = sqlite_module.sqlite3.connect
+    guard = threading.Lock()
     active_connections = 0
     peak_connections = 0
 
-    class TrackedConnection:
-        def __init__(self, connection):
-            self.connection = connection
-
-        async def __aenter__(self):
-            nonlocal active_connections, peak_connections
-            opened = await self.connection.__aenter__()
-            active_connections += 1
-            peak_connections = max(peak_connections, active_connections)
-            await asyncio.sleep(0)
-            return opened
-
-        async def __aexit__(self, exc_type, exc, traceback):
+    class TrackedConnection(sqlite_module.sqlite3.Connection):
+        def close(self):
             nonlocal active_connections
             try:
-                return await self.connection.__aexit__(
-                    exc_type, exc, traceback
-                )
+                return super().close()
             finally:
-                active_connections -= 1
+                with guard:
+                    active_connections -= 1
 
     def tracked_connect(*args, **kwargs):
-        return TrackedConnection(original_connect(*args, **kwargs))
+        nonlocal active_connections, peak_connections
+        conn = original_connect(*args, **kwargs, factory=TrackedConnection)
+        with guard:
+            active_connections += 1
+            peak_connections = max(peak_connections, active_connections)
+        return conn
 
-    monkeypatch.setattr(sqlite_module.aiosqlite, "connect", tracked_connect)
-    await asyncio.gather(*(
+    monkeypatch.setattr(sqlite_module.sqlite3, "connect", tracked_connect)
+    results = await asyncio.gather(*(
         manager.get_next_available_credential(mode="antigravity")
         for _ in range(20)
     ))
 
+    assert all(results)
+    assert active_connections == 0
     assert peak_connections == 1
     await manager.close()
 
