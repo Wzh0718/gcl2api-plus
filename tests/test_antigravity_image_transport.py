@@ -193,7 +193,7 @@ async def test_redis_session_keys_are_isolated_by_credential():
         def __init__(self):
             self.values = {}
 
-        async def eval(self, script, numkeys, key, initial, now, ttl):
+        async def eval(self, script, numkeys, key, initial, now, ttl, max_steps):
             import json
             state = json.loads(self.values.get(key, initial))
             if key in self.values:

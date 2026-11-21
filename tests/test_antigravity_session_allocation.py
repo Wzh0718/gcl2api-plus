@@ -56,10 +56,11 @@ async def test_redis_allocations_are_one_atomic_operation(monkeypatch):
             self.values = {}
             self.calls = 0
 
-        async def eval(self, script, numkeys, key, initial, now, ttl):
+        async def eval(self, script, numkeys, key, initial, now, ttl, max_steps):
             await asyncio.sleep(0)  # allow all callers to reach allocation
             assert script == agy._SESSION_ALLOCATE_LUA
             assert numkeys == 1 and ttl == agy.SESSION_TTL_SECONDS
+            assert int(max_steps) > 0
             self.calls += 1
             state = json.loads(self.values.get(key, initial))
             if key in self.values:
