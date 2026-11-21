@@ -1,5 +1,6 @@
 """Main-store PostgreSQL backend. Business rules live in the shared repositories."""
 
+import asyncio
 from contextlib import AsyncExitStack
 from datetime import datetime
 import os
@@ -35,8 +36,12 @@ class PostgresManager(SQLiteManager):
             self._credentials_dir = os.getenv("CREDENTIALS_DIR", "./creds")
             self._db_path = database = PostgresDatabase(main_dsn())
             self.refresh_import_queue = RefreshImportQueue(database, self._credentials_dir)
+            claim_connections = int(os.getenv("MAIN_POSTGRES_CLAIM_CONNECTIONS", "4"))
+            if not 1 <= claim_connections <= 16:
+                raise ValueError("MAIN_POSTGRES_CLAIM_CONNECTIONS must be between 1 and 16")
+            self._claim_slots = asyncio.Semaphore(claim_connections)
             self._claim_pool = AsyncConnectionPool(
-                main_dsn(), min_size=0, max_size=1, open=False,
+                main_dsn(), min_size=0, max_size=claim_connections, open=False,
                 kwargs={**connection_options(database.schema), "autocommit": True},
             )
             await database.pool.open()
@@ -155,14 +160,14 @@ class PostgresManager(SQLiteManager):
                 return row, 0, False
 
     async def _claim_active(self, model_name, attempted, credential_name):
-        # One connection per worker is reserved for the already-serialized rotation.
+        # Overlap client round trips. The transaction advisory lock orders rotations.
         # Each command gets a new READ COMMITTED snapshot after the advisory lock.
         async with AsyncExitStack() as stack:
             with measure_phase("selection_lock_wait"):
                 # Waiters retain request cancellation semantics instead of expiring
                 # as failed pool checkouts when a burst fills the rotation queue.
                 with measure_pg("local_queue"):
-                    await stack.enter_async_context(self._selection_lock)
+                    await stack.enter_async_context(self._claim_slots)
                 with measure_pg("claim_pool"):
                     conn = await stack.enter_async_context(self._claim_pool.connection())
             now = time.time()
