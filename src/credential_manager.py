@@ -531,7 +531,15 @@ class CredentialManager:
 
         from src.storage.sqlite_manager import EXCLUSIVE_PROBE_RETRY_SECONDS, SelectedAntigravityCredential
 
-        selected = isinstance(credential_data, SelectedAntigravityCredential) and credential_data.filename == credential_name
+        # PostgreSQL claims carry a resolved network snapshot only when the
+        # binding is still reusable. An unbound group account yields ``None``;
+        # fall through so this call resolves (and persists) a node instead of
+        # dereferencing it here.
+        selected = (
+            isinstance(credential_data, SelectedAntigravityCredential)
+            and credential_data.filename == credential_name
+            and bool(credential_data.network)
+        )
         if selected:
             expiry = credential_data.network.get("bound_proxy_expires_at")
             selected = not force and (expiry is None or expiry > time.time())
@@ -773,6 +781,27 @@ class CredentialManager:
                 )
                 return None
             if not rotated:
+                if not network.get("bound_proxy_node_id"):
+                    # Nothing to cool: the account has no node yet. Assign one
+                    # from the group instead of parking it on a rejected route.
+                    assigned = await self._storage_adapter.resolve_credential_network(
+                        credential_name, mode="antigravity"
+                    )
+                    if assigned and assigned.get("proxy_url"):
+                        log.warning(
+                            "[ANTIGRAVITY REGION] bound a fresh node for unbound "
+                            f"account: credential={credential_name}"
+                        )
+                        if not verify:
+                            return await self._storage_adapter.get_antigravity_account_health(
+                                credential_name
+                            )
+                        last_health = await self.check_antigravity_account_health(
+                            credential_name
+                        )
+                        if last_health.get("eligibility_status") != "geo_blocked":
+                            return last_health
+                        continue
                 log.warning(
                     "[ANTIGRAVITY REGION] no free node in group: "
                     f"credential={credential_name}"
