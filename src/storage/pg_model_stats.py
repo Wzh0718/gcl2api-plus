@@ -1,5 +1,9 @@
 """PostgreSQL increments on top of the existing SQLite model-statistics history."""
+from contextlib import AsyncExitStack
+
 import asyncpg
+
+from src.request_timing import measure_pg
 
 COUNTERS = (
     "success_count", "failed_count", "upstream_total_seconds", "upstream_timed_count",
@@ -34,25 +38,28 @@ class PostgresModelStats:
 
     async def increment(self, mode, day, credential, model, success, status, upstream, gateway):
         # Both counters commit in one statement. All writers take the total row first.
-        async with self.pool.acquire(timeout=4) as conn:
-            await conn.execute("""
-                INSERT INTO model_stat_increments AS s
-                    (mode, period, credential_name, model_name, success_count, failed_count,
-                     upstream_total_seconds, upstream_timed_count, gateway_total_seconds,
-                     gateway_timed_count, last_status, updated_at)
-                SELECT $1,p,$3,$4,$5,$6,$7,$8,$9,$10,$11,extract(epoch from statement_timestamp())
-                FROM (VALUES ('*'), ($2::text)) periods(p) ORDER BY p
-                ON CONFLICT (mode,period,credential_name,model_name) DO UPDATE SET
-                    success_count=s.success_count+excluded.success_count,
-                    failed_count=s.failed_count+excluded.failed_count,
-                    upstream_total_seconds=s.upstream_total_seconds+excluded.upstream_total_seconds,
-                    upstream_timed_count=s.upstream_timed_count+excluded.upstream_timed_count,
-                    gateway_total_seconds=s.gateway_total_seconds+excluded.gateway_total_seconds,
-                    gateway_timed_count=s.gateway_timed_count+excluded.gateway_timed_count,
-                    last_status=excluded.last_status, updated_at=excluded.updated_at
-            """, mode, day, credential, model, int(success), int(not success),
-                float(upstream or 0), int(upstream is not None),
-                float(gateway or 0), int(gateway is not None), status)
+        async with AsyncExitStack() as stack:
+            with measure_pg("pool"):
+                conn = await stack.enter_async_context(self.pool.acquire(timeout=4))
+            with measure_pg("sql"):
+                await conn.execute("""
+                    INSERT INTO model_stat_increments AS s
+                        (mode, period, credential_name, model_name, success_count, failed_count,
+                         upstream_total_seconds, upstream_timed_count, gateway_total_seconds,
+                         gateway_timed_count, last_status, updated_at)
+                    SELECT $1,p,$3,$4,$5,$6,$7,$8,$9,$10,$11,extract(epoch from statement_timestamp())
+                    FROM (VALUES ('*'), ($2::text)) periods(p) ORDER BY p
+                    ON CONFLICT (mode,period,credential_name,model_name) DO UPDATE SET
+                        success_count=s.success_count+excluded.success_count,
+                        failed_count=s.failed_count+excluded.failed_count,
+                        upstream_total_seconds=s.upstream_total_seconds+excluded.upstream_total_seconds,
+                        upstream_timed_count=s.upstream_timed_count+excluded.upstream_timed_count,
+                        gateway_total_seconds=s.gateway_total_seconds+excluded.gateway_total_seconds,
+                        gateway_timed_count=s.gateway_timed_count+excluded.gateway_timed_count,
+                        last_status=excluded.last_status, updated_at=excluded.updated_at
+                """, mode, day, credential, model, int(success), int(not success),
+                    float(upstream or 0), int(upstream is not None),
+                    float(gateway or 0), int(gateway is not None), status)
 
     async def combined(self, mode, day, history, credentials):
         async with self.pool.acquire(timeout=4) as conn:

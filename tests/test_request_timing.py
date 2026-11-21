@@ -460,3 +460,65 @@ async def test_slow_request_distinguishes_lock_wait_from_work_and_limits_logs(mo
         assert 'success_lock_wait=12000.0' in logger.info.call_args.args[0]
     finally:
         timing.request_timing.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_settlement_phases_share_request_and_exclude_pool_release(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    import src.request_timing as timing
+    from src.billing import BillingRecorder
+    from src.credential_manager import CredentialManager
+    from src.storage.pg_model_stats import PostgresModelStats
+
+    now = [0]
+    monkeypatch.setattr(timing, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    async def main_store(**kwargs):
+        with timing.measure_pg("pool"):
+            now[0] += 1
+        with timing.measure_pg("sql"):
+            now[0] += 2
+        return False
+
+    async def execute(*args):
+        now[0] += 4
+
+    @asynccontextmanager
+    async def acquire(timeout):
+        now[0] += 3
+        try:
+            yield SimpleNamespace(execute=execute)
+        finally:
+            now[0] += 10
+
+    stats = PostgresModelStats(SimpleNamespace(acquire=acquire))
+
+    async def increment(name, model, success, **kwargs):
+        await stats.increment("antigravity", "2026-11-21", name, model, success, None, 0, 0)
+
+    async def success(name, **kwargs):
+        await main_store()
+
+    async def prices():
+        now[0] += 5
+        return []
+
+    backend = SimpleNamespace(record_success=success, increment_model_stats=increment)
+    storage = SimpleNamespace(_backend=backend, record_billing_usage=main_store, list_billing_prices=prices)
+    manager = CredentialManager()
+    manager._initialized = True
+    manager._storage_adapter = storage
+    recorder = BillingRecorder(storage)
+    state = timing.RequestTiming()
+    token = request_timing.set(state)
+    try:
+        await manager.record_api_call_result("account", True, mode="antigravity", model_name="model")
+        await recorder.record(request_id="request", credential_name="account", model="model", success=True)
+        assert state.details()["phase_ms"] == {
+            "credential_save_pg_pool": 1000, "credential_save_pg_sql": 2000,
+            "model_stats_pg_pool": 3000, "model_stats_pg_sql": 4000,
+            "billing_price_lookup": 5000, "billing_pg_pool": 1000, "billing_pg_sql": 2000,
+        }
+    finally:
+        request_timing.reset(token)

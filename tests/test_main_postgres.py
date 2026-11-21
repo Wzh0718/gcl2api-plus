@@ -19,6 +19,29 @@ from src.api_keys import ApiKeyAuthError, ApiKeyService
 from src.storage_adapter import StorageAdapter
 
 
+@pytest.mark.parametrize(("setting", "expected"), [(None, 100), ("6", 6)])
+async def test_main_pool_capacity(monkeypatch, setting, expected):
+    from src.storage.main_postgres import PostgresDatabase
+
+    if setting is None:
+        monkeypatch.delenv("MAIN_POSTGRES_POOL_MAX_SIZE", raising=False)
+    else:
+        monkeypatch.setenv("MAIN_POSTGRES_POOL_MAX_SIZE", setting)
+    pool = PostgresDatabase("").pool
+    assert pool.max_size == expected
+    assert pool.min_size == 0
+    await pool.close()
+
+
+@pytest.mark.parametrize("setting", ["0", "-1", "invalid"])
+async def test_invalid_main_pool_capacity(monkeypatch, setting):
+    from src.storage.main_postgres import PostgresDatabase
+
+    monkeypatch.setenv("MAIN_POSTGRES_POOL_MAX_SIZE", setting)
+    with pytest.raises(ValueError, match="MAIN_POSTGRES_POOL_MAX_SIZE"):
+        PostgresDatabase("")
+
+
 @pytest_asyncio.fixture
 async def pg_store(tmp_path, monkeypatch):
     dsn = os.getenv("TEST_MAIN_POSTGRES_DSN")

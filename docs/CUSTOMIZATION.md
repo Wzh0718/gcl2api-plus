@@ -365,6 +365,8 @@ ghcr.io/wzh0718/gcl2api-plus:v20260727
 
 应用通过 `MAIN_POSTGRES_DSN` 选择 PostgreSQL 主库，`MAIN_POSTGRES_SCHEMA` 默认是 `gcli_main`。未配置主库 DSN 的安装继续使用 SQLite。通过容器的服务级 `env_file` 提供连接信息。已有单独模型统计库的安装保留原 `MODEL_STATS_POSTGRES_DSN`，看板将导入的历史统计和现有增量合并。保留原凭证目录挂载，API 密钥和导入队列的加密密钥仍从该目录加载。
 
+主库异步连接池按需建立连接，`MAIN_POSTGRES_POOL_MAX_SIZE` 设置每个 worker 的上限，默认 100。此前的上限是 6；数据库容量较小的部署可在升级前显式设为 6。容量预算按所有实例的 worker 总数计算：每个 worker 除主池外，还要预留同步池 4、领取池配置上限，以及模型统计库与主库共用 PostgreSQL 时的统计池 4。另需保留数据库管理连接和其他客户端的额度。例如，单 worker 使用默认连接池配置时，四个池的上限合计 112，PostgreSQL 的 `max_connections` 可设为 128，并按主机资源和实际负载验证。修改数据库的 `max_connections` 需要重启 PostgreSQL。
+
 活跃凭证领取使用独立连接池，`MAIN_POSTGRES_CLAIM_CONNECTIONS` 设置每个 worker 的并发领取上限，默认 4，范围 1–16。多实例部署按 worker 总数预留数据库连接，设为 1 并重启即可恢复单路领取。
 
 切换现有安装时，在已确认的维护窗口内停止接收新流量，排空在途结算、监控队列及后台写入任务，再停止旧应用的所有写入进程。使用有权在目标空 schema 创建对象的数据库角色运行导入程序。设定 `MAIN_POSTGRES_DSN` 后，从新版本代码目录运行：

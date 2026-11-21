@@ -200,10 +200,16 @@ class PostgresDatabase:
         self._holds = {}
         self._report_at = time.monotonic() + 30
         self.schema = schema_name()
+        try:
+            max_connections = int(os.getenv("MAIN_POSTGRES_POOL_MAX_SIZE", "100"))
+        except ValueError as exc:
+            raise ValueError("MAIN_POSTGRES_POOL_MAX_SIZE must be a positive integer") from exc
+        if max_connections < 1:
+            raise ValueError("MAIN_POSTGRES_POOL_MAX_SIZE must be a positive integer")
         self.pool = AsyncConnectionPool(
             dsn,
             min_size=0,
-            max_size=6,
+            max_size=max_connections,
             timeout=10,
             kwargs=connection_options(self.schema),
             open=False,
