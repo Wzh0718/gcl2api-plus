@@ -473,7 +473,7 @@ class _Fake403CredentialManager:
 
 
 class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_non_stream_unknown_403_returns_original_without_generic_auto_ban(self):
+    async def test_non_stream_unknown_403_disables_account_and_returns_original(self):
         import httpx
         from src.api import antigravity
 
@@ -495,7 +495,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 antigravity,
                 "check_should_auto_ban",
-                AsyncMock(return_value=False),
+                AsyncMock(return_value=True),
             ),
             patch.object(
                 antigravity,
@@ -565,14 +565,14 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
                 {"model": "gemini-test", "request": {"contents": []}}
             )
 
-        # 上游 403 在最终出口处对客户端改写为 503（响应体保留）
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.body, b"Forbidden")
         generic_retry.assert_not_awaited()
         switch_retry.assert_not_awaited()
         self.assertEqual(manager.health["last_403_category"], "unknown_403")
 
-    async def test_stream_unknown_403_returns_original_without_generic_auto_ban(self):
+    async def test_stream_unknown_403_disables_account_and_returns_original(self):
         from fastapi import Response
         from src.api import antigravity
 
@@ -596,7 +596,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 antigravity,
                 "check_should_auto_ban",
-                AsyncMock(return_value=False),
+                AsyncMock(return_value=True),
             ),
             patch.object(
                 antigravity,
@@ -662,7 +662,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.assertEqual(len(chunks), 1)
-        # 上游 403 在最终出口处对客户端改写为 503（响应体保留）
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
         self.assertEqual(chunks[0].status_code, 403)
         generic_retry.assert_not_awaited()
         self.assertEqual(manager.health["last_403_category"], "unknown_403")
@@ -702,7 +702,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
         self.assertEqual(manager.health["last_403_category"], "geo_blocked")
 
-    async def test_geo_403_never_disables_account_when_auto_ban_enabled(self):
+    async def test_geo_403_disables_account_when_auto_ban_enabled(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -728,7 +728,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "geo_blocked")
         self.assertFalse(result.should_retry)
-        self.assertEqual(manager.disabled, [])
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
 
     async def test_confirmed_account_403_disables_only_when_auto_ban_is_enabled(self):
@@ -799,7 +799,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.disabled, [])
         self.assertEqual(manager.rebind_calls, [])
 
-    async def test_unknown_403_never_disables_account_when_auto_ban_enabled(self):
+    async def test_unknown_403_disables_account_when_auto_ban_enabled(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -825,10 +825,10 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "unknown_403")
         self.assertFalse(result.should_retry)
-        self.assertEqual(manager.disabled, [])
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
         self.assertEqual(manager.rebind_calls, [])
 
-    async def test_model_403_only_cools_model_when_auto_ban_enabled(self):
+    async def test_model_403_cools_model_and_disables_account_when_auto_ban_enabled(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -859,9 +859,9 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             result.cooldown_until,
             before + antigravity.MODEL_FORBIDDEN_COOLDOWN_SECONDS,
         )
-        self.assertEqual(manager.disabled, [])
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
 
-    async def test_validation_required_cools_down_600s_and_never_bans(self):
+    async def test_validation_required_cools_down_and_honors_auto_ban(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -871,7 +871,6 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         before = time.time()
-        # 即使自动封禁开关打开，VALIDATION_REQUIRED 也不禁用账号
         with (
             patch.object(antigravity, "credential_manager", manager),
             patch.object(
@@ -897,7 +896,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             result.cooldown_until, before + 600
         )
         self.assertLessEqual(result.cooldown_until, time.time() + 600)
-        self.assertEqual(manager.disabled, [])
+        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
         self.assertEqual(
             manager.health["last_403_category"], "validation_required"
         )

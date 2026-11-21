@@ -1037,8 +1037,9 @@ async def test_image_credential_selection_prunes_removed_account_health(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_image_non_stream_rotates_capacity_without_account_unavailable_alert(
-    monkeypatch,
+@pytest.mark.parametrize("single_account", [False, True])
+async def test_image_non_stream_recovers_from_503(
+    monkeypatch, single_account,
 ):
     import httpx
 
@@ -1062,7 +1063,7 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
                     "proxy_mode": "direct",
                     "_image_lease_id": "lease-ultra",
                 }
-            if "pro.json" not in excluded:
+            if not single_account and "pro.json" not in excluded:
                 return "pro.json", {
                     "access_token": "pro-token",
                     "project_id": "pro-project",
@@ -1100,10 +1101,12 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
 
     async def fake_image_post(**kwargs):
         upstream_calls.append(kwargs)
-        if kwargs["json_body"]["project"] == "ultra-project":
+        if len(upstream_calls) == 1:
             response = httpx.Response(
                 503,
-                json={"error": {"details": [{"reason": "MODEL_CAPACITY_EXHAUSTED"}]}},
+                json={"error": "unavailable"} if single_account else {
+                    "error": {"details": [{"reason": "MODEL_CAPACITY_EXHAUSTED"}]}
+                },
             )
             return antigravity.ImageUpstreamResult(response, "sandbox", ())
         response = httpx.Response(
@@ -1159,6 +1162,14 @@ async def test_image_non_stream_rotates_capacity_without_account_unavailable_ale
 
     assert billing_records[0]['request_model'] == 'client-image-alias'
     assert response.status_code == 200
+    assert len(billing_records) == 1
+    if single_account:
+        assert manager.selections == [set(), {"ultra.json"}, set()]
+        assert [call["json_body"]["project"] for call in upstream_calls] == ["ultra-project"] * 2
+        assert manager.releases == [("ultra.json", "lease-ultra")] * 2
+        persistent_error.assert_awaited_once()
+        alert.assert_not_awaited()
+        return
     assert manager.selections == [set(), {"ultra.json"}]
     assert [call["json_body"]["model"] for call in upstream_calls] == [
         "gemini-3-flash-image",

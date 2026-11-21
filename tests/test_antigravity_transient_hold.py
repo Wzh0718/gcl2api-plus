@@ -144,7 +144,7 @@ async def test_retry_path_cools_down_instead_of_banning(status_code):
     manager = _StubManager()
 
     should_retry = await handle_error_with_retry(
-        manager, status_code, "a.json", True, 0, 3, 0, mode="antigravity"
+        manager, status_code, "a.json", True, 1, 3, 0, mode="antigravity"
     )
 
     assert should_retry is True, "5xx 仍应换号重试"

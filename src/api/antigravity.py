@@ -896,12 +896,7 @@ async def _handle_antigravity_403(
     model_name: str,
     error_text: str,
 ) -> Antigravity403HandlingResult:
-    """Persist a classified 403 and apply the disposal action for one account.
-
-    TOS 条款封禁无条件立即禁用；其他账号级权限拒绝仍受自动封禁开关控制。
-    地区、模型、验证和未知 403 都保守处置，避免一次端点故障把
-    所有仍可发送消息的账号误标成不可用。
-    """
+    """Record the 403 category and enforce the configured status-code policy."""
     health = await credential_manager.get_antigravity_account_health(
         credential_name
     )
@@ -944,27 +939,17 @@ async def _handle_antigravity_403(
     }:
         note_dynamic_warmup_outcome(credential_name, "paused")
 
-    # VALIDATION_REQUIRED 是临时性账号验证：记录模型冷却，
-    # 即使自动封禁开关打开也不禁用账号（验证完成后账号仍可恢复）。
+    if decision.tos_violation or await check_should_auto_ban(403):
+        await credential_manager.set_cred_disabled(
+            credential_name, True, mode="antigravity"
+        )
+
     if decision.category == "validation_required":
         return Antigravity403HandlingResult(
             decision,
             should_retry=False,
             cooldown_until=timestamp + VALIDATION_REQUIRED_COOLDOWN_SECONDS,
         )
-
-    if decision.disable_account:
-        if decision.tos_violation:
-            await credential_manager.set_cred_disabled(
-                credential_name, True, mode="antigravity"
-            )
-            return Antigravity403HandlingResult(decision, should_retry=False)
-        if await check_should_auto_ban(403):
-            await credential_manager.set_cred_disabled(
-                credential_name, True, mode="antigravity"
-            )
-            return Antigravity403HandlingResult(decision, should_retry=False)
-        return Antigravity403HandlingResult(decision, should_retry=False)
 
     if decision.cooldown_model:
         return Antigravity403HandlingResult(
@@ -1564,13 +1549,15 @@ async def _stream_request_inner(
                 )
                 if not switched:
                     log.error("[ANTIGRAVITY STREAM] 重试时无可用凭证或令牌")
-                    returned_429 = (not image_request and last_error_response is not None
-                                    and last_error_response.status_code == 429)
-                    await record_billing_once(False, response=last_error_response if returned_429 else None)
+                    return_upstream_error = last_error_response is not None and (
+                        last_error_response.status_code == 503
+                        or (not image_request and last_error_response.status_code == 429)
+                    )
+                    await record_billing_once(False, response=last_error_response if return_upstream_error else None)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
-                    if returned_429:
+                    if return_upstream_error:
                         yield last_error_response
                         return
                     yield Response(
@@ -1789,6 +1776,7 @@ async def _non_stream_image_request_inner(
                 f"[BILLING] failed to record image request: {type(exc).__name__}"
             )
 
+    retry_same_image_account = None
     account_attempt = 0
     while account_attempt < max_account_attempts:
         await lease_tracker.release()
@@ -1798,6 +1786,12 @@ async def _non_stream_image_request_inner(
             exclude_filenames=attempted_credentials,
             image_request=True,
         )
+        if not cred_result and retry_same_image_account:
+            # Re-enter normal admission and reserve a fresh image lease.
+            cred_result = await credential_manager.get_valid_credential(
+                mode="antigravity", model_name=requested_model, image_request=True,
+                exclude_filenames=attempted_credentials - {retry_same_image_account},
+            )
         if not cred_result:
             if last_response is None:
                 last_response = _selection_usage_rejection()
@@ -1808,9 +1802,10 @@ async def _non_stream_image_request_inner(
         await lease_tracker.activate(
             current_file, credential_data.pop("_image_lease_id", None)
         )
-        if current_file in attempted_credentials:
+        if current_file in attempted_credentials and current_file != retry_same_image_account:
             await lease_tracker.release()
             break
+        retry_same_image_account = None
         attempted_credentials.add(current_file)
         account_attempt += 1
         access_token = credential_data.get("access_token") or credential_data.get(
@@ -2006,6 +2001,11 @@ async def _non_stream_image_request_inner(
             upstream_seconds=elapsed,
             gateway_seconds=None if will_retry else time.monotonic() - gateway_started,
         )
+
+        if will_retry and status_code == 503:
+            if cooldown_until is None:
+                retry_same_image_account = current_file
+            await asyncio.sleep(retry_config["retry_interval"])
 
         if not retry_enabled or not retryable:
             break
@@ -2509,12 +2509,12 @@ async def non_stream_request(
                 if not switched:
                     log.error("[ANTIGRAVITY] 重试时无可用凭证或令牌")
                     await record_billing_once(False, response=last_error_response if (
-                        last_error_response is not None and last_error_response.status_code == 429
+                        last_error_response is not None and last_error_response.status_code in (429, 503)
                     ) else None)
                     await _alert_all_accounts_unavailable_if_needed(
                         model_name, attempted_credentials
                     )
-                    if last_error_response is not None and last_error_response.status_code == 429:
+                    if last_error_response is not None and last_error_response.status_code in (429, 503):
                         return last_error_response
                     return Response(
                         content=json.dumps({"error": "当前无可用凭证"}),
