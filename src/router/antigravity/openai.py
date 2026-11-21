@@ -47,6 +47,7 @@ from src.converter.remote_images import (
 )
 
 # 本地模块 - 基础路由工具
+from src.rate_limits import retry_after_headers
 from src.router.hi_check import is_health_check_request, create_health_check_response
 from src.router.stream_passthrough import (
     build_streaming_response_or_error,
@@ -579,7 +580,8 @@ async def chat_completions(
             status_code
         )
 
-        return JSONResponse(content=openai_response, status_code=status_code)
+        return JSONResponse(content=openai_response, status_code=status_code,
+                            headers=retry_after_headers(response))
 
     # ========== 流式请求 ==========
 

@@ -47,6 +47,7 @@ async def pg_store(tmp_path, monkeypatch):
     dsn = os.getenv("TEST_MAIN_POSTGRES_DSN")
     if not dsn:
         pytest.skip("TEST_MAIN_POSTGRES_DSN is not set")
+    monkeypatch.setenv("REDIS_URL", os.getenv("TEST_ACCOUNT_COOLDOWN_REDIS_URL", ""))
     schema = "gcli_test_" + uuid4().hex
     monkeypatch.setenv("MAIN_POSTGRES_DSN", dsn)
     monkeypatch.setenv("MAIN_POSTGRES_SCHEMA", schema)
@@ -59,6 +60,7 @@ async def pg_store(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite3, "connect", unexpected)
     monkeypatch.setattr(aiosqlite, "connect", unexpected)
     adapter = StorageAdapter()
+    monkeypatch.setattr("src.storage_adapter._storage_adapter", adapter)
     try:
         await adapter.initialize()
         assert adapter.get_backend_type() == "postgresql"
@@ -665,3 +667,160 @@ async def test_pg_echo_read_error_allows_request_through_bound_node(pg_store, mo
     assert ready["proxy_node_id"] == node
     states = await backend.get_all_credential_states("antigravity")
     assert rank_antigravity_image_candidates(states, model_name="m") == [filename]
+
+
+async def test_shared_cooldowns_keep_model_and_account_deadlines_separate(pg_store, monkeypatch):
+    import time
+    from unittest.mock import AsyncMock
+    from src.rate_limits import selection_usage_resume_at
+    from src.storage.account_cooldowns import AccountCooldowns
+    from src.storage.main_postgres import main_dsn
+
+    backend = pg_store._backend
+    await pg_store.store_credential("a.json", {"project_id": "test"}, mode="antigravity")
+    now = int(time.time())
+    usage_until = now + 30
+    async with backend._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_credentials SET usage_resume_at=?, model_cooldowns=?",
+                         (usage_until, json.dumps({"m1": now + 90, "m2": now - 1})))
+        await db.commit()
+    claim = AsyncMock(wraps=backend._rotate_batch)
+    monkeypatch.setattr(backend, "_rotate_batch", claim)
+
+    assert await backend.get_next_available_credential("antigravity", "m1") is None
+    assert selection_usage_resume_at.get() == 0
+    assert claim.await_count == 1
+    await backend._cooldown_refresh
+    if os.getenv("TEST_ACCOUNT_COOLDOWN_REDIS_URL"):
+        # Another worker has no process-local copy.
+        old = backend._cooldowns
+        backend._cooldowns = AccountCooldowns(main_dsn() + "|" + backend._db_path.schema)
+        await old.close()
+    assert await backend.get_next_available_credential("antigravity", "m2") is None
+    assert selection_usage_resume_at.get() == usage_until
+    assert await backend.get_next_available_credential("antigravity", "m1") is None
+    assert selection_usage_resume_at.get() == 0
+    assert claim.await_count == 1
+
+    # Advancing only the account-wide deadline reopens m2. m1 stays blocked.
+    _, rows = await backend._cooldowns.read("m2")
+    assert AccountCooldowns.selection(rows, "m2", set(), None, usage_until) == (set(), None)
+    _, rows = await backend._cooldowns.read("m1")
+    from src.api.antigravity import _account_pool_429
+    response = _account_pool_429()
+    assert response.rate_limit.reason == "account_pool_unavailable"
+    assert 88 <= int(response.headers["Retry-After"]) <= 90
+    blocked, rejection = AccountCooldowns.selection(rows, "m1", set(), None, usage_until)
+    assert blocked == {"a.json"}
+    assert rejection.retry_at == now + 90
+    assert AccountCooldowns.selection(rows, "m1", {"a.json"}, None, now) == (set(), None)
+    # A transient account hold blocks both models even after quota recovery.
+    held = [("a.json", usage_until, now + 60, {"m1": now + 90})]
+    assert AccountCooldowns.selection(held, "m2", set(), None, usage_until)[1].retry_at == now + 60
+    assert AccountCooldowns.selection(held, "m1", set(), None, usage_until)[1].retry_at == now + 90
+
+
+async def test_partial_model_cooldown_keeps_other_models_and_accounts_available(pg_store, monkeypatch):
+    import time
+    from unittest.mock import AsyncMock
+
+    backend = pg_store._backend
+    for name in ("a.json", "b.json"):
+        await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    assert await backend.set_model_cooldown("a.json", "m1", time.time() + 60, "antigravity")
+    select = backend.get_next_available_credential
+    assert await select("antigravity", "m1", credential_name="a.json") is None
+    await backend._cooldown_refresh
+    claim = AsyncMock(wraps=backend._rotate_batch)
+    monkeypatch.setattr(backend, "_rotate_batch", claim)
+    assert (await select("antigravity", "m1"))[0] == "b.json"
+    assert claim.await_args.args[-1] == {"a.json"}
+    assert (await select("antigravity", "m2", credential_name="a.json"))[0] == "a.json"
+
+
+async def test_cooldown_cache_outage_and_expiry_restore_claims(pg_store, monkeypatch):
+    from redis.exceptions import ConnectionError
+    from unittest.mock import AsyncMock
+    import time
+
+    backend = pg_store._backend
+    cache = backend._cooldowns
+    client = AsyncMock()
+    client.eval.side_effect = ConnectionError("offline")
+    monkeypatch.setattr(cache, "client", client)
+    await pg_store.store_credential("a", {"project_id": "test"}, mode="antigravity")
+    await backend.set_model_cooldown("a", "short", time.time() + .4, "antigravity")
+    await backend.set_model_cooldown("a", "long", time.time() + 30, "antigravity")
+    select = backend.get_next_available_credential
+    assert await select("antigravity", "short") is None
+    await backend._cooldown_refresh
+    assert await select("antigravity", "long") is None
+    await asyncio.sleep(.41)
+    assert (await select("antigravity", "short"))[0] == "a"
+    assert await select("antigravity", "long") is None
+    client.eval.assert_awaited_once()
+
+
+async def test_redis_marker_exists_only_for_its_model(pg_store):
+    import time
+
+    if not os.getenv("TEST_ACCOUNT_COOLDOWN_REDIS_URL"):
+        pytest.skip("requires disposable Redis")
+    cache = pg_store._backend._cooldowns
+    now = time.time()
+    rows = [("a.json", 0, 0, {"gemini-A": now + 60, "gemini-B": now + 120})]
+    await cache.publish(now, rows)
+    first = cache.key + ":a.json:model:gemini-A"
+    second = cache.key + ":a.json:model:gemini-B"
+    assert 58 <= await cache.client.ttl(first) <= 60
+    assert 118 <= await cache.client.ttl(second) <= 120
+    # Same value, different TTLs. Expiring A must not unlock B.
+    assert await cache.client.mget(first, second) == [b"1", b"1"]
+    await cache.client.pexpire(first, 1)
+    await asyncio.sleep(.01)
+    assert await cache.client.exists(first) == 0
+    _, candidates = await cache.read("gemini-A")
+    assert cache.selection(candidates, "gemini-A", set(), None, time.time()) == (set(), None)
+    _, candidates = await cache.read("gemini-B")
+    assert cache.selection(candidates, "gemini-B", set(), None, time.time())[0] == {"a.json"}
+    # An early reset and an out-of-order refresh must not resurrect either marker.
+    await cache.publish(time.time(), [("a.json", 0, 0, {})])
+    await cache.publish(now, rows)
+    assert await cache.client.exists(first, second) == 0
+
+
+async def test_chain_uses_earliest_recovery_with_cold_and_warm_roster(pg_store, monkeypatch):
+    import time
+    from unittest.mock import AsyncMock
+    from src.api import antigravity as api
+
+    store = pg_store._backend
+    models = ["gemini-A", "gemini-B", "gemini-C"]
+    now = int(time.time())
+    await pg_store.store_credential("shared.json", {"project_id": "test"}, mode="antigravity")
+    async with store._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_credentials SET model_cooldowns=?, usage_resume_at=?",
+                         (json.dumps(dict(zip(models, [now + 120, now + 15, now + 90]))), now + 30))
+        await db.commit()
+    monkeypatch.setattr(api, "get_antigravity_model_fallback_chain", AsyncMock(return_value=models))
+    monkeypatch.setattr(api.credential_manager, "get_valid_credential", store.get_next_available_credential)
+
+    # A single cold claim must know both deadlines before any Redis refresh finishes.
+    assert await store.get_next_available_credential("antigravity", models[1]) is None
+    assert 28 <= int(api._account_pool_429().headers["retry-after"]) <= 30
+    await store._cooldown_refresh
+    claim = AsyncMock(wraps=store._rotate_batch)
+    monkeypatch.setattr(store, "_rotate_batch", claim)
+    assert await api._select_text_credential(models[0]) == (models[1], None)
+    assert 28 <= int(api._account_pool_429().headers["retry-after"]) <= 30
+    claim.assert_not_awaited()
+
+    # B becomes available on the same account while A and C stay blocked.
+    await store.set_model_cooldown("shared.json", models[1], None, mode="antigravity")
+    async with store._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_credentials SET usage_resume_at=0")
+        await db.commit()
+    await store._refresh_cooldowns()
+    chosen, result = await api._select_text_credential(models[0])
+    assert chosen == models[1] and result[0] == "shared.json"
+    claim.assert_awaited_once()

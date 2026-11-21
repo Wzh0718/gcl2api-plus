@@ -1,6 +1,8 @@
 """Main-store PostgreSQL backend. Business rules live in the shared repositories."""
 
 import asyncio
+import json
+import math
 from contextlib import AsyncExitStack
 from contextvars import Context
 from datetime import datetime
@@ -17,6 +19,8 @@ from psycopg_pool import AsyncConnectionPool
 from log import log
 from src.api_key_schedule import ApiKeySchedule
 
+from src.rate_limits import selection_retry_at
+from src.storage.account_cooldowns import AccountCooldowns, CachedRejection
 from src.storage.main_postgres import (PostgresDatabase, close_sync_pool, connection_options,
                                        main_dsn, open_sync_pool, pg_query, safe_database_errors)
 from src.storage.pg_model_stats import PostgresModelStats
@@ -44,6 +48,8 @@ class PostgresManager(SQLiteManager):
                 raise ValueError("MAIN_POSTGRES_CLAIM_CONNECTIONS must be between 1 and 16")
             self._claim_batches = {}
             self._claim_tasks = set()
+            self._cooldown_refresh = None
+            self._next_cooldown_refresh = 0
             self._claim_slots = asyncio.Semaphore(claim_connections)
             self._claim_pool = AsyncConnectionPool(
                 main_dsn(), min_size=0, max_size=claim_connections, open=False,
@@ -96,6 +102,7 @@ class PostgresManager(SQLiteManager):
                 self._success_reader = database
                 self._sync_key = (main_dsn(), database.schema)
                 open_sync_pool(self._sync_key)
+                self._cooldowns = AccountCooldowns(main_dsn() + "|" + database.schema)
                 self._initialized = True
                 log.info(f"PostgreSQL main pool ready: max_size={database.pool.max_size} per worker")
             except BaseException:
@@ -108,10 +115,13 @@ class PostgresManager(SQLiteManager):
             return
         if self._claim_tasks:
             await asyncio.gather(*self._claim_tasks)
+        if self._cooldown_refresh is not None:
+            await self._cooldown_refresh
         self._success_reader = None
         try:
             await super().close()
         finally:
+            await self._cooldowns.close()
             close_sync_pool(self._sync_key)
             await self._claim_pool.close()
             await self._db_path.pool.close()
@@ -167,6 +177,29 @@ class PostgresManager(SQLiteManager):
                 await db.commit()
                 return row, 0, False
 
+    async def _read_cooldown_rows(self):
+        # The same eligibility predicates as a claim, before applying account and model deadlines.
+        # Keep all models so a cached miss on one can never suppress another.
+        async with self._db_path.connect("account_cooldown_snapshot") as db:
+            started = time.time()
+            where, params = self._claim_filter(None, set(), None, started, include_held=True)
+            records = await db.execute_fetchall(
+                "SELECT filename, usage_resume_at, model_cooldowns, transient_hold_until "
+                f"FROM antigravity_credentials WHERE {where}", params[:-1],
+            )
+        rows = []
+        for name, usage, models, hold in records:
+            cooldowns = json.loads(models or "{}")
+            rows.append((name, usage or 0, hold or 0, cooldowns if isinstance(cooldowns, dict) else {}))
+        return started, rows
+
+    async def _refresh_cooldowns(self):
+        try:
+            started, snapshot = await self._read_cooldown_rows()
+            await self._cooldowns.publish(started, snapshot)
+        except Exception as exc:
+            log.warning(f"Account cooldown snapshot failed: {type(exc).__name__}")
+
     async def _claim_active(self, model_name, attempted, credential_name):
         # Coalesce only live requests with identical eligibility. A free connection
         # starts immediately; no batching timer and no preallocated credentials.
@@ -182,7 +215,13 @@ class PostgresManager(SQLiteManager):
         if len(waiters) == _MAX_CLAIMS_PER_BATCH:
             del self._claim_batches[key]
         entered = time.monotonic()
-        result, granted, connected, lock_ms, sql_ms, roundtrip = await future
+        outcome = await future
+        if isinstance(outcome, CachedRejection):
+            selection_retry_at.set(outcome.retry_at)
+            add_phase_ms("credential_cooldown_cache_hit", (time.monotonic() - entered) * 1000)
+            return None, outcome.usage_resume_at, False
+        result, retry_at, granted, connected, lock_ms, sql_ms, roundtrip = outcome
+        selection_retry_at.set(retry_at)
         queued = max(0.0, granted - entered) * 1000
         pool_ms = (connected - granted) * 1000
         add_phase_ms("credential_pg_local_queue", queued)
@@ -196,6 +235,16 @@ class PostgresManager(SQLiteManager):
 
     async def _run_claim_batch(self, key, waiters):
         try:
+            model, excluded, pinned = key
+            cache = self._cooldowns
+            snapshot = await cache.read(model)
+            if snapshot is not None:
+                _, resume = cache.selection(snapshot[1], model, excluded, pinned, time.time())
+                if resume is not None:
+                    for future in waiters:
+                        if not future.done():
+                            future.set_result(resume)
+                    return
             async with self._claim_slots:
                 granted = time.monotonic()
                 async with self._claim_pool.connection() as conn:
@@ -205,12 +254,19 @@ class PostgresManager(SQLiteManager):
                     active = [future for future in waiters if not future.cancelled()]
                     if not active:
                         return
-                    rows, resume, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active))
+                    blocked = set()
+                    if snapshot is not None and snapshot[0] > time.time():
+                        blocked, _ = cache.selection(snapshot[1], model, excluded, pinned, time.time())
+                    rows, resume, retry_at, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active), blocked)
             roundtrip = (time.monotonic() - connected) * 1000
+            if (snapshot is None and time.monotonic() >= self._next_cooldown_refresh
+                    and (self._cooldown_refresh is None or self._cooldown_refresh.done())):
+                self._next_cooldown_refresh = time.monotonic() + cache.lifetime
+                self._cooldown_refresh = asyncio.create_task(self._refresh_cooldowns(), context=Context())
             for index, future in enumerate(active):
                 if not future.done():
                     row = rows[index % len(rows)] if rows else None
-                    future.set_result(((row, resume, False), granted, connected, lock_ms, sql_ms, roundtrip))
+                    future.set_result(((row, resume, False), retry_at, granted, connected, lock_ms, sql_ms, roundtrip))
         except asyncio.CancelledError:
             for future in waiters:
                 future.cancel()
@@ -223,12 +279,30 @@ class PostgresManager(SQLiteManager):
             if self._claim_batches.get(key) is waiters:
                 del self._claim_batches[key]
 
-    async def _rotate_batch(self, conn, key, count):
+    async def _rotate_batch(self, conn, key, count, blocked=()):
         model_name, attempted, credential_name = key
         now = time.time()
         cutoff = now - ROUTING_WINDOW_SECONDS
         where, params = self._claim_filter(model_name, attempted, credential_name, now)
-        resume = self._RESUME_CREDENTIAL.format(where_sql=where)
+        # A cold Redis roster must give the same retry deadline as a cache hit.
+        # Evaluate this aggregate only when the claim returns no account.
+        eligible, eligible_params = self._claim_filter(None, attempted, credential_name, now, include_held=True)
+        resume = f"""
+            SELECT ARRAY[
+                MIN(usage_resume_at) FILTER (
+                    WHERE usage_resume_at > ? AND hold_until <= ? AND model_until <= ?
+                ),
+                MIN(GREATEST(usage_resume_at, hold_until, model_until))
+            ] FROM (
+                SELECT usage_resume_at, COALESCE(transient_hold_until, 0) AS hold_until,
+                       COALESCE(gcli_cooldown(model_cooldowns, ?), 0) AS model_until
+                FROM antigravity_credentials WHERE {eligible}
+            ) AS deadlines"""
+        path = "$." + json.dumps(model_name, ensure_ascii=False) if model_name else None
+        resume_params = (now, now, now, path, *eligible_params[:-1])
+        if blocked:
+            where += " AND NOT (filename = ANY(?::text[]))"
+            params = [*params[:-1], sorted(blocked), params[-1]]
         # The ordered candidates are one round. Position p receives turns
         # p, p + width, ... up to count, exactly as consecutive single claims.
         query = f"""
@@ -270,7 +344,7 @@ class PostgresManager(SQLiteManager):
                         "SELECT extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000 "
                         "FROM pg_advisory_xact_lock(72210440)"
                     )
-                    result = await conn.execute(pg_query(query), (*params, count, count, cutoff, cutoff, now, *params))
+                    result = await conn.execute(pg_query(query), (*params, count, count, cutoff, cutoff, now, *resume_params))
             (lock_ms,) = await lock.fetchone()
             records = await result.fetchall()
         rows = []
@@ -278,9 +352,10 @@ class PostgresManager(SQLiteManager):
             if row[0] is not None:
                 network = self._resolved_network(self._network_from_row(row[7:-3]))
                 rows.append((*row[:7], network, row[-3] or {}))
-        resume_at = records[0][-2] or 0
+        usage_at, retry_at = records[0][-2] or (None, None)
+        retry_at = retry_at if retry_at and retry_at > now and math.isfinite(retry_at) else 0
         sql_ms = max(row[-1] for row in records)
-        return rows, resume_at, lock_ms, sql_ms
+        return rows, int(usage_at or 0), retry_at, lock_ms, sql_ms
 
     @staticmethod
     def _money_e8_sql(column):

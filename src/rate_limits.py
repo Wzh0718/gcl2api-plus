@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 # Earliest recovery among otherwise eligible accounts for this task’s last selection.
+selection_retry_at = ContextVar("selection_retry_at", default=0)
 selection_usage_resume_at = ContextVar("selection_usage_resume_at", default=0)
 
 CREDITS_EXHAUSTED_MARKER = "INSUFFICIENT_G1_CREDITS_BALANCE"
@@ -33,3 +34,12 @@ def upstream_rate_limit(error_body: str | None) -> RateLimit:
     if any(marker in body for marker in ('QUOTA_EXHAUSTED', 'quotaResetTimeStamp', 'quotaResetDelay')):
         return RateLimit('upstream', 'quota_exhausted')
     return RateLimit('upstream', 'rate_limited')
+
+
+def retry_after_headers(response):
+    """Carry a retry deadline across protocol conversion of a 429 response."""
+    if getattr(response, "status_code", None) == 429:
+        value = getattr(response, "headers", {}).get("retry-after")
+        if value is not None:
+            return {"Retry-After": value}
+    return {}

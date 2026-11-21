@@ -351,12 +351,13 @@ async def test_router_upstream_error_passthrough(monkeypatch):
     async def fake_chat_completions(openai_request, principal):
         return JSONResponse(
             content={"error": {"message": "quota exceeded", "type": "rate_limit_error"}},
-            status_code=429,
+            status_code=429, headers={"Retry-After": "47"},
         )
 
     client = _make_client(monkeypatch, fake_chat_completions)
     resp = client.post("/v1/responses", json={"model": MODEL, "input": "hi"})
     assert resp.status_code == 429
+    assert resp.headers["retry-after"] == "47"
     assert resp.json()["error"]["message"] == "quota exceeded"
 
 

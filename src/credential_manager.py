@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from log import log
 from src.antigravity_priority import account_priority
 from src.request_timing import database_timing_scope
-from src.rate_limits import selection_usage_resume_at
+from src.rate_limits import selection_retry_at, selection_usage_resume_at
 from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
 
 from src.google_oauth_api import Credentials
@@ -237,6 +237,7 @@ class CredentialManager:
         await self._ensure_initialized()
 
         from src.claude_routing import bound_claude_credential
+        selection_retry_at.set(0)
         selection_usage_resume_at.set(0)
         pinned = bound_claude_credential() if mode == "antigravity" else None
         preferred = None
