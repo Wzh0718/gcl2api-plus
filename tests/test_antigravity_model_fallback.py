@@ -603,8 +603,18 @@ async def test_non_429_failure_can_retry_same_only_credential(monkeypatch, strea
     _patch_common(monkeypatch, [model], max_retries=1)
     sent = []
 
+    held = set()
+    if failure == "503":
+        from src.api.utils import handle_error_with_retry
+
+        async def hold(name, **kwargs):
+            held.add(name)
+
+        monkeypatch.setattr(agy, "handle_error_with_retry", handle_error_with_retry)
+        monkeypatch.setattr(agy.credential_manager, "hold_transient", hold)
+
     async def choose(**kwargs):
-        if "a.json" not in (kwargs.get("exclude_filenames") or ()):
+        if "a.json" not in held and "a.json" not in (kwargs.get("exclude_filenames") or ()):
             return "a.json", {"access_token": "a", "project_id": "proj"}
         return None
 
