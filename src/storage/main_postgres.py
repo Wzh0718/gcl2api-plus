@@ -1,6 +1,6 @@
 """Pooled PostgreSQL connections for the shared main-store repositories."""
 
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from functools import lru_cache
 import os
 import re
@@ -9,6 +9,8 @@ from threading import Lock
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool, ConnectionPool
+
+from src.request_timing import measure_pg
 
 
 def main_dsn():
@@ -112,7 +114,8 @@ class Session:
             from psycopg.rows import dict_row
 
             cursor.row_factory = dict_row
-        with safe_database_errors():
+        operation = "advisory" if query == "SELECT pg_advisory_xact_lock(72210440)" else "sql"
+        with safe_database_errors(), measure_pg(operation):
             await cursor.execute(pg_query(query), parameters(values))
         return cursor
 
@@ -127,7 +130,8 @@ class Session:
             return await result.fetchall()
 
     async def commit(self):
-        await self.conn.commit()
+        with measure_pg("transaction"):
+            await self.conn.commit()
 
     async def rollback(self):
         await self.conn.rollback()
@@ -202,12 +206,15 @@ class PostgresDatabase:
 
     @asynccontextmanager
     async def connect(self):
-        async with self.pool.connection() as conn:
+        async with AsyncExitStack() as stack:
+            with measure_pg("pool"):
+                conn = await stack.enter_async_context(self.pool.connection())
             try:
                 yield Session(conn)
             finally:
                 # Callers explicitly commit writes. Early returns discard tentative changes.
-                await conn.rollback()
+                with measure_pg("transaction"):
+                    await conn.rollback()
 
     async def execute_fetchall(self, query, values=()):
         async with self.connect() as db:
