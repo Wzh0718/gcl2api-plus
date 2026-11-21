@@ -103,15 +103,23 @@ async def test_repeated_5xx_lowers_rotation_priority(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_success_clears_hold_and_counter(tmp_path, monkeypatch):
+async def test_success_clears_counter_but_keeps_hold_window(tmp_path, monkeypatch):
+    """成功的请求只清降权计数。
+
+    5xx 之后紧跟的 200 通常来自冷却前发出的在飞请求，不能证明上游已恢复；
+    窗口必须走完，否则 503 这类高频错误上的降温会瞬间失效。
+    """
     manager = await make_manager(tmp_path, monkeypatch)
-    await manager.hold_antigravity_transient("a.json", seconds=600, status_code=500)
+    hold_until = await manager.hold_antigravity_transient(
+        "a.json", seconds=600, status_code=500
+    )
 
     await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
 
-    stored_until, count, _ = await read_hold(manager, "a.json")
-    assert stored_until == 0
-    assert count == 0
+    stored_until, count, disabled = await read_hold(manager, "a.json")
+    assert stored_until == pytest.approx(hold_until), "成功不得提前解除冷却窗口"
+    assert count == 0, "降权计数应清零"
+    assert disabled == 0
 
 
 class _StubManager:
