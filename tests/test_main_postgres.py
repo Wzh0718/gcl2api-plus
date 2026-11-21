@@ -1,6 +1,7 @@
 """Run against a disposable PostgreSQL server using TEST_MAIN_POSTGRES_DSN."""
 
 import asyncio
+import json
 from datetime import datetime
 import os
 import sqlite3
@@ -125,7 +126,11 @@ async def test_pg_round_robin_and_account_admission(pg_store, monkeypatch):
         assert sum(isinstance(r, usage.AccountUsageLimitReached) for r in attempts) == 7
         await allowed[0].confirm({"candidatesTokenCount": 9})
         snap = await usage.get_account_usage_snapshots([a])
-        assert snap[a]["windows"][0]["generated_tokens"]["used"] == 9
+        payload = json.loads(json.dumps(snap))
+        assert payload[a]["windows"][0]["generated_tokens"]["used"] == 9
+        for window in payload[a]["windows"]:
+            assert type(window["requests"]["used"]) is int
+            assert type(window["generated_tokens"]["used"]) is int
         assert (await other._backend.get_next_available_credential("antigravity", "model"))[0] == b
     finally:
         await other.close()

@@ -158,7 +158,11 @@ def _usage_totals(db, accounts: list[str], now: int):
             GROUP BY account
         """, (now - 60, now - 60, *batch, now - 3600))
         for account, minute_requests, minute_tokens, hourly_requests, hourly_tokens in rows:
-            totals[account] = {60: (minute_requests, minute_tokens), 3600: (hourly_requests, hourly_tokens)}
+            # PostgreSQL SUM(bigint) returns Decimal. These counters are exact integers.
+            totals[account] = {
+                60: (int(minute_requests), int(minute_tokens)),
+                3600: (int(hourly_requests), int(hourly_tokens)),
+            }
     return totals
 
 
