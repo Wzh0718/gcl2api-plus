@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 
 import aiosqlite
 
@@ -48,8 +49,7 @@ async def apply_pragmas(db: aiosqlite.Connection) -> None:
     await db.execute("PRAGMA temp_store=MEMORY")
 
 
-@contextlib.asynccontextmanager
-async def connect(path: str, *, row_factory=None, isolation_level=None):
+def connect(path: str, *, row_factory=None, isolation_level=None, single_select=False):
     """Open an aiosqlite connection with the shared pragmas applied.
 
     Mirrors ``aiosqlite.connect`` semantics closely enough for the existing
@@ -57,10 +57,13 @@ async def connect(path: str, *, row_factory=None, isolation_level=None):
     """
     from src.storage.main_postgres import PostgresDatabase
     if isinstance(path, PostgresDatabase):
-        async with path.connect() as db:
-            db.row_factory = row_factory
-            yield db
-        return
+        # Only the static repository function name is recorded, never query data.
+        return path.connect(sys._getframe(1).f_code.co_name, row_factory=row_factory, single_select=single_select)
+    return _sqlite_connection(path, row_factory, isolation_level)
+
+
+@contextlib.asynccontextmanager
+async def _sqlite_connection(path, row_factory, isolation_level):
     async with aiosqlite.connect(path, isolation_level=isolation_level) as db:
         if row_factory is not None:
             db.row_factory = row_factory

@@ -1755,7 +1755,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 "proxy_group_id": None,
                 "bound_proxy_node_id": None,
             }
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
                           a.bound_proxy_node_id, n.name, n.proxy_url,
@@ -1913,7 +1913,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "eligibility_status", "eligibility_reason", "eligibility_checked_at",
             "last_403_category", "last_403_reason", "last_403_at", "updated_at",
         )
-        async with sqlite_connect(self._db_path) as db:
+        async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
                 f"SELECT {', '.join(columns)} FROM antigravity_account_health WHERE credential_name = ?",
                 (filename,),

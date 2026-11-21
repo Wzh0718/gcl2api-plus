@@ -378,3 +378,16 @@ async def test_pipelined_claim_serializes_workers_and_preserves_resume(pg_store,
             request_timing.reset(token)
     finally:
         await other.close()
+
+@pytest.mark.asyncio
+async def test_pg_single_select_releases_connection_and_reports_repository_operation(pg_store):
+    backend = pg_store._backend
+    db = backend._db_path
+    assert (await backend.get_antigravity_warmup('absent'))['status'] == 'off'
+    assert (await backend.get_credential_network('absent'))['proxy_mode'] == 'inherit'
+    assert (await backend.get_antigravity_account_health('absent'))['binding_status'] == 'unchecked'
+    for op in ('get_antigravity_warmup', 'get_credential_network', 'get_antigravity_account_health'):
+        count, held_ms, longest_ms = db._holds[op]
+        assert count >= 1 and held_ms >= longest_ms > 0
+    async with db.connect('check_transaction_mode') as session:
+        assert not session.conn.autocommit

@@ -256,6 +256,7 @@ class RequestTimingMiddleware:
                 state.response_total_seconds = time.monotonic() - state.started
 
         _inflight_requests += 1
+        state.request_info["worker_inflight_at_entry"] = _inflight_requests
         try:
             await self.app(scope, timed_receive, timed_send)
         finally:

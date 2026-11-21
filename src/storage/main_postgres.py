@@ -3,6 +3,8 @@
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from functools import lru_cache
 import os
+import json
+import time
 import re
 
 from threading import Lock
@@ -10,6 +12,7 @@ from threading import Lock
 import psycopg
 from psycopg_pool import AsyncConnectionPool, ConnectionPool
 
+from log import log
 from src.request_timing import measure_pg
 
 
@@ -194,6 +197,8 @@ def sync_connection():
 
 class PostgresDatabase:
     def __init__(self, dsn):
+        self._holds = {}
+        self._report_at = time.monotonic() + 30
         self.schema = schema_name()
         self.pool = AsyncConnectionPool(
             dsn,
@@ -205,22 +210,45 @@ class PostgresDatabase:
         )
 
     @asynccontextmanager
-    async def connect(self):
-        async with AsyncExitStack() as stack:
-            with measure_pg("pool"):
-                conn = await stack.enter_async_context(self.pool.connection())
-            try:
-                yield Session(conn)
-            finally:
-                # Callers explicitly commit writes. Early returns discard tentative changes.
-                with measure_pg("transaction"):
-                    await conn.rollback()
+    async def _borrow(self, operation):
+        started = None
+        try:
+            async with AsyncExitStack() as stack:
+                with measure_pg("pool"):
+                    conn = await stack.enter_async_context(self.pool.connection())
+                started = time.monotonic()
+                yield conn
+        finally:
+            if started is not None:
+                now = time.monotonic()
+                held_ms = (now - started) * 1000
+                count, total, longest = self._holds.get(operation, (0, 0, 0))
+                self._holds[operation] = (count + 1, total + held_ms, max(longest, held_ms))
+                if now >= self._report_at:
+                    log.info("[PG_HOLDS] " + json.dumps(self._holds))
+                    self._holds.clear()
+                    self._report_at = now + 30
 
-    async def single_row(self, query, values):
-        """Run one atomic statement; release its locks before returning to Python."""
-        async with AsyncExitStack() as stack:
-            with measure_pg("pool"):
-                conn = await stack.enter_async_context(self.pool.connection())
+    @asynccontextmanager
+    async def connect(self, operation="storage", *, row_factory=None, single_select=False):
+        async with self._borrow(operation) as conn:
+            session = Session(conn)
+            session.row_factory = row_factory
+            if single_select:
+                await conn.set_autocommit(True)
+                try:
+                    yield session
+                finally:
+                    await conn.set_autocommit(False)
+            else:
+                try:
+                    yield session
+                finally:
+                    with measure_pg("transaction"):
+                        await conn.rollback()
+
+    async def single_row(self, query, values, *, operation="single_row"):
+        async with self._borrow(operation) as conn:
             await conn.set_autocommit(True)
             try:
                 with safe_database_errors(), measure_pg("sql"):
@@ -230,5 +258,5 @@ class PostgresDatabase:
                 await conn.set_autocommit(False)
 
     async def execute_fetchall(self, query, values=()):
-        async with self.connect() as db:
+        async with self.connect("execute_fetchall") as db:
             return await db.execute_fetchall(query, values)
