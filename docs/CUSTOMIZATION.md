@@ -365,6 +365,8 @@ ghcr.io/wzh0718/gcl2api-plus:v20260727
 
 应用通过 `MAIN_POSTGRES_DSN` 选择 PostgreSQL 主库，`MAIN_POSTGRES_SCHEMA` 默认是 `gcli_main`。未配置主库 DSN 的安装继续使用 SQLite。通过容器的服务级 `env_file` 提供连接信息。已有单独模型统计库的安装保留原 `MODEL_STATS_POSTGRES_DSN`，看板将导入的历史统计和现有增量合并。保留原凭证目录挂载，API 密钥和导入队列的加密密钥仍从该目录加载。
 
+活跃凭证领取使用独立连接池，`MAIN_POSTGRES_CLAIM_CONNECTIONS` 设置每个 worker 的并发领取上限，默认 4，范围 1–16。多实例部署按 worker 总数预留数据库连接，设为 1 并重启即可恢复单路领取。
+
 切换现有安装时，在已确认的维护窗口内停止接收新流量，排空在途结算、监控队列及后台写入任务，再停止旧应用的所有写入进程。使用有权在目标空 schema 创建对象的数据库角色运行导入程序。设定 `MAIN_POSTGRES_DSN` 后，从新版本代码目录运行：
 
 ```bash
