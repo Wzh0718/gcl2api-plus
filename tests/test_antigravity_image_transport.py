@@ -679,7 +679,7 @@ async def test_image_selection_advances_usage_before_reusing_account(monkeypatch
             return {name: dict(state) for name, state in self.states.items()}
 
         async def mark_credential_selected(
-            self, filename, *, mode, expected_call_count
+            self, filename, *, mode, expected_call_count, bonus=False
         ):
             state = self.states[filename]
             if state["call_count"] != expected_call_count:
@@ -757,7 +757,7 @@ async def test_image_selection_refreshes_after_cross_worker_claim_conflict(
             return {name: dict(state) for name, state in self.states.items()}
 
         async def mark_credential_selected(
-            self, filename, *, mode, expected_call_count
+            self, filename, *, mode, expected_call_count, bonus=False
         ):
             state = self.states[filename]
             if filename == "contended.json" and state["call_count"] == 0:

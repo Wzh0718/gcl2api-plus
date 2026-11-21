@@ -1,3 +1,67 @@
+ALTER TABLE antigravity_credentials ADD COLUMN IF NOT EXISTS routing_bonus_turn BIGINT;
+CREATE INDEX IF NOT EXISTS idx_ag_bonus_turn ON antigravity_credentials(routing_bonus_turn);
+CREATE TABLE IF NOT EXISTS routing_pending (id TEXT PRIMARY KEY, account TEXT NOT NULL, started BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS routing_pending_account ON routing_pending(account, started);
+CREATE INDEX IF NOT EXISTS routing_pending_started ON routing_pending(started);
+
+-- Keep full minutes cheap to rank. The partial minute at the left edge of
+-- the rolling window is still read from account_usage at second precision.
+CREATE TABLE IF NOT EXISTS routing_minutes (
+    account text NOT NULL, minute bigint NOT NULL, tokens bigint NOT NULL,
+    PRIMARY KEY(account, minute)
+) WITH (fillfactor=80);
+CREATE INDEX IF NOT EXISTS routing_minutes_expiry ON routing_minutes(minute);
+
+CREATE OR REPLACE FUNCTION gcli_update_routing_minutes() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    delta bigint;
+    bucket_start bigint;
+    name text;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        name := OLD.account;
+        bucket_start := OLD.bucket / 60 * 60;
+        delta := -OLD.generated_tokens;
+    ELSE
+        name := NEW.account;
+        bucket_start := NEW.bucket / 60 * 60;
+        delta := NEW.generated_tokens;
+        IF TG_OP = 'UPDATE' THEN
+            delta := delta - OLD.generated_tokens;
+        END IF;
+    END IF;
+    IF delta = 0 OR bucket_start + 60 <= floor(extract(epoch from statement_timestamp()))::bigint - 3600 THEN
+        RETURN NULL;
+    END IF;
+    UPDATE routing_minutes SET tokens=tokens+delta WHERE account=name AND minute=bucket_start;
+    IF NOT FOUND THEN
+        INSERT INTO routing_minutes(account, minute, tokens) VALUES(name, bucket_start, delta)
+        ON CONFLICT(account, minute) DO UPDATE SET tokens=routing_minutes.tokens + EXCLUDED.tokens;
+        DELETE FROM routing_minutes WHERE (account, minute) IN (
+            SELECT account, minute FROM routing_minutes
+            WHERE minute <= floor(extract(epoch from statement_timestamp()))::bigint - 3660
+            ORDER BY minute, account LIMIT 128 FOR UPDATE SKIP LOCKED
+        );
+    END IF;
+    RETURN NULL;
+END $$;
+
+-- Install the trigger and seed existing usage under the same write lock, once.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='account_usage'::regclass
+                   AND tgname='gcli_routing_minutes') THEN
+        LOCK TABLE account_usage IN SHARE ROW EXCLUSIVE MODE;
+        INSERT INTO routing_minutes(account, minute, tokens)
+        SELECT account, bucket / 60 * 60, sum(generated_tokens) FROM account_usage
+        WHERE bucket > floor(extract(epoch from statement_timestamp()))::bigint - 3600
+        GROUP BY account, bucket / 60 * 60;
+        CREATE TRIGGER gcli_routing_minutes AFTER INSERT OR UPDATE OF generated_tokens OR DELETE
+        ON account_usage FOR EACH ROW EXECUTE FUNCTION gcli_update_routing_minutes();
+    END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION gcli_cooldown(document text, path text)
 RETURNS double precision LANGUAGE sql IMMUTABLE STRICT AS $$
     SELECT CASE jsonb_typeof(value)

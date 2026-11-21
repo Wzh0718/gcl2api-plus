@@ -26,7 +26,7 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 | --- | --- |
 | API 协议接入 | Antigravity 支持 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Messages；Vertex 支持 OpenAI Chat Completions 和 Gemini。当前不提供 GeminiCLI 通道。 |
 | API Key 管理 | 签发、复制、启停和吊销独立密钥；配置金额额度、到期时间，以及手动或每月额度重置；查看各密钥用量和剩余额度。 |
-| 登录与凭证池 | 支持 Antigravity OAuth 登录、Refresh Token（RT）导入和多账号凭证管理；按可用账号轮转，控制每账号并发并在异常时切换凭证。 |
+| 登录与凭证池 | 支持 Antigravity OAuth 登录、Refresh Token（RT）导入和多账号凭证管理；按可用账号加权轮转，控制每账号并发并在异常时切换凭证。 |
 | 账号检查与恢复 | 检查账号健康、模型额度与网络资格；对可恢复的 403 定期复检，明确的 TOS / account_forbidden 账号仅人工复检；提供额度对账。 |
 | 动态养号与渐进放量 | 可按账号或批量开启，使用真实业务请求逐档放量；限制账号及同出口 IP 组的并发和请求间隔，异常时退避或暂停。详见[状态机说明](docs/ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md)。 |
 | 账号代理与出口管理 | 支持继承全局代理、独立代理、直连及代理组；可启用一账号一节点的独占绑定，并检查出口 IP、地区资格和代理健康。 |
@@ -37,6 +37,8 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 | 图片参数与传输 | 兼容 Gemini 图片参数及 OpenAI Chat Completions 顶层 `size`，保留历史尺寸后缀；图片请求使用独立的传输、容量错误处理和有限重试策略。详见[图片 API 说明](docs/ANTIGRAVITY_IMAGE_API.md)。 |
 | 客户端名称过滤 | 支持对 system prompt 中的客户端名称执行替换或本地拦截，可配置内置词与自定义规则；不修改用户消息和工具调用。 |
 | 部署与发布 | 提供桌面及移动控制面板、Docker / Compose 部署，以及 GHCR 多架构镜像；通过本地脚本或手动触发 GitHub Actions 发布，无自动上游同步。 |
+
+Antigravity 为每个可用账号保留一个轮转位置。相比同一候选池的最高用量，近 60 分钟少用至少 8,192 个生成 token 的账号多一个位置。生成量包含输出和思考 token，正在执行的上游请求每个暂按 2,048 个 token 估算，结束后按上游实际返回量结算。即使用量限额关闭，调度也会统计生成量。候选池内用量差小于 8,192 时沿用普通轮转。固定候选池和权重下，每轮每个账号分到一到两次，图片任务仍优先选择健康账号。
 
 详细配置、默认值和启用条件见[开发与发布指南](docs/CUSTOMIZATION.md)。
 

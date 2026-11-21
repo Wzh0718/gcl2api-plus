@@ -132,11 +132,12 @@ async def _generate(source, model, account, credential, api_key_id):
     )
     started = time.monotonic()
     response = None
+    usage_attempt = None
     await acquire_limited_credential_slot(account)
     try:
         await pace_credential(account)
         target_url = f'{await get_antigravity_api_url()}/v1internal:generateContent'
-        usage_attempt = await begin_account_usage(account)
+        usage_attempt = await begin_account_usage(account, reserve_routing=True)
         response = await post_async(
             url=target_url,
             json=payload, headers=build_antigravity_headers(credential.get('access_token') or credential.get('token')),
@@ -160,6 +161,8 @@ async def _generate(source, model, account, credential, api_key_id):
         return guidance.strip()
     finally:
         release_limited_credential_slot(account)
+        if usage_attempt:
+            await usage_attempt.confirm(None)
         # Internal optimization is attributable to the caller, separate from the main request.
         try:
             usage = extract_usage_metadata(response.json()) if response is not None and response.status_code == 200 else None

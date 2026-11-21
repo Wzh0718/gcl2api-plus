@@ -22,6 +22,7 @@ from src.storage.main_postgres import (PostgresDatabase, close_sync_pool, connec
 from src.storage.pg_model_stats import PostgresModelStats
 from src.storage.refresh_import_queue import RefreshImportQueue
 from src.request_timing import add_phase_ms, measure_pg, measure_phase
+from src.storage.account_rotation import LAST_TURN_SQL, tickets_sql, TICKET_ORDER
 from src.storage.sqlite_manager import ROUTING_WINDOW_SECONDS, SQLiteManager
 
 _MAX_CLAIMS_PER_BATCH = 64
@@ -133,6 +134,18 @@ class PostgresManager(SQLiteManager):
         )
         return reason
 
+    # Recheck eligibility while acquiring row locks. A panel update can disable
+    # an account after the ticket snapshot but before a claim acquires the row.
+    _LOCKED_TICKETS = """
+        SELECT t.* FROM tickets t
+        JOIN LATERAL (
+            SELECT filename FROM antigravity_credentials
+            WHERE filename=t.filename AND {where_sql} AND usage_resume_at <= ?
+        ) c ON true
+        ORDER BY t.ticket_turn, t.bonus DESC, t.rotation_order, t.filename
+        LIMIT {limit} FOR UPDATE OF c
+    """
+
     async def _claim_next(self, model_name, attempted, credential_name):
         from config import get_antigravity_dormant_enabled_sync
 
@@ -151,8 +164,12 @@ class PostgresManager(SQLiteManager):
             with measure_phase("selection_locked_work"):
                 now = time.time()
                 where, params = self._claim_filter(model_name, attempted, credential_name, now)
-                query = self._SELECT_CREDENTIAL.format(where_sql=where) + " FOR UPDATE"
-                async with db.execute(query, params) as cursor:
+                ticket = self._LOCKED_TICKETS.format(where_sql=where, limit=1)
+                query = f"""WITH {tickets_sql(where, postgres=True, pinned=bool(credential_name))}, next_ticket AS ({ticket})
+                    SELECT c.filename, c.credential_data, c.model_cooldowns, c.enable_credit,
+                           c.proxy_mode, c.proxy_url, c.proxy_group_id, t.bonus
+                    FROM next_ticket t JOIN antigravity_credentials c ON c.filename=t.filename"""
+                async with db.execute(query, [*params, *params]) as cursor:
                     row = await cursor.fetchone()
                 if row is None:
                     async with db.execute(
@@ -163,9 +180,9 @@ class PostgresManager(SQLiteManager):
                 if is_dormant(row[0]):
                     return row, 0, True
                 cutoff = now - ROUTING_WINDOW_SECONDS
-                await db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
+                await db.execute(self._advance_turn(row[-1]), (cutoff, now, cutoff, row[0]))
                 await db.commit()
-                return row, 0, False
+                return row[:-1], 0, False
 
     async def _claim_active(self, model_name, attempted, credential_name):
         # Coalesce only live requests with identical eligibility. A free connection
@@ -232,37 +249,41 @@ class PostgresManager(SQLiteManager):
         # The ordered candidates are one round. Position p receives turns
         # p, p + width, ... up to count, exactly as consecutive single claims.
         query = f"""
-            WITH candidates AS MATERIALIZED (
-                SELECT filename, routing_turn, rotation_order FROM antigravity_credentials
-                WHERE {where} AND usage_resume_at <= ?
-                ORDER BY {self._CREDENTIAL_ORDER} LIMIT ? FOR UPDATE
+            WITH {tickets_sql(where, postgres=True, pinned=bool(credential_name))}, candidates AS (
+                {self._LOCKED_TICKETS.format(where_sql=where, limit="?")}
             ), ranked AS (
-                SELECT filename, row_number() OVER (ORDER BY {self._CREDENTIAL_ORDER}) AS pos,
+                SELECT *, row_number() OVER (ORDER BY {TICKET_ORDER}) AS pos,
                        count(*) OVER () AS width FROM candidates
             ), turns AS (
                 SELECT *, (?::bigint - pos) / width AS extra FROM ranked
-            ), claimed AS (
+            ), totals AS (
+                SELECT filename, SUM(1 + extra) AS calls,
+                       MAX(pos + extra * width) FILTER (WHERE bonus=0) AS regular,
+                       MAX(pos + extra * width) FILTER (WHERE bonus=1) AS bonus
+                FROM turns GROUP BY filename
+            ), clock AS (SELECT {LAST_TURN_SQL} AS base), claimed AS (
                 UPDATE antigravity_credentials a SET
-                    call_count = coalesce(a.call_count, 0) + 1 + t.extra,
-                    routing_turn = (SELECT coalesce(max(routing_turn), 0) FROM antigravity_credentials)
-                                   + t.pos + t.extra * t.width,
+                    call_count = coalesce(a.call_count, 0) + t.calls,
+                    routing_turn = COALESCE(clock.base + t.regular, a.routing_turn),
+                    routing_bonus_turn = COALESCE(clock.base + t.bonus, a.routing_bonus_turn),
                     routing_window_count = CASE WHEN coalesce(a.routing_window_started_at, 0) <= ?
-                        THEN 0 ELSE coalesce(a.routing_window_count, 0) END + 1 + t.extra,
+                        THEN 0 ELSE coalesce(a.routing_window_count, 0) END + t.calls,
                     routing_window_started_at = CASE WHEN coalesce(a.routing_window_started_at, 0) <= ?
                         THEN ? ELSE a.routing_window_started_at END,
                     updated_at = unixepoch()
-                FROM turns t WHERE a.filename = t.filename
+                FROM totals t, clock WHERE a.filename = t.filename
                 RETURNING a.filename, a.credential_data, a.model_cooldowns, a.enable_credit,
-                          a.proxy_mode, a.proxy_url, a.proxy_group_id, a.bound_proxy_node_id, a.fixed_proxy_ip, t.pos
+                          a.proxy_mode, a.proxy_url, a.proxy_group_id, a.bound_proxy_node_id, a.fixed_proxy_ip
             )
             SELECT a.filename, a.credential_data, a.model_cooldowns, a.enable_credit,
                    a.proxy_mode, a.proxy_url, a.proxy_group_id, {self._NETWORK_COLUMNS},
                    to_jsonb(h), CASE WHEN a.filename IS NULL THEN ({resume}) END,
                    extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000
-            FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed a ON true
+            FROM (VALUES (1)) AS stub(i) LEFT JOIN ranked r ON true
+            LEFT JOIN claimed a ON a.filename=r.filename
             {self._NETWORK_JOINS}
             LEFT JOIN antigravity_account_health h ON h.credential_name = a.filename
-            ORDER BY a.pos"""
+            ORDER BY r.pos"""
         with safe_database_errors():
             async with conn.pipeline():
                 async with conn.transaction():
@@ -270,7 +291,7 @@ class PostgresManager(SQLiteManager):
                         "SELECT extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000 "
                         "FROM pg_advisory_xact_lock(72210440)"
                     )
-                    result = await conn.execute(pg_query(query), (*params, count, count, cutoff, cutoff, now, *params))
+                    result = await conn.execute(pg_query(query), (*params, *params, count, count, cutoff, cutoff, now, *params))
             (lock_ms,) = await lock.fetchone()
             records = await result.fetchall()
         rows = []
