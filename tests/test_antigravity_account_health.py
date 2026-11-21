@@ -219,6 +219,21 @@ class AntigravityNetworkCheckTests(unittest.IsolatedAsyncioTestCase):
             ("203.0.113.9", None),
         )
 
+    async def test_ip_echo_read_failure_is_inconclusive(self):
+        import httpx
+        from src.antigravity_account_health import check_antigravity_account_health
+
+        storage = _FakeHealthStorage()
+        with patch("src.antigravity_account_health.get_async", AsyncMock(side_effect=httpx.ReadError("echo"))):
+            result = await check_antigravity_account_health(
+                storage=storage, credential_name="account.json", access_token="test",
+                network={"proxy_mode": "group", "proxy_url": "http://proxy.example:8080"},
+                ip_check_url="https://echo.example", api_base_url="https://upstream.example",
+            )
+        self.assertEqual(result["binding_status"], "unchecked")
+        self.assertEqual(result["eligibility_status"], "error")
+        self.assertIn("ReadError", result["eligibility_reason"])
+
     async def test_check_uses_bound_proxy_for_ip_and_eligibility(self):
         from src.antigravity_account_health import check_antigravity_account_health
 
@@ -702,7 +717,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
         self.assertEqual(manager.health["last_403_category"], "geo_blocked")
 
-    async def test_geo_403_disables_account_when_auto_ban_enabled(self):
+    async def test_geo_403_keeps_account_and_requests_egress_rebind(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -728,7 +743,9 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "geo_blocked")
         self.assertFalse(result.should_retry)
-        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
+        # 地区结论属于出口 IP：账号保留、不暂停，交给请求路径换 IP 重试
+        self.assertTrue(result.rebind_retry)
+        self.assertEqual(manager.disabled, [])
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
 
     async def test_confirmed_account_403_disables_only_when_auto_ban_is_enabled(self):
@@ -859,7 +876,8 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             result.cooldown_until,
             before + antigravity.MODEL_FORBIDDEN_COOLDOWN_SECONDS,
         )
-        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
+        # 模型级 403 只冷却模型，账号级封禁只由明确的账号拒绝触发
+        self.assertEqual(manager.disabled, [])
 
     async def test_validation_required_cools_down_and_honors_auto_ban(self):
         from src.api import antigravity
@@ -896,7 +914,8 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
             result.cooldown_until, before + 600
         )
         self.assertLessEqual(result.cooldown_until, time.time() + 600)
-        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
+        # 待验证是临时状态，冷却即可，不封禁账号
+        self.assertEqual(manager.disabled, [])
         self.assertEqual(
             manager.health["last_403_category"], "validation_required"
         )

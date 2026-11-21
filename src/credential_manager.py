@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from log import log
+from src.antigravity_priority import account_priority
 from src.request_timing import database_timing_scope
 from src.rate_limits import selection_usage_resume_at
 from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
@@ -55,6 +56,13 @@ IMAGE_CAPACITY_DEMOTION_SECONDS = 60
 # 冷却期间该账号会从调度中排除（proxy_group_nodes.cooldown_until）。
 PROXY_NODE_FAILURE_COOLDOWN_SECONDS = 300
 
+# 上游明确返回地区资格拒绝（UNSUPPORTED_LOCATION / LOCATION_RESTRICTED）时，
+# 结论属于出口 IP 而不是账号：保留账号、换掉节点。被拒绝的节点冷却一段时间，
+# 避免组游标立刻把同一个 IP 又发回来。
+REGION_REJECTED_NODE_COOLDOWN_SECONDS = 600
+# 一次请求内同一账号最多换几次 IP；覆盖「连续几个节点都不在可用地区」的情况。
+REGION_REBIND_ATTEMPTS = 2
+
 # 判定为「节点不可达」的错误特征（SOCKS/连接层错误，非 HTTP 状态错误）
 _PROXY_CONNECT_ERROR_MARKERS = (
     "socks",
@@ -79,6 +87,7 @@ def rank_antigravity_image_candidates(
     runtime_health: Optional[Dict[str, Dict[str, Any]]] = None,
     excluded_filenames: Optional[Set[str]] = None,
     now: Optional[float] = None,
+    preferred: Optional[str] = None,
 ) -> List[str]:
     """Rank eligible image accounts by live health and their routing queue position."""
     current_time = time.time() if now is None else now
@@ -90,6 +99,8 @@ def rank_antigravity_image_candidates(
         if filename in excluded or state.get("disabled"):
             continue
         if state.get("warmup_status") in {"paused", "account_forbidden"}:
+            continue
+        if max(state.get("transient_hold_until") or 0, state.get("probe_retry_at") or 0) > current_time:
             continue
         cooldowns = state.get("model_cooldowns") or {}
         cooldown_until = cooldowns.get(model_name)
@@ -110,6 +121,7 @@ def rank_antigravity_image_candidates(
         rotation_order = max(int(state.get("rotation_order") or 0), 0)
         sort_key = (
             health_priority,
+            filename != preferred,
             routing_turn,
             rotation_order,
             filename,
@@ -227,14 +239,21 @@ class CredentialManager:
         from src.claude_routing import bound_claude_credential
         selection_usage_resume_at.set(0)
         pinned = bound_claude_credential() if mode == "antigravity" else None
+        preferred = None
+        if mode == "antigravity" and not pinned:
+            preferred = account_priority.take_preference(exclude_filenames or set())
         if mode == "antigravity" and (
             image_request or "image" in (model_name or "").lower()
         ):
-            return await self._get_valid_antigravity_image_credential(
+            result = await self._get_valid_antigravity_image_credential(
                 model_name=model_name or "",
                 exclude_filenames=exclude_filenames,
                 credential_name=pinned,
+                preferred=preferred,
             )
+            if result and not pinned and result[0] != preferred:
+                account_priority.regular_selection(result[0])
+            return result
 
         selection_options = {"credential_name": pinned} if pinned else {}
 
@@ -242,6 +261,21 @@ class CredentialManager:
         max_retries = 3
         attempted_filenames: set[str] = set(exclude_filenames or set())
         preferred_result = None
+
+        priority_claim = None
+
+        async def select_account(excluded):
+            nonlocal preferred, priority_claim
+            choose = self._storage_adapter._backend.get_next_available_credential
+            if preferred and preferred not in excluded:
+                name, preferred = preferred, None
+                result = await choose(mode=mode, model_name=model_name,
+                                      exclude_filenames=excluded, credential_name=name)
+                if result:
+                    priority_claim = result[0]
+                    return result
+            return await choose(mode=mode, model_name=model_name,
+                                exclude_filenames=excluded, **selection_options)
 
         # quotaInfo 主动避让：额度快照低于阈值的账号本轮排除（在 429 之前换号）；
         # 若排除后无可用账号则回退为不避让（快照可能滞后，不宁可信其有）
@@ -259,12 +293,7 @@ class CredentialManager:
                         model_name, await get_antigravity_quota_guard_threshold()
                     ) - attempted_filenames
                     if low:
-                        probe = await self._storage_adapter._backend.get_next_available_credential(
-                            mode=mode,
-                            model_name=model_name,
-                            exclude_filenames=attempted_filenames | low,
-                            **selection_options,
-                        )
+                        probe = await select_account(attempted_filenames | low)
                         if probe is not None:
                             preferred_result = probe
                             log.info(
@@ -284,12 +313,7 @@ class CredentialManager:
             if attempt == 0 and preferred_result is not None:
                 result = preferred_result
             else:
-                result = await self._storage_adapter._backend.get_next_available_credential(
-                    mode=mode,
-                    model_name=model_name,
-                    exclude_filenames=attempted_filenames,
-                    **selection_options,
-                )
+                result = await select_account(attempted_filenames)
 
             # 如果没有可用凭证，直接返回None
             if not result:
@@ -320,6 +344,8 @@ class CredentialManager:
                 if ready_data is None:
                     continue
                 credential_data = ready_data
+                if not pinned and filename != priority_claim:
+                    account_priority.regular_selection(filename)
 
             return filename, credential_data
 
@@ -333,6 +359,7 @@ class CredentialManager:
         model_name: str,
         exclude_filenames: Optional[Set[str]] = None,
         credential_name: Optional[str] = None,
+        preferred: Optional[str] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Reserve one image task slot, waiting when every candidate is busy."""
         attempted_filenames = set(exclude_filenames or set())
@@ -351,7 +378,7 @@ class CredentialManager:
             ranked = rank_antigravity_image_candidates(
                 {name: state for name, state in states.items() if name == credential_name}
                 if credential_name else states,
-                model_name=model_name,
+                model_name=model_name, preferred=preferred,
                 runtime_health=self._image_runtime_health,
                 excluded_filenames=attempted_filenames,
             )
@@ -502,7 +529,7 @@ class CredentialManager:
         from .antigravity_account_health import account_health_has_negative_evidence
         from .antigravity_account_health import account_health_is_fresh_eligible
 
-        from src.storage.sqlite_manager import SelectedAntigravityCredential
+        from src.storage.sqlite_manager import EXCLUSIVE_PROBE_RETRY_SECONDS, SelectedAntigravityCredential
 
         selected = isinstance(credential_data, SelectedAntigravityCredential) and credential_data.filename == credential_name
         if selected:
@@ -531,12 +558,26 @@ class CredentialManager:
         if health is None:
             health = await self._storage_adapter.get_antigravity_account_health(credential_name)
         ttl_seconds = await get_antigravity_network_check_ttl_seconds()
+        if exclusive and health.get("eligibility_status") in {"geo_blocked", "error"}:
+            ttl_seconds = min(ttl_seconds, EXCLUSIVE_PROBE_RETRY_SECONDS)
+        def usable_exclusive_route(check):
+            if account_health_is_fresh_eligible(check, ttl_seconds=ttl_seconds):
+                return True
+            return (
+                bool(network.get("proxy_url") and network.get("proxy_node_id"))
+                and check.get("eligibility_status") == "error"
+                and check.get("binding_status") in {"unchecked", "proxy_failed"}
+                and check.get("eligibility_reason") in {
+                    "IP echo read failed: ReadError", "IP echo read failed: ReadTimeout",
+                    "IP check failed: ValueError: ReadError", "IP check failed: ValueError: ReadTimeout",
+                }
+                and not check.get("last_403_category")
+            )
+
         if not force and account_health_check_is_fresh(
             health, ttl_seconds=ttl_seconds
         ):
-            if exclusive and not account_health_is_fresh_eligible(
-                health, ttl_seconds=ttl_seconds
-            ):
+            if exclusive and not usable_exclusive_route(health):
                 log.warning(
                     "[ANTIGRAVITY HEALTH] exclusive account failed strict cached gate: "
                     f"credential={credential_name}, binding={health.get('binding_status')}, "
@@ -572,9 +613,19 @@ class CredentialManager:
             credential_data,
             network=network, current_health=health,
         )
-        if exclusive and not account_health_is_fresh_eligible(
-            result, ttl_seconds=ttl_seconds
-        ):
+        if exclusive and result.get("eligibility_status") == "geo_blocked":
+            # The rejection is IP-specific and the binding itself is fine:
+            # keep the account and move it to another free node in its group.
+            rotated = await self.rotate_antigravity_egress(
+                credential_name, attempts=REGION_REBIND_ATTEMPTS, verify=True
+            )
+            if rotated is not None:
+                result = rotated
+                network = await self._storage_adapter.resolve_credential_network(
+                    credential_name, mode="antigravity"
+                ) or network
+                credential_data.update(network)
+        if exclusive and not usable_exclusive_route(result):
             log.warning(
                 "[ANTIGRAVITY HEALTH] exclusive account failed strict fresh gate: "
                 f"credential={credential_name}, binding={result.get('binding_status')}, "
@@ -672,6 +723,101 @@ class CredentialManager:
             result.get("binding_status") == "healthy"
             and result.get("eligibility_status") == "eligible"
         )
+
+    async def rotate_antigravity_egress(
+        self,
+        credential_name: str,
+        *,
+        attempts: int = 1,
+        verify: bool = False,
+        cooldown_seconds: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """地区资格拒绝：把同一账号换到组内另一个空闲出口 IP。
+
+        上游明确返回 ``UNSUPPORTED_LOCATION`` / ``LOCATION_RESTRICTED`` 时，
+        代理绑定本身是正常的，结论只针对当前出口 IP。因此账号继续参与调度，
+        只换节点：旧节点计入冷却（避免组游标立刻发回同一个 IP），新节点由
+        组的空闲节点选择逻辑分配，账号原有的健康结论一并清空。
+
+        ``verify=True`` 用于请求前的健康检查路径：换完节点后重新探测资格，
+        只有新 IP 仍然被地区拒绝时才继续换，最多 ``attempts`` 次。
+        返回换绑后的健康快照；账号不是组绑定、或组内没有空闲节点时返回 None。
+        """
+        await self._ensure_initialized()
+        network = await self._storage_adapter.get_credential_network(
+            credential_name, mode="antigravity"
+        )
+        if (
+            network.get("proxy_mode") != "group"
+            or not network.get("proxy_group_id")
+            or network.get("fixed_proxy_ip")
+        ):
+            return None
+        cooldown = (
+            REGION_REJECTED_NODE_COOLDOWN_SECONDS
+            if cooldown_seconds is None
+            else max(int(cooldown_seconds), 0)
+        )
+        last_health: Optional[Dict[str, Any]] = None
+        for _ in range(max(int(attempts), 1)):
+            try:
+                rotated = await self._storage_adapter.invalidate_antigravity_proxy_binding(
+                    credential_name,
+                    cooldown_seconds=cooldown,
+                    require_replacement=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed rebind keeps the caller's retry path
+                log.warning(
+                    "[ANTIGRAVITY REGION] rebind failed: "
+                    f"credential={credential_name}, error={type(exc).__name__}: {exc}"
+                )
+                return None
+            if not rotated:
+                log.warning(
+                    "[ANTIGRAVITY REGION] no free node in group: "
+                    f"credential={credential_name}"
+                )
+                return None
+            log.warning(
+                "[ANTIGRAVITY REGION] location rejection; rotated egress: "
+                f"credential={credential_name}, group={network.get('proxy_group_id')}"
+            )
+            if not verify:
+                return await self._storage_adapter.get_antigravity_account_health(
+                    credential_name
+                )
+            try:
+                last_health = await self.check_antigravity_account_health(
+                    credential_name
+                )
+            except Exception as exc:  # noqa: BLE001 - the request path re-validates
+                log.warning(
+                    "[ANTIGRAVITY REGION] post-rotation check failed: "
+                    f"credential={credential_name}, error={type(exc).__name__}"
+                )
+                return await self._storage_adapter.get_antigravity_account_health(
+                    credential_name
+                )
+            if last_health.get("eligibility_status") != "geo_blocked":
+                return last_health
+        return last_health
+
+    async def reload_antigravity_credential(
+        self, credential_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """重新读取账号凭证与当前生效出口，供同一账号换 IP 后重试请求。"""
+        await self._ensure_initialized()
+        credential_data = await self._storage_adapter.get_credential(
+            credential_name, mode="antigravity"
+        )
+        if not credential_data:
+            return None
+        network = await self._storage_adapter.resolve_credential_network(
+            credential_name, mode="antigravity"
+        )
+        merged = dict(credential_data)
+        merged.update(network or {})
+        return merged
 
     async def get_antigravity_account_health(
         self, credential_name: str

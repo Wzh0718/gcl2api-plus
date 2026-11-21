@@ -190,6 +190,7 @@ function createCredsManager(type) {
                             bound_proxy_node_id: item.bound_proxy_node_id || null,
                             bound_proxy_node_name: item.bound_proxy_node_name || null,
                             proxy_502_warning: item.proxy_502_warning || null,
+                            transient_hold_until: Number(item.transient_hold_until || 0),
                             egress_ip: item.egress_ip || null,
                             egress_country: item.egress_country || null,
                             binding_status: item.binding_status || 'unchecked',
@@ -1171,14 +1172,21 @@ function buildCredStatusBadges(credInfo, manager) {
     const visibleErrorCodes = getVisibleCredentialErrorCodes(
         status, credInfo.model_cooldowns, managerType
     );
+    const holdUntil = Number(credInfo.transient_hold_until || 0);
+    const cooling = holdUntil > Date.now() / 1000;
     if (visibleErrorCodes.length > 0) {
         statusBadges += `<span class="error-codes">错误码: ${visibleErrorCodes.join(', ')}</span>`;
         const autoBan = visibleErrorCodes.filter(c => c === 400 || c === 403);
         if (autoBan.length > 0 && status.disabled) {
             statusBadges += '<span class="status-badge" style="background-color: #e74c3c; color: white;">AUTO_BAN</span>';
         }
-    } else {
+    } else if (!cooling) {
         statusBadges += '<span class="status-badge" style="background-color: #28a745; color: white;">无错误</span>';
+    }
+
+    if (cooling) {
+        const end = new Date(holdUntil * 1000).toLocaleTimeString();
+        statusBadges += `<span class="status-badge" style="background-color:#b45309;color:white">5xx 账号冷却至 ${escapeHtml(end)}</span>`;
     }
 
     // Preview状态显示 (仅对geminicli模式显示)
@@ -7563,7 +7571,9 @@ function updateCooldownDisplays() {
             const expiredModels = Object.entries(cooldowns)
                 .filter(([, until]) => Number(until) <= currentTime)
                 .map(([model]) => model);
-            if (expiredModels.length === 0) continue;
+            const holdExpired = credInfo.transient_hold_until > 0 && credInfo.transient_hold_until <= currentTime;
+            if (expiredModels.length === 0 && !holdExpired) continue;
+            if (holdExpired) credInfo.transient_hold_until = 0;
 
             expiredModels.forEach(model => delete cooldowns[model]);
             if (manager.type === 'antigravity' && Object.keys(cooldowns).length === 0) {

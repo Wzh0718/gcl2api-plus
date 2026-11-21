@@ -327,6 +327,7 @@ async def get_creds_status_common(
             cred_info["egress_ip"] = summary.get("egress_ip")
             cred_info["egress_country"] = summary.get("egress_country")
             cred_info["binding_status"] = summary.get("binding_status", "unchecked")
+            cred_info["transient_hold_until"] = summary.get("transient_hold_until")
             cred_info["binding_reason"] = summary.get("eligibility_reason")
             cred_info["eligibility_status"] = summary.get(
                 "eligibility_status", "unchecked"
@@ -1914,8 +1915,10 @@ async def test_credential(
         retry_headers = {}
         response = await send_probe()
         if mode == "antigravity" and response.status_code == 503:
-            from src.api.utils import get_retry_config
+            from src.api.utils import get_retry_config, hold_transient_account
             from src.api.antigravity import _resolve_error_cooldown
+
+            await hold_transient_account(credential_manager, 503, filename)
 
             retry = await get_retry_config()
             if retry["retry_enabled"]:

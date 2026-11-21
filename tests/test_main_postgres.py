@@ -583,3 +583,85 @@ async def test_pg_geminicli_success_clears_only_its_model(pg_store):
     assert row[:2] == ("[]", "{}")
     assert json.loads(row[2]) == {"other": 9999999999}
     assert row[3] > 0
+
+
+async def test_pg_503_backoff_coalesces_parallel_failures_and_resets(pg_store):
+    import time
+
+    name = "backoff.json"
+    await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    backend = pg_store._backend
+    # 一次 503 就必须把账号移出轮转：首档 60 秒，之后逐级退避到配置上限。
+    for seconds in (60, 120, 240, 480, 600, 600):
+        start = time.time()
+        deadlines = await asyncio.gather(*(
+            backend.hold_antigravity_transient(name, 600, 503) for _ in range(4)
+        ))
+        assert max(deadlines) == min(deadlines)
+        assert deadlines[0] - start == pytest.approx(seconds, abs=2)
+        async with backend._db_path.connect() as conn:
+            await conn.execute("UPDATE antigravity_credentials SET transient_hold_until=0 WHERE filename=?", (name,))
+            await conn.commit()
+    await backend.record_success(name, "m", "antigravity")
+    assert await backend.hold_antigravity_transient(name, 600, 503) - time.time() == pytest.approx(60, abs=2)
+
+
+@pytest.mark.parametrize("status", ["error", "geo_blocked"])
+async def test_pg_skips_recent_exclusive_probe_failure_then_rechecks(pg_store, status):
+    import time
+
+    backend = pg_store._backend
+    for name in ("probe.json", "ready.json"):
+        await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    async with backend._db_path.connect() as db:
+        [(group,)] = await db.execute_fetchall("INSERT INTO proxy_groups (name,exclusive_assignment) VALUES ('probe',1) RETURNING id")
+        [(node,)] = await db.execute_fetchall(
+            "INSERT INTO proxy_group_nodes (group_id,proxy_url) VALUES (?,?) RETURNING id",
+            (group, "http://example.invalid:3128"),
+        )
+        await db.execute("UPDATE antigravity_credentials SET proxy_mode='group',proxy_group_id=?,bound_proxy_node_id=? WHERE filename='probe.json'", (group, node))
+        await db.execute("INSERT INTO antigravity_account_health (credential_name, eligibility_status,eligibility_checked_at) VALUES ('probe.json',?,?)", (status,time.time()))
+        await db.commit()
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    states = await backend.get_all_credential_states("antigravity")
+    assert rank_antigravity_image_candidates(states, model_name="m") == ["ready.json"]
+    for _ in range(3):
+        picked = await backend.get_next_available_credential("antigravity", "m")
+        assert picked[0] == "ready.json"
+    async with backend._db_path.connect() as db:
+        await db.execute("UPDATE antigravity_account_health SET eligibility_checked_at=? WHERE credential_name='probe.json'", (time.time()-61,))
+        await db.commit()
+    picked = await backend.get_next_available_credential("antigravity", "m")
+    assert picked[0] == "probe.json"
+
+
+@pytest.mark.parametrize("reason,binding", [
+    ("IP check failed: ValueError: ReadError", "proxy_failed"),
+    ("IP echo read failed: ReadError", "unchecked"),
+])
+async def test_pg_echo_read_error_allows_request_through_bound_node(pg_store, monkeypatch, reason, binding):
+    import time
+    from unittest.mock import AsyncMock
+    from src.credential_manager import CredentialManager, rank_antigravity_image_candidates
+
+    filename = "echo.json"
+    await pg_store.store_credential(filename, {"access_token": "test"}, mode="antigravity")
+    backend = pg_store._backend
+    async with backend._db_path.connect() as db:
+        [(group,)] = await db.execute_fetchall("INSERT INTO proxy_groups(name,exclusive_assignment) VALUES ('fixed',1) RETURNING id")
+        [(node,)] = await db.execute_fetchall("INSERT INTO proxy_group_nodes(group_id,proxy_url) VALUES (?,?) RETURNING id", (group,"http://bound.invalid"))
+        await db.execute("UPDATE antigravity_credentials SET proxy_mode='group', proxy_group_id=?, bound_proxy_node_id=? WHERE filename=?", (group,node,filename))
+        await db.execute("INSERT INTO antigravity_account_health(credential_name,binding_status,eligibility_status,eligibility_reason,eligibility_checked_at) VALUES (?,?,'error',?,?)", (filename,binding,reason,time.time()))
+        await db.commit()
+    manager = CredentialManager()
+    manager._initialized = True
+    manager._storage_adapter = pg_store
+    monkeypatch.setattr("config.get_antigravity_egress_ip_check_url", AsyncMock(return_value="https://echo.invalid"))
+    monkeypatch.setattr("config.get_antigravity_network_check_ttl_seconds", AsyncMock(return_value=600))
+    name, selected = await backend.get_next_available_credential("antigravity", "m")
+    ready = await manager.ensure_antigravity_account_ready(name, selected)
+    assert ready["proxy_url"] == "http://bound.invalid"
+    assert ready["proxy_node_id"] == node
+    states = await backend.get_all_credential_states("antigravity")
+    assert rank_antigravity_image_candidates(states, model_name="m") == [filename]
