@@ -2038,12 +2038,12 @@ async def non_stream_request(
 
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
-    from src.request_timing import mark_stage, measure_phase
+    from src.request_timing import database_timing_scope, mark_stage, measure_phase
     mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证
-    with measure_phase("credential_lookup"):
+    with measure_phase("credential_lookup"), database_timing_scope("credential"):
         cred_result = await credential_manager.get_valid_credential(
             mode="antigravity", model_name=model_name
         )
@@ -2057,7 +2057,7 @@ async def non_stream_request(
                 f"[ANTIGRAVITY] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
             )
             model_name = next_model
-            with measure_phase("credential_lookup"):
+            with measure_phase("credential_lookup"), database_timing_scope("credential"):
                 cred_result = await credential_manager.get_valid_credential(
                     mode="antigravity", model_name=model_name
                 )
@@ -2154,7 +2154,7 @@ async def non_stream_request(
 
     async def refresh_credential_fast():
         nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url, request_id
-        with measure_phase("credential_lookup"):
+        with measure_phase("credential_lookup"), database_timing_scope("credential"):
             cred_result = await credential_manager.get_valid_credential(
                 mode="antigravity", model_name=model_name,
                 exclude_filenames=set(rate_limited_credentials),

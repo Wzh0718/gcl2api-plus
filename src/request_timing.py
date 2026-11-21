@@ -1,5 +1,5 @@
 """Constant-space request timing: no body copies, queues, tasks or global request map."""
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import time
@@ -57,6 +57,23 @@ def measure_phase(name):
         yield
     finally:
         state.phase_ms[name] = state.phase_ms.get(name, 0.0) + (time.monotonic() - started) * 1000
+
+
+_database_scope = ContextVar("database_timing_scope", default=None)
+
+
+@contextmanager
+def database_timing_scope(name):
+    token = _database_scope.set(name)
+    try:
+        yield
+    finally:
+        _database_scope.reset(token)
+
+
+def measure_pg(operation):
+    scope = _database_scope.get()
+    return measure_phase(f"{scope}_pg_{operation}") if scope else nullcontext()
 
 
 @asynccontextmanager
