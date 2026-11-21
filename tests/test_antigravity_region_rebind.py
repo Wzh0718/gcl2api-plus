@@ -1,9 +1,4 @@
-"""地区资格拒绝（UNSUPPORTED_LOCATION）的换 IP 语义。
-
-生产事实：代理绑定正常、上游明确返回 UNSUPPORTED_LOCATION。此时结论属于
-**出口 IP** 而不是账号，正确处理是保留账号、把同一账号换到组内空闲 IP 后重试，
-而不是把账号踢出调度或直接封禁。
-"""
+"""地区资格拒绝与代理绑定故障的处理。"""
 
 import time
 from types import SimpleNamespace
@@ -25,8 +20,8 @@ def test_unsupported_location_code_is_a_region_rejection():
     decision = classify_antigravity_403(LOCATION_BODY)
 
     assert decision.category == "geo_blocked"
-    assert decision.invalidate_binding is True
-    assert decision.retry_after_rebind is True
+    assert decision.invalidate_binding is False
+    assert decision.retry_after_rebind is False
     assert decision.disable_account is False
 
 
@@ -163,27 +158,12 @@ async def test_exhausted_group_returns_none_instead_of_failing_the_request_path(
     assert await manager.rotate_antigravity_egress("a.json") is None
 
 
-@pytest.mark.asyncio
-async def test_verify_keeps_rotating_while_the_new_node_is_still_rejected():
-    storage = _FakeStorage(
-        network={
-            "proxy_mode": "group",
-            "proxy_group_id": 7,
-            "bound_proxy_node_id": 1,
-        },
-        checks=[
-            {"eligibility_status": "geo_blocked"},
-            {"eligibility_status": "eligible", "binding_status": "healthy"},
-        ],
-    )
-    manager = _manager(storage)
-
-    result = await manager.rotate_antigravity_egress(
-        "a.json", attempts=2, verify=True
-    )
-
-    assert result["eligibility_status"] == "eligible"
-    assert len(storage.invalidations) == 2
+@pytest.mark.parametrize("binding", ["proxy_drift", "proxy_failed"])
+def test_explicit_location_refusal_is_terminal_even_with_stale_binding_error(binding):
+    decision = classify_antigravity_403(LOCATION_BODY, account_health={"binding_status": binding})
+    assert decision.category == "geo_blocked"
+    assert not decision.retry_after_rebind
+    assert not decision.invalidate_binding
 
 
 @pytest.mark.asyncio
@@ -235,7 +215,7 @@ async def test_request_helper_reports_rebound_credential(monkeypatch):
 
     assert fresh["proxy_url"] == "http://proxy-b.example:8080"
     manager.rotate_antigravity_egress.assert_awaited_once_with(
-        "a.json", attempts=1
+        "a.json"
     )
 
 
@@ -296,7 +276,7 @@ async def test_geo_403_does_not_disable_or_pause_the_account(monkeypatch):
     )
 
     assert result.decision.category == "geo_blocked"
-    assert result.rebind_retry is True
+    assert result.rebind_retry is False
     assert manager.disabled == []
     assert manager.paused == []
     assert manager.health["eligibility_status"] == "geo_blocked"
@@ -344,25 +324,8 @@ async def test_gate_resolves_unbound_pg_selection_instead_of_raising(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_region_rejection_binds_a_node_when_the_account_has_none():
-    storage = _FakeStorage(
-        network={"proxy_mode": "group", "proxy_group_id": 7},
-        rotated=False,
-    )
-    storage.assigned = {
-        "proxy_mode": "group",
-        "proxy_group_id": 7,
-        "proxy_url": "http://proxy-c.example:8080",
-        "bound_proxy_node_id": 3,
-    }
-
-    async def resolve(filename, mode="antigravity"):
-        return dict(storage.assigned)
-
-    storage.resolve_credential_network = resolve
-    manager = _manager(storage)
-
-    rotated = await manager.rotate_antigravity_egress("a.json")
-
-    assert rotated is not None
-    assert storage.health["binding_status"] == "unchecked"
+async def test_unbound_account_does_not_get_a_new_exit_after_denial():
+    storage = _FakeStorage(network={"proxy_mode": "group", "proxy_group_id": 7}, rotated=False)
+    storage.resolve_credential_network = AsyncMock()
+    assert await _manager(storage).rotate_antigravity_egress("a.json") is None
+    storage.resolve_credential_network.assert_not_awaited()

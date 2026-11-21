@@ -176,7 +176,7 @@ async def responses(
         except Exception:
             return result
         if isinstance(payload, dict) and "error" in payload:
-            return JSONResponse(content=payload, status_code=result.status_code)
+            return result
         return JSONResponse(
             content=chat_completion_to_responses(
                 payload, fallback_model=chat_dict["model"]

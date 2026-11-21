@@ -841,11 +841,14 @@ def _selection_usage_rejection() -> Response | None:
 
 
 def _account_pool_429() -> Response:
-    if (response := _selection_usage_rejection()) is not None:
-        return response
-    response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
-                        media_type="application/json")
-    response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
+    from src.rate_limits import selection_retry_at
+    response = _selection_usage_rejection()
+    if response is None:
+        response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
+                            media_type="application/json")
+        response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
+    if retry_at := selection_retry_at.get():
+        response.headers["Retry-After"] = str(max(1, math.ceil(retry_at - time.time())))
     return response
 
 
@@ -943,9 +946,9 @@ async def _handle_antigravity_403(
         "proxy_failed",
     }:
         note_dynamic_warmup_outcome(credential_name, "paused")
-    # geo_blocked 不暂停账号：地区结论只属于当前出口 IP，换节点后账号照常使用。
+    # 地区拒绝保留绑定并向调用方返回原始拒绝。
 
-    # 地区拒绝和绑定异常是出口问题，不是账号级证据：保留账号、换 IP 重试。
+    # 绑定故障和地区拒绝本身都不证明账号已被禁用。
     # 只有明确的账号级拒绝（或无法归类的 403 且配置要求封禁）才禁用账号。
     account_level_denial = decision.disable_account or decision.category == "unknown_403"
     if decision.tos_violation or (
@@ -980,7 +983,7 @@ async def _retry_same_account_on_new_egress(
     credential_name: str,
     credential_data: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """地区拒绝后把同一账号换到组内空闲 IP，返回刷新后的凭证数据。
+    """修复代理绑定故障后，返回刷新后的凭证数据。
 
     只对组绑定生效。换绑失败（组内无空闲节点、自定义代理、固定 IP）返回 None，
     调用方按原有失败路径处理，账号不会被静默丢弃。
@@ -992,7 +995,7 @@ async def _retry_same_account_on_new_egress(
     if rotate is None or reload_credential is None:
         return None
     try:
-        rotated = await rotate(credential_name, attempts=1)
+        rotated = await rotate(credential_name)
     except Exception as exc:  # noqa: BLE001 - rotation must not break the retry path
         log.warning(
             "[ANTIGRAVITY REGION] egress rotation failed: "
@@ -1129,6 +1132,41 @@ def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
     return None
 
 
+async def _select_text_credential(model_name):
+    """Try the configured suffix in order, retaining the earliest known recovery."""
+    from src.rate_limits import selection_retry_at, selection_usage_resume_at
+    from src.request_timing import database_timing_scope, measure_phase
+
+    chain = None
+    earliest = None
+    while True:
+        with measure_phase("credential_lookup"), database_timing_scope("credential"):
+            result = await credential_manager.get_valid_credential(
+                mode="antigravity", model_name=model_name
+            )
+        if result:
+            return model_name, result
+
+        usage = selection_usage_resume_at.get()
+        deadline = selection_retry_at.get() or usage
+        if deadline and (earliest is None or deadline < earliest[0]):
+            earliest = deadline, usage, model_name
+
+        if chain is None:
+            chain = await get_antigravity_model_fallback_chain()
+        next_model = _next_fallback_model(chain, model_name)
+        if next_model is None:
+            break
+        log.warning(f"[ANTIGRAVITY] 模型 {model_name} 无可用凭证，尝试 {next_model}")
+        model_name = next_model
+
+    if earliest is not None:
+        deadline, usage, model_name = earliest
+        selection_retry_at.set(deadline)
+        selection_usage_resume_at.set(usage)
+    return model_name, None
+
+
 # ==================== 新的流式和非流式请求函数 ====================
 
 async def _stream_request_inner(
@@ -1159,23 +1197,12 @@ async def _stream_request_inner(
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证
-    cred_result = await credential_manager.get_valid_credential(
-        mode="antigravity", model_name=model_name, image_request=image_request
-    )
-
-    # 当前模型号池无可用凭证时，按配置的降级链尝试后续模型（图片请求不降级）
-    if not cred_result and not image_request:
-        chain = await get_antigravity_model_fallback_chain()
-        next_model = _next_fallback_model(chain, model_name)
-        while next_model and not cred_result:
-            log.warning(
-                f"[ANTIGRAVITY STREAM] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
-            )
-            model_name = next_model
-            cred_result = await credential_manager.get_valid_credential(
-                mode="antigravity", model_name=model_name
-            )
-            next_model = _next_fallback_model(chain, model_name)
+    if image_request:
+        cred_result = await credential_manager.get_valid_credential(
+            mode="antigravity", model_name=model_name, image_request=True
+        )
+    else:
+        model_name, cred_result = await _select_text_credential(model_name)
 
     if not cred_result:
         # 文本号池暂时不可用返回429，图片保留原有语义。
@@ -1621,7 +1648,7 @@ async def _stream_request_inner(
                 if same_account_retry:
                     same_account_retry = False
                     log.warning(
-                        "[ANTIGRAVITY STREAM] 地区拒绝后已换出口 IP，用同一账号重试: "
+                        "[ANTIGRAVITY STREAM] 代理绑定故障已修复，用同一账号重试: "
                         f"{current_file} / {model_name}"
                     )
                     attempt += 1
@@ -2092,7 +2119,7 @@ async def _non_stream_image_request_inner(
                 )
                 attempted_credentials.discard(current_file)
                 log.warning(
-                    "[ANTIGRAVITY IMAGE] 地区拒绝后已换出口 IP，重新进入候选: "
+                    "[ANTIGRAVITY IMAGE] 代理绑定故障已修复，重新进入候选: "
                     f"{current_file} / {requested_model}"
                 )
                 account_attempt += 1
@@ -2220,25 +2247,7 @@ async def non_stream_request(
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证
-    with measure_phase("credential_lookup"), database_timing_scope("credential"):
-        cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name
-        )
-
-    # 当前模型号池无可用凭证时，按配置的降级链尝试后续模型
-    if not cred_result:
-        chain = await get_antigravity_model_fallback_chain()
-        next_model = _next_fallback_model(chain, model_name)
-        while next_model and not cred_result:
-            log.warning(
-                f"[ANTIGRAVITY] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
-            )
-            model_name = next_model
-            with measure_phase("credential_lookup"), database_timing_scope("credential"):
-                cred_result = await credential_manager.get_valid_credential(
-                    mode="antigravity", model_name=model_name
-                )
-            next_model = _next_fallback_model(chain, model_name)
+    model_name, cred_result = await _select_text_credential(model_name)
 
     if not cred_result:
         # 文本号池暂时不可用返回429，不作为内部故障。
@@ -2573,7 +2582,7 @@ async def non_stream_request(
                             attempted_credentials.discard(current_file)
                             rate_limited_credentials.discard(current_file)
                             log.warning(
-                                "[ANTIGRAVITY] 地区拒绝后已换出口 IP，用同一账号重试: "
+                                "[ANTIGRAVITY] 代理绑定故障已修复，用同一账号重试: "
                                 f"{current_file} / {model_name}"
                             )
                             attempt += 1
