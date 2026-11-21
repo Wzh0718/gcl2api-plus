@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from log import log
-from src.antigravity_priority import account_priority
 from src.request_timing import database_timing_scope
 from src.rate_limits import selection_retry_at, selection_usage_resume_at
 from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
@@ -87,7 +86,6 @@ def rank_antigravity_image_candidates(
     runtime_health: Optional[Dict[str, Dict[str, Any]]] = None,
     excluded_filenames: Optional[Set[str]] = None,
     now: Optional[float] = None,
-    preferred: Optional[str] = None,
 ) -> List[str]:
     """Rank eligible image accounts by live health and their routing queue position."""
     current_time = time.time() if now is None else now
@@ -121,7 +119,6 @@ def rank_antigravity_image_candidates(
         rotation_order = max(int(state.get("rotation_order") or 0), 0)
         sort_key = (
             health_priority,
-            filename != preferred,
             routing_turn,
             rotation_order,
             filename,
@@ -240,21 +237,14 @@ class CredentialManager:
         selection_retry_at.set(0)
         selection_usage_resume_at.set(0)
         pinned = bound_claude_credential() if mode == "antigravity" else None
-        preferred = None
-        if mode == "antigravity" and not pinned:
-            preferred = account_priority.take_preference(exclude_filenames or set())
         if mode == "antigravity" and (
             image_request or "image" in (model_name or "").lower()
         ):
-            result = await self._get_valid_antigravity_image_credential(
+            return await self._get_valid_antigravity_image_credential(
                 model_name=model_name or "",
                 exclude_filenames=exclude_filenames,
                 credential_name=pinned,
-                preferred=preferred,
             )
-            if result and not pinned and result[0] != preferred:
-                account_priority.regular_selection(result[0])
-            return result
 
         selection_options = {"credential_name": pinned} if pinned else {}
 
@@ -262,21 +252,6 @@ class CredentialManager:
         max_retries = 3
         attempted_filenames: set[str] = set(exclude_filenames or set())
         preferred_result = None
-
-        priority_claim = None
-
-        async def select_account(excluded):
-            nonlocal preferred, priority_claim
-            choose = self._storage_adapter._backend.get_next_available_credential
-            if preferred and preferred not in excluded:
-                name, preferred = preferred, None
-                result = await choose(mode=mode, model_name=model_name,
-                                      exclude_filenames=excluded, credential_name=name)
-                if result:
-                    priority_claim = result[0]
-                    return result
-            return await choose(mode=mode, model_name=model_name,
-                                exclude_filenames=excluded, **selection_options)
 
         # quotaInfo 主动避让：额度快照低于阈值的账号本轮排除（在 429 之前换号）；
         # 若排除后无可用账号则回退为不避让（快照可能滞后，不宁可信其有）
@@ -294,7 +269,12 @@ class CredentialManager:
                         model_name, await get_antigravity_quota_guard_threshold()
                     ) - attempted_filenames
                     if low:
-                        probe = await select_account(attempted_filenames | low)
+                        probe = await self._storage_adapter._backend.get_next_available_credential(
+                            mode=mode,
+                            model_name=model_name,
+                            exclude_filenames=attempted_filenames | low,
+                            **selection_options,
+                        )
                         if probe is not None:
                             preferred_result = probe
                             log.info(
@@ -314,7 +294,12 @@ class CredentialManager:
             if attempt == 0 and preferred_result is not None:
                 result = preferred_result
             else:
-                result = await select_account(attempted_filenames)
+                result = await self._storage_adapter._backend.get_next_available_credential(
+                    mode=mode,
+                    model_name=model_name,
+                    exclude_filenames=attempted_filenames,
+                    **selection_options,
+                )
 
             # 如果没有可用凭证，直接返回None
             if not result:
@@ -345,8 +330,6 @@ class CredentialManager:
                 if ready_data is None:
                     continue
                 credential_data = ready_data
-                if not pinned and filename != priority_claim:
-                    account_priority.regular_selection(filename)
 
             return filename, credential_data
 
@@ -360,7 +343,6 @@ class CredentialManager:
         model_name: str,
         exclude_filenames: Optional[Set[str]] = None,
         credential_name: Optional[str] = None,
-        preferred: Optional[str] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Reserve one image task slot, waiting when every candidate is busy."""
         attempted_filenames = set(exclude_filenames or set())
@@ -379,7 +361,7 @@ class CredentialManager:
             ranked = rank_antigravity_image_candidates(
                 {name: state for name, state in states.items() if name == credential_name}
                 if credential_name else states,
-                model_name=model_name, preferred=preferred,
+                model_name=model_name,
                 runtime_health=self._image_runtime_health,
                 excluded_filenames=attempted_filenames,
             )
