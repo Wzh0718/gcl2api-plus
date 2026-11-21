@@ -1320,7 +1320,7 @@ async def _stream_request_inner(
         usage_metadata = upstream_model = None
         usage_remainder = ""
 
-        # 文本请求轮转发放，只执行全池准入、养号检查和发起错峰。
+        # 普通文本按轮转取得账号，只执行全池准入和养号检查。
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
@@ -1350,7 +1350,8 @@ async def _stream_request_inner(
         try:
             pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
-            pacing_waited += await pace_credential(slot_holder)
+            if image_request:
+                pacing_waited += await pace_credential(slot_holder)
             if not image_request and (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -2289,11 +2290,10 @@ async def non_stream_request(
     while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
 
-        # 文本请求轮转发放，只执行全池准入、养号检查和发起错峰
+        # 普通文本按轮转取得账号，只执行全池准入和养号检查
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
             acquire_credential_slot,
-            pace_credential,
             release_credential_slot,
         )
 
@@ -2305,8 +2305,6 @@ async def non_stream_request(
             with measure_phase("slot_acquire"):
                 pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
-            with measure_phase("pacing"):
-                pacing_waited += await pace_credential(slot_holder)
             if (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)

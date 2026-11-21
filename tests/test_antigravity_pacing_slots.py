@@ -312,7 +312,8 @@ async def test_stream_uses_rotated_account_even_when_local_slot_is_full(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_slot_is_acquired_before_final_start_pacing(monkeypatch):
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_text_keeps_admission_and_skips_start_pacing(monkeypatch, streaming):
     cred = _patch_common(monkeypatch)
     events = []
 
@@ -331,9 +332,13 @@ async def test_slot_is_acquired_before_final_start_pacing(monkeypatch):
         yield 'data: {"candidates": []}\n\n'
 
     monkeypatch.setattr(agy, "stream_post_async", fake_stream)
-    _ = [item async for item in agy.stream_request(_body())]
+    if streaming:
+        assert [item async for item in agy.stream_request(_body())]
+    else:
+        monkeypatch.setattr(agy, "post_async", AsyncMock(return_value=_FakeResponse(200, b'{"candidates":[]}')))
+        assert (await agy.non_stream_request(_body())).status_code == 200
 
-    assert events[:2] == ["acquire", "pace"]
+    assert events == ["acquire"]
     assert _inflight(cred[0]) == 0
 
 

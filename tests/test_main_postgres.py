@@ -422,6 +422,32 @@ async def test_pg_uniform_rotation_under_concurrent_load(pg_store):
         assert await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
     selected = await asyncio.gather(*(
         pg_store._backend.get_next_available_credential("antigravity", "model")
-        for _ in range(76)
+        for _ in range(600)
     ))
-    assert Counter(row[0] for row in selected) == dict.fromkeys(names, 2)
+    counts = Counter(row[0] for row in selected)
+    assert sorted(counts.values()) == [15] * 8 + [16] * 30
+    async with pg_store._backend._db_path.connect() as db:
+        totals = await db.execute_fetchall(
+            "SELECT filename, call_count, routing_window_count FROM antigravity_credentials"
+        )
+    assert all(calls == window == counts[name] for name, calls, window in totals)
+
+
+async def test_pg_batch_skips_cancelled_waiters_and_keeps_filter_groups_separate(pg_store):
+    backend = pg_store._backend
+    for name in ("a.json", "b.json"):
+        assert await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    backend._claim_slots = asyncio.Semaphore(0)
+    pending = [asyncio.create_task(backend._claim_next("test", excluded, None))
+               for excluded in ({"b.json"}, {"b.json"}, {"a.json"})]
+    await asyncio.sleep(0)
+    pending[0].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending[0]
+    backend._claim_slots.release()
+    results = await asyncio.gather(*pending[1:])
+    assert [result[0][0] for result in results] == ["a.json", "b.json"]
+    async with backend._db_path.connect() as db:
+        assert await db.execute_fetchall(
+            "SELECT call_count FROM antigravity_credentials ORDER BY filename"
+        ) == [(1,), (1,)]
