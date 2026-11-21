@@ -1365,7 +1365,7 @@ async def _stream_request_inner(
                 await record_billing_once(False, response=response)
                 yield response
                 return
-            usage_attempt = await begin_account_usage(slot_holder, reserve_routing=True)
+            usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
@@ -2300,7 +2300,6 @@ async def non_stream_request(
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
         pacing_waited = 0.0
 
-        usage_attempt = None
         slot_acquired = False
         try:
             with measure_phase("slot_acquire"):
@@ -2319,7 +2318,7 @@ async def non_stream_request(
                 await record_billing_once(False, response=response)
                 return response
             with measure_phase("usage_admission"):
-                usage_attempt = await begin_account_usage(slot_holder, reserve_routing=True)
+                usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:
@@ -2577,8 +2576,6 @@ async def non_stream_request(
                         media_type="application/json"
                     )
         finally:
-            if usage_attempt:
-                await usage_attempt.confirm(None)
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(slot_holder)
@@ -2672,7 +2669,7 @@ async def _post_image_generate(
     host = (await get_antigravity_api_url()).rstrip("/")
     attempts: List[ImageUpstreamAttempt] = []
     for capacity_attempt in range(IMAGE_CAPACITY_MAX_RETRIES + 1):
-        usage_attempt = await begin_account_usage(credential_name, reserve_routing=True)
+        usage_attempt = await begin_account_usage(credential_name)
         started = time.monotonic()
         try:
             response = await post_async(
@@ -2683,8 +2680,6 @@ async def _post_image_generate(
                 transport="antigravity",
                 timeout=timeout,
             )
-            if usage_attempt and response.status_code not in (403, 429):
-                await usage_attempt.confirm_response(response)
         except Exception as exc:
             elapsed = time.monotonic() - started
             attempts.append(
@@ -2702,11 +2697,9 @@ async def _post_image_generate(
             )
             raise
 
-        finally:
-            if usage_attempt:
-                await usage_attempt.confirm(None)
-
         elapsed = time.monotonic() - started
+        if usage_attempt and response.status_code not in (403, 429):
+            await usage_attempt.confirm_response(response)
         attempts.append(
             ImageUpstreamAttempt(
                 host=host,

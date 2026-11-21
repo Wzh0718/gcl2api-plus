@@ -8,13 +8,11 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from uuid import uuid4
 
 import psycopg
 from src.storage.main_postgres import main_dsn, sync_connection
 from concurrent.futures import ThreadPoolExecutor
 
-from src.storage.account_rotation import SQLITE_USAGE_SCHEMA
 from src.storage.sqlite_pragmas import apply_sync_pragmas
 
 # 账号用量表的写操作原本走 asyncio.to_thread，默认线程池只有 min(32, cpu+4)
@@ -124,9 +122,16 @@ async def get_usage_settings(*, for_admission: bool = False):
 @lru_cache(maxsize=8)
 def _initialize(path: Path) -> None:
     with _connection(path) as db:
-        for statement in SQLITE_USAGE_SCHEMA:
-            db.execute(statement)
-
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS account_usage (
+                account TEXT NOT NULL,
+                bucket INTEGER NOT NULL,
+                requests INTEGER NOT NULL,
+                generated_tokens INTEGER NOT NULL,
+                PRIMARY KEY (account, bucket)
+            ) WITHOUT ROWID
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS account_usage_bucket ON account_usage(bucket)")
 
 
 def _add(db, account, bucket, requests, generated_tokens):
@@ -256,12 +261,12 @@ async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bo
     return snapshots
 
 
-def _admit(path: Path, account: str, global_limits: dict, reservation_id=None) -> tuple[int, bool] | None:
+def _admit(path: Path, account: str, global_limits: dict) -> int | None:
     global_tracking = _should_track(global_limits, {})
     if not global_tracking and not main_dsn() and not path.is_file():
         return None
     with _connection(path) as db:
-        if not global_tracking and reservation_id is None:
+        if not global_tracking:
             _, overrides = _account_policies(db, [account]).get(account, (False, {}))
             if not _should_track(global_limits, overrides):
                 return None
@@ -271,10 +276,8 @@ def _admit(path: Path, account: str, global_limits: dict, reservation_id=None) -
         else:
             _initialize(path)
             db.execute("BEGIN IMMEDIATE")
-        policies = _account_policies(db, [account])
-        exempt, overrides = policies.get(account, (False, {}))
-        tracked = _should_track(global_limits, overrides)
-        if not tracked and (reservation_id is None or account not in policies):
+        exempt, overrides = _account_policies(db, [account]).get(account, (False, {}))
+        if not _should_track(global_limits, overrides):
             return None
         limits = _effective_limits(global_limits, exempt, overrides)
         now = int(time.time())
@@ -317,59 +320,43 @@ def _admit(path: Path, account: str, global_limits: dict, reservation_id=None) -
             )""", (hour,))
         else:
             db.execute("DELETE FROM account_usage WHERE bucket <= ?", (hour,))
-        if reservation_id:
-            db.execute("DELETE FROM routing_pending WHERE started <= ?", (hour,))
-            db.execute("INSERT INTO routing_pending(id,account,started) VALUES(?,?,?)",
-                       (reservation_id, account, now))
-        if tracked:
-            _add(db, account, now, 1, 0)
-    return now, tracked
+        _add(db, account, now, 1, 0)
+    return now
 
 
-def _undo_admission(path, account, admission, reservation_id):
-    bucket, tracked = admission
+def _undo_admission(path: Path, account: str, bucket: int) -> None:
     with _connection(path) as db:
-        if reservation_id:
-            db.execute("DELETE FROM routing_pending WHERE id=?", (reservation_id,))
-        if not tracked:
-            return
         db.execute(
             "UPDATE account_usage SET requests = requests - 1 WHERE account = ? AND bucket = ?",
             (account, bucket),
         )
 
 
-def _confirm(path: Path, account: str, tokens: int, reservation_id=None) -> None:
+def _confirm(path: Path, account: str, tokens: int) -> None:
     with _connection(path) as db:
-        if reservation_id:
-            db.execute("DELETE FROM routing_pending WHERE id=?", (reservation_id,))
-        if tokens:
-            _add(db, account, int(time.time()), 0, tokens)
+        _add(db, account, int(time.time()), 0, tokens)
 
 
 class AccountUsageAttempt:
-    def __init__(self, path: Path, account: str, reservation_id=None):
-        self.reservation_id = reservation_id
+    def __init__(self, path: Path, account: str):
         self.path = path
         self.account = account
         self.confirmed = False
-        self.tokens = 0
 
     async def confirm(self, usage_metadata: Mapping | None) -> None:
-        if self.confirmed:
+        if self.confirmed or not usage_metadata:
             return
         self.confirmed = True
-        usage_metadata = usage_metadata or {}
         generation_fields = {
             key: value
             for key in ("candidatesTokenCount", "thoughtsTokenCount")
             if type(value := usage_metadata.get(key)) is int and 0 <= value < 2**53
         }
         usage = calculate_usage_metrics(generation_fields)
-        self.tokens = max(self.tokens, usage.output_tokens + usage.thought_tokens)
-        if self.tokens or self.reservation_id:
+        tokens = usage.output_tokens + usage.thought_tokens
+        if tokens:
             try:
-                await asyncio.shield(_in_db_thread(_confirm, self.path, self.account, self.tokens, self.reservation_id))
+                await _in_db_thread(_confirm, self.path, self.account, tokens)
             except (sqlite3.Error, psycopg.Error) as exc:
                 self.confirmed = False
                 log.error(f"[ACCOUNT USAGE] Failed to record confirmed tokens: {type(exc).__name__}")
@@ -382,21 +369,20 @@ class AccountUsageAttempt:
         await self.confirm(usage)
 
 
-async def begin_account_usage(account: str, *, reserve_routing: bool = False) -> AccountUsageAttempt | None:
+async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
     if not account:
         return None
     try:
         limits = await get_usage_settings(for_admission=True)
         path = _db_path()
-        reservation_id = uuid4().hex if reserve_routing else None
-        reservation = asyncio.create_task(_in_db_thread(_admit, path, account, limits, reservation_id))
+        reservation = asyncio.create_task(_in_db_thread(_admit, path, account, limits))
         try:
             bucket = await asyncio.shield(reservation)
         except asyncio.CancelledError:
             try:
                 bucket = await reservation
                 if bucket is not None:
-                    await _in_db_thread(_undo_admission, path, account, bucket, reservation_id)
+                    await _in_db_thread(_undo_admission, path, account, bucket)
             except AccountUsageLimitReached:
                 pass
             except (sqlite3.Error, psycopg.Error, OSError, ValueError) as exc:
@@ -405,4 +391,4 @@ async def begin_account_usage(account: str, *, reserve_routing: bool = False) ->
     except (sqlite3.Error, psycopg.Error, OSError, ValueError) as exc:
         log.error(f"[ACCOUNT USAGE] Admission store unavailable: {type(exc).__name__}")
         raise AccountUsageLimitReached(1, store_unavailable=True) from exc
-    return AccountUsageAttempt(path, account, reservation_id) if bucket is not None else None
+    return AccountUsageAttempt(path, account) if bucket is not None else None

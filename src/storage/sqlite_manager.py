@@ -17,9 +17,6 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
-from src.storage.account_rotation import (
-    LAST_TURN_SQL, SQLITE_USAGE_SCHEMA, TICKET_ORDER, effective_usage_sql, tickets_sql,
-)
 from src.request_timing import measured_db_lock
 from src.storage.sqlite_pragmas import BUSY_TIMEOUT_MS, apply_sync_pragmas, connect as sqlite_connect
 
@@ -131,7 +128,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("routing_window_started_at", "REAL"),
             ("routing_window_count", "INTEGER DEFAULT 0"),
             ("routing_turn", "INTEGER DEFAULT 0"),
-            ("routing_bonus_turn", "INTEGER"),
             ("created_at", "REAL DEFAULT (unixepoch())"),
             ("updated_at", "REAL DEFAULT (unixepoch())")
         ],
@@ -405,17 +401,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 routing_window_started_at REAL,
                 routing_window_count INTEGER DEFAULT 0,
                 routing_turn INTEGER DEFAULT 0,
-                routing_bonus_turn INTEGER,
 
                 -- 时间戳
                 created_at REAL DEFAULT (unixepoch()),
                 updated_at REAL DEFAULT (unixepoch())
             )
         """)
-
-        for statement in SQLITE_USAGE_SCHEMA:
-            await db.execute(statement)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_ag_bonus_turn ON antigravity_credentials(routing_bonus_turn)")
 
         # 创建索引 - 普通凭证表
         await db.execute("""
@@ -1342,21 +1333,24 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await worker
                 raise
 
+    _CREDENTIAL_ORDER = "COALESCE(routing_turn, 0), COALESCE(rotation_order, 0), filename"
     _SELECT_CREDENTIAL = f"""
-        WITH {tickets_sql("{where_sql}")}, first_ticket AS (
-            SELECT filename, bonus FROM tickets ORDER BY {TICKET_ORDER} LIMIT 1
-        )
-        SELECT c.filename, credential_data, model_cooldowns, enable_credit,
-               proxy_mode, proxy_url, proxy_group_id, t.bonus
-        FROM first_ticket t JOIN antigravity_credentials c ON c.filename=t.filename
-    """
+                SELECT filename, credential_data, model_cooldowns,
+                       enable_credit, proxy_mode, proxy_url,
+                       proxy_group_id
+                FROM antigravity_credentials
+                WHERE {{where_sql}} AND usage_resume_at <= ?
+                ORDER BY {_CREDENTIAL_ORDER}
+                LIMIT 1
+            """
     _RESUME_CREDENTIAL = """
                     SELECT MIN(usage_resume_at) FROM antigravity_credentials
                     WHERE {where_sql} AND usage_resume_at > ?
                 """
-    _ADVANCE_TURN_SQL = f"""UPDATE antigravity_credentials
+    _ADVANCE_TURN_SQL = """UPDATE antigravity_credentials
                    SET call_count = COALESCE(call_count, 0) + 1,
-                       {{cursor}} = {LAST_TURN_SQL} + 1,
+                       routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                       FROM antigravity_credentials),
                        routing_window_started_at = CASE
                            WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
                            ELSE routing_window_started_at
@@ -1366,11 +1360,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                            ELSE COALESCE(routing_window_count, 0) + 1
                        END,
                        updated_at = unixepoch()
-                   WHERE filename = ?"""
-    @classmethod
-    def _advance_turn(cls, bonus):
-        return cls._ADVANCE_TURN_SQL.format(cursor="routing_bonus_turn" if bonus else "routing_turn")
-
+                   WHERE filename = {target}"""
+    _ADVANCE_TURN = _ADVANCE_TURN_SQL.format(target="?")
 
     @staticmethod
     def _claim_filter(model_name, attempted, credential_name, current_time):
@@ -1423,9 +1414,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 return None, resume or 0, False
             if is_dormant(row[0]):
                 return row, 0, True
-            db.execute(self._advance_turn(row[-1]), (cutoff, now, cutoff, row[0]))
+            db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
             db.commit()
-            return row[:-1], 0, False
+            return row, 0, False
 
     @contextmanager
     def _claim_transaction(self):
@@ -1452,7 +1443,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         *,
         mode: str = "antigravity",
         expected_call_count: Optional[int] = None,
-        bonus: bool = False,
     ) -> bool:
         """Atomically move a claimed image account to the routing queue tail."""
         self._ensure_initialized()
@@ -1470,8 +1460,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             current_time = time.time()
             routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
             where_sql += " AND usage_resume_at <= unixepoch()"
-            cursor = "routing_bonus_turn" if bonus else "routing_turn"
-            routing_sql = f""" , {cursor} = {LAST_TURN_SQL} + 1, routing_window_started_at = CASE
+            routing_sql = """ , routing_turn = (
+                                    SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                    FROM antigravity_credentials
+                                ), routing_window_started_at = CASE
                                     WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
                                     ELSE routing_window_started_at
                                 END,
@@ -4768,8 +4760,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
                                c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
-                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at,
-                               c.routing_bonus_turn, {effective_usage_sql("c.filename", postgres=self.main_postgres)}
+                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at
                         FROM {table_name} c
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
@@ -4803,8 +4794,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
                                 "usage_resume_at": row[14],
-                                "routing_bonus_turn": row[15],
-                                "routing_usage": int(row[16]),
                                 "routing_turn": max(int(row[13] or 0), 0),
                                 "routing_count": (
                                     max(int(row[12] or 0), 0)

@@ -582,35 +582,3 @@ async def test_preselected_limited_account_switches_without_upstream_retry(monke
     post.assert_awaited_once()
     assert post.await_args.kwargs["headers"]["Authorization"] == "Bearer other-token"
     assert _inflight(first[0]) == _inflight(second[0]) == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish", [False, True])
-async def test_stream_routing_reservation_lifecycle_with_limits_off(monkeypatch, tmp_path, finish):
-    from src.storage.sqlite_manager import SQLiteManager
-
-    name, data = _patch_common(monkeypatch)
-    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "_config_initialized", True)
-    monkeypatch.setattr(config, "_config_cache", {CONFIG_KEY: {"enabled": False}})
-    store = SQLiteManager()
-    await store.initialize()
-    try:
-        await store.store_credential(name, data, mode="antigravity")
-
-        async def upstream(**kwargs):
-            yield 'data: {"candidates": []}\n\n'
-            yield 'data: {"usageMetadata":{"candidatesTokenCount":5,"thoughtsTokenCount":2}}\n\n'
-
-        monkeypatch.setattr(agy, "stream_post_async", upstream)
-        stream = agy.stream_request(_body())
-        await anext(stream)
-        states = await store.get_all_credential_states("antigravity")
-        assert states[name]["routing_usage"] == 2048
-        if finish:
-            assert [chunk async for chunk in stream]
-        await stream.aclose()
-        states = await store.get_all_credential_states("antigravity")
-        assert states[name]["routing_usage"] == (7 if finish else 0)
-    finally:
-        await store.close()

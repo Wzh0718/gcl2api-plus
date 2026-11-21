@@ -1,4 +1,4 @@
-"""Persistent round robin with a bounded bonus for lower hourly generation."""
+"""Persistent per-request round robin, independent of historical usage windows."""
 import asyncio
 from collections import Counter
 import time
@@ -239,70 +239,58 @@ async def test_76_concurrent_claims_split_evenly_across_38_accounts(manager):
 
 
 @pytest.mark.asyncio
-async def test_low_usage_gets_one_extra_turn_even_before_any_request_settles(manager):
-    from src.antigravity_usage import begin_account_usage
+async def test_priority_is_bounded_and_unavailable_hint_falls_back(manager, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src import credential_manager as routing
+    from src.antigravity_priority import AccountPriority
 
-    attempts = [await begin_account_usage(name, reserve_routing=True) for name in NAMES[1:]]
-    for attempt in attempts:
-        await attempt.confirm({"candidatesTokenCount": 7000, "thoughtsTokenCount": 1192})
+    priority = AccountPriority()
+    monkeypatch.setattr(routing, "account_priority", priority)
+    picker = routing.CredentialManager()
+    picker._initialized = True
+    picker._storage_adapter = SimpleNamespace(_backend=manager)
+    monkeypatch.setattr(picker, "_should_refresh_token", AsyncMock(return_value=False))
+    async def ready(name, data):
+        return data
+    monkeypatch.setattr(picker, "ensure_antigravity_account_ready", ready)
 
-    selected = await asyncio.gather(*(select(manager) for _ in range(50)))
-    assert Counter(selected) == {NAMES[0]: 20, **dict.fromkeys(NAMES[1:], 10)}
-    assert all(set(selected[i:i+5]) == set(NAMES) for i in range(0, 50, 5))
+    async def pick():
+        return (await picker.get_valid_credential(mode="antigravity"))[0]
 
-    # Four unfinished attempts have the same routing weight as 8192 confirmed
-    # tokens. Equal weights revert to the regular queue.
-    pending = [await begin_account_usage(NAMES[0], reserve_routing=True) for _ in range(4)]
-    assert_complete_rounds([await select(manager) for _ in range(8)])
-    for attempt in pending:
-        await attempt.confirm(None)
-    assert Counter([await select(manager) for _ in range(5)])[NAMES[0]] == 2
+    assert_complete_rounds([await pick() for _ in range(12)])
+    for name in NAMES[1:]:
+        priority.record_tokens(name, 8192)
+    counts = Counter([await pick() for _ in range(96)])
+    assert min(counts.values()) > 0 and counts[NAMES[0]] > max(counts[n] for n in NAMES[1:])
+    assert counts[NAMES[0]] <= 2 * min(counts.values()) + 1
 
-
-@pytest.mark.asyncio
-async def test_only_recent_generation_and_eligible_accounts_affect_weights(manager):
-    from src.antigravity_usage import begin_account_usage
-
-    attempt = await begin_account_usage(NAMES[0], reserve_routing=True)
-    await attempt.confirm({"promptTokenCount": 2_000_000, "candidatesTokenCount": 8191})
-    await attempt.confirm({"candidatesTokenCount": 2_000_000})
-    async with aiosqlite.connect(manager._db_path) as db:
-        await db.execute("INSERT INTO account_usage VALUES (?, unixepoch()-3600, 0, 999999)", (NAMES[2],))
-        await db.execute("INSERT INTO account_usage VALUES (?, unixepoch(), 0, 999999)", (NAMES[3],))
-        await db.commit()
-    selected = [await select(manager, exclude_filenames={NAMES[3]}) for _ in range(12)]
-    assert_complete_rounds(selected, NAMES[:3])
+    priority.regular_selection(NAMES[0])
+    await manager.update_credential_state(NAMES[0], {"disabled": True}, mode="antigravity")
+    assert NAMES[0] not in await asyncio.gather(*(pick() for _ in range(16)))
 
 
-@pytest.mark.asyncio
-async def test_image_and_text_share_weighted_tickets(manager):
-    from src.antigravity_usage import begin_account_usage
-    from src.credential_manager import _rank_image_tickets
-
-    attempt = await begin_account_usage(NAMES[3], reserve_routing=True)
-    await attempt.confirm({"candidatesTokenCount": 9000})
-    selected = []
-    for i in range(28):
-        if i % 2:
-            selected.append(await select(manager))
-        else:
-            states = await manager.get_all_credential_states("antigravity")
-            name, bonus = _rank_image_tickets(states, model_name="image")[0]
-            assert await manager.mark_credential_selected(
-                name, expected_call_count=states[name]["call_count"], bonus=bonus)
-            selected.append(name)
-    assert Counter(selected) == dict(zip(NAMES, [8, 8, 8, 4]))
+def test_priority_expires_and_only_one_concurrent_caller_can_take_credit(monkeypatch):
+    from src import antigravity_priority as module
+    now = 10000
+    monkeypatch.setattr(module, "monotonic", lambda: now)
+    priority = module.AccountPriority()
+    priority.regular_selection("cold")
+    priority.record_tokens("hot", 8191)
+    assert all(priority.take_preference(set()) is None for _ in range(4))
+    priority.record_tokens("hot", 1)
+    assert [priority.take_preference(set()) for _ in range(12)].count("cold") == 1
+    priority.regular_selection("cold")
+    now += 3600
+    assert all(priority.take_preference(set()) is None for _ in range(4))
 
 
-@pytest.mark.asyncio
-async def test_legacy_schema_keeps_regular_cursor_on_upgrade(manager):
-    first = await select(manager)
-    async with aiosqlite.connect(manager._db_path) as db:
-        await db.execute("DROP INDEX idx_ag_bonus_turn")
-        await db.execute("ALTER TABLE antigravity_credentials DROP COLUMN routing_bonus_turn")
-        await db.execute("DROP TABLE routing_pending")
-        await db.execute("DROP TABLE account_usage")
-        await db.commit()
-    await manager.close()
-    await manager.initialize()
-    assert_complete_rounds([first] + [await select(manager) for _ in range(3)])
+def test_image_preference_respects_health_then_regular_rotation():
+    from src.credential_manager import rank_antigravity_image_candidates
+    states = {name: {"routing_turn": i} for i, name in enumerate(NAMES)}
+    assert rank_antigravity_image_candidates(states, model_name="image", preferred=NAMES[3]) == [
+        NAMES[3], *NAMES[:3]]
+    assert rank_antigravity_image_candidates(
+        states, model_name="image", preferred=NAMES[3], now=1000,
+        runtime_health={NAMES[3]: {"last_capacity_failure_at": 999}},
+    ) == NAMES

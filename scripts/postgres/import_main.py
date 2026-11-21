@@ -41,7 +41,6 @@ async def transfer(source, conn, schema, full):
         ORDER BY rowid
     """)]
     # The rolling account window is created lazily in older SQLite installations.
-    tables = [name for name in tables if name != "routing_pending"]  # Live attempts end at cutover.
     if set(tables) - set(pg_columns) or set(pg_columns) - set(tables) - {"account_usage"}:
         raise ValueError("Source and destination table sets differ")
     # Referenced tables must be inserted first even if a prior migration rebuilt them.
@@ -51,7 +50,7 @@ async def transfer(source, conn, schema, full):
         expected = set(pg_columns[table])
         if table == "antigravity_credentials":
             # Older snapshots predate the transient cooldown. COPY uses PG defaults.
-            expected -= {"routing_bonus_turn", "transient_hold_until", "transient_error_count", "transient_error_at"} - set(cols)
+            expected -= {"transient_hold_until", "transient_error_count", "transient_error_at"} - set(cols)
         if set(cols) != expected:
             raise ValueError(f"Column mismatch for {table}")
         binary = [i for i, name in enumerate(cols) if pg_columns[table][name]['data_type'] == 'bytea']

@@ -66,7 +66,6 @@ class StorageBackend(Protocol):
         *,
         mode: str = "antigravity",
         expected_call_count: Optional[int] = None,
-        bonus: bool = False,
     ) -> bool:
         """原子推进凭证公平调度计数。"""
         ...
@@ -262,14 +261,12 @@ class StorageAdapter:
         *,
         mode: str = "antigravity",
         expected_call_count: Optional[int] = None,
-        bonus: bool = False,
     ) -> bool:
         self._ensure_initialized()
         return await self._backend.mark_credential_selected(
             filename,
             mode=mode,
             expected_call_count=expected_call_count,
-            bonus=bonus,
         )
 
     async def get_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
