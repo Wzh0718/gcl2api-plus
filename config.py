@@ -1191,6 +1191,24 @@ async def get_antigravity_403_recheck_interval() -> int:
         return 3600
 
 
+async def get_antigravity_transient_hold_seconds() -> int:
+    """上游 5xx 后该账号的就地冷却时长（秒）。
+
+    5xx 是服务端瞬时错误，只冷却、不封号；默认 10 分钟，窗口内由其他账号接单。
+    """
+    env_value = os.getenv("ANTIGRAVITY_TRANSIENT_HOLD_SECONDS")
+    if env_value:
+        try:
+            return max(int(env_value), 0)
+        except ValueError:
+            pass
+    value = await get_config_value("antigravity_transient_hold_seconds", 600)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 600
+
+
 async def get_keepalive_url() -> str:
     """
     Get keep-alive URL setting.

@@ -101,6 +101,7 @@ class StorageBackend(Protocol):
     async def batch_update_credential_network(self, filenames: List[str], **kwargs) -> Dict[str, Any]: ...
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
     async def update_antigravity_account_health(self, filename: str, **updates) -> Dict[str, Any]: ...
+    async def hold_antigravity_transient(self, filename: str, seconds: float = 600, status_code: Optional[int] = None) -> float: ...
     async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False) -> bool: ...
     async def disable_orphan_proxy_nodes(self, group_id: int, keep_urls: set) -> int: ...
     async def rebind_expired_proxy_accounts(self, group_id: int, *, now: Optional[float] = None, live_urls: Optional[set] = None) -> Dict[str, Any]: ...
@@ -115,19 +116,32 @@ class StorageAdapter:
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """初始化存储适配器"""
+        """初始化存储适配器。
+
+        生产只跑 PostgreSQL：``MAIN_POSTGRES_DSN`` 缺失时直接失败，不静默落到
+        SQLite，避免第二个主库分叉出另一套账目。单元测试需要用内存/临时库时，
+        显式设置 ``MAIN_STORAGE_BACKEND=sqlite``。
+        """
         async with self._lock:
             if self._initialized:
                 return
 
-            from .storage.sqlite_manager import SQLiteManager
-
             from .storage.main_postgres import main_dsn
+
             if main_dsn():
                 from .storage.postgres_manager import PostgresManager
+
                 self._backend = PostgresManager()
-            else:
+            elif os.getenv("MAIN_STORAGE_BACKEND", "").strip().lower() == "sqlite":
+                # 仅测试夹具：显式声明才允许，生产路径不可达。
+                from .storage.sqlite_manager import SQLiteManager
+
                 self._backend = SQLiteManager()
+            else:
+                raise RuntimeError(
+                    "MAIN_POSTGRES_DSN 未配置：主库只支持 PostgreSQL"
+                    "（测试请显式设置 MAIN_STORAGE_BACKEND=sqlite）"
+                )
             await self._backend.initialize()
             log.info(f"Main storage: {type(self._backend).__name__}")
 
@@ -293,6 +307,15 @@ class StorageAdapter:
     ) -> Dict[str, Any]:
         self._ensure_initialized()
         return await self._backend.update_antigravity_account_health(filename, **updates)
+
+    async def hold_antigravity_transient(
+        self, filename: str, seconds: float = 600, status_code: Optional[int] = None
+    ) -> float:
+        """上游 5xx 的就地冷却：不封号，只在窗口内跳过该账号并累计降权计数。"""
+        self._ensure_initialized()
+        return await self._backend.hold_antigravity_transient(
+            filename, seconds=seconds, status_code=status_code
+        )
 
     async def invalidate_antigravity_proxy_binding(
         self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False

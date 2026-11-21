@@ -879,6 +879,27 @@ class CredentialManager:
         except Exception as e:
             log.error(f"Error recording API call result for {credential_name}: {e}")
 
+    async def hold_transient(
+        self,
+        credential_name: str,
+        status_code: Optional[int] = None,
+        mode: str = "antigravity",
+    ) -> float:
+        """上游 5xx：把账号放回冷却窗口，等窗口过去再参与轮转。
+
+        与 ``record_api_call_result`` 失败路径的区别：这里不写 error_codes、
+        不改 ``disabled``，账号只是暂时不被选中。
+        """
+        await self._ensure_initialized()
+        from config import get_antigravity_transient_hold_seconds
+
+        seconds = await get_antigravity_transient_hold_seconds()
+        if seconds <= 0:
+            return 0.0
+        return await self._storage_adapter.hold_antigravity_transient(
+            credential_name, seconds=seconds, status_code=status_code
+        )
+
     async def _should_refresh_token(self, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:
         """检查token是否需要刷新"""
         try:

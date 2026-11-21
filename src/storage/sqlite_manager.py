@@ -104,6 +104,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("usage_limit_disabled", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_resume_at", "INTEGER NOT NULL DEFAULT 0"),
             ("usage_limit_overrides", "TEXT NOT NULL DEFAULT '{}'"),
+            ("transient_hold_until", "REAL NOT NULL DEFAULT 0"),
+            ("transient_error_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("transient_error_at", "REAL NOT NULL DEFAULT 0"),
             ("proxy_mode", "TEXT DEFAULT 'inherit'"),
             ("proxy_url", "TEXT"),
             ("proxy_group_id", "INTEGER"),
@@ -368,6 +371,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 usage_limit_disabled INTEGER NOT NULL DEFAULT 0,
                 usage_resume_at INTEGER NOT NULL DEFAULT 0,
                 usage_limit_overrides TEXT NOT NULL DEFAULT '{}',
+
+                -- 上游 5xx 的就地冷却与降权计数（不改变 disabled）
+                transient_hold_until REAL NOT NULL DEFAULT 0,
+                transient_error_count INTEGER NOT NULL DEFAULT 0,
+                transient_error_at REAL NOT NULL DEFAULT 0,
 
                 -- 账号级代理：inherit/custom/direct/group
                 proxy_mode TEXT NOT NULL DEFAULT 'inherit',
@@ -1313,7 +1321,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                        proxy_group_id
                 FROM antigravity_credentials
                 WHERE {where_sql} AND usage_resume_at <= ?
-                ORDER BY COALESCE(routing_turn, 0) ASC,
+                ORDER BY COALESCE(routing_turn, 0) + COALESCE(transient_error_count, 0) * 3 ASC,
                          COALESCE(rotation_order, 0) ASC,
                          filename ASC
                 LIMIT 1
@@ -1340,7 +1348,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     @staticmethod
     def _claim_filter(model_name, attempted, credential_name, current_time):
-        params: List[Any] = [current_time, current_time]
+        params: List[Any] = [current_time, current_time, current_time]
         where_sql = """disabled = 0
             AND (
                 COALESCE(proxy_mode, 'inherit') <> 'group'
@@ -1360,7 +1368,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 SELECT 1 FROM antigravity_warmup_accounts w
                 WHERE w.credential_name = antigravity_credentials.filename
                   AND w.status IN ('paused', 'account_forbidden')
-            )"""
+            )
+            AND COALESCE(transient_hold_until, 0) <= ?"""
         if credential_name:
             where_sql += " AND filename = ?"
             params.append(credential_name)
@@ -5411,10 +5420,60 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                               )
                         """, (filename,))
 
+                        # 一次真实成功说明上游 5xx 已经过去：清掉瞬时冷却窗口
+                        # 与累计次数，账号立即回到正常的轮转权重。
+                        await db.execute("""
+                            UPDATE antigravity_credentials
+                            SET transient_hold_until = 0,
+                                transient_error_count = 0,
+                                transient_error_at = 0,
+                                updated_at = unixepoch()
+                            WHERE filename = ?
+                              AND (COALESCE(transient_hold_until, 0) > 0
+                                   OR COALESCE(transient_error_count, 0) > 0)
+                        """, (filename,))
+
                     await db.commit()
 
         except Exception as e:
             log.error(f"Error recording success for {filename}: {e}")
+
+    async def hold_antigravity_transient(
+        self,
+        filename: str,
+        seconds: float = 600,
+        status_code: Optional[int] = None,
+    ) -> float:
+        """把账号放进瞬时冷却窗口，不改 ``disabled``。
+
+        上游 5xx 是服务端瞬时错误，不构成封号证据：选择器在窗口内跳过该账号，
+        窗口到期自动放回；每命中一次累计 ``transient_error_count``，
+        选择 SQL 每 1 次让出 3 个轮转位，达成「计数降权」。
+        """
+        self._ensure_initialized()
+        filename = os.path.basename(filename)
+        now = time.time()
+        hold_until = now + max(float(seconds or 0), 0.0)
+        try:
+            async with sqlite_connect(self._db_path) as db:
+                await db.execute("""
+                    UPDATE antigravity_credentials
+                    SET transient_hold_until = CASE
+                            WHEN COALESCE(transient_hold_until, 0) > ? THEN transient_hold_until
+                            ELSE ? END,
+                        transient_error_count = COALESCE(transient_error_count, 0) + 1,
+                        transient_error_at = ?,
+                        updated_at = ?
+                    WHERE filename = ?
+                """, (hold_until, hold_until, now, now, filename))
+                await db.commit()
+            log.warning(
+                f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "
+                f"{int(hold_until - now)}s（不封号）"
+            )
+        except Exception as e:
+            log.error(f"Error holding transient credential {filename}: {e}")
+        return hold_until
 
     async def increment_model_stats(
         self,
