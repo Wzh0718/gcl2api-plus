@@ -1209,6 +1209,52 @@ async def get_antigravity_transient_hold_seconds() -> int:
         return 600
 
 
+async def get_antigravity_session_reuse_ratio() -> float:
+    """无显式 sessionId 时，按账号/调用方/模型复用上游会话的比例。
+
+    0 表示完全保持旧行为（每个请求一条新 trajectory、step 恒为 1）。
+    真实客户端既有连续对话也有新对话，因此建议灰度到 0.3–0.4 而非 1.0。
+    """
+    env_value = os.getenv("ANTIGRAVITY_SESSION_REUSE_RATIO")
+    raw = env_value if env_value not in (None, "") else await get_config_value(
+        "antigravity_session_reuse_ratio", 0.0
+    )
+    try:
+        return min(max(float(raw), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+async def get_antigravity_session_max_steps() -> int:
+    """单条 trajectory 的最大步数；超过后强制开启新会话。"""
+    env_value = os.getenv("ANTIGRAVITY_SESSION_MAX_STEPS")
+    if env_value:
+        try:
+            return max(int(env_value), 1)
+        except ValueError:
+            pass
+    value = await get_config_value("antigravity_session_max_steps", 30)
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return 30
+
+
+async def get_antigravity_session_bucket_seconds() -> int:
+    """复用会话的时间桶宽度：同一桶内的请求共享一条 trajectory。"""
+    env_value = os.getenv("ANTIGRAVITY_SESSION_BUCKET_SECONDS")
+    if env_value:
+        try:
+            return max(int(env_value), 60)
+        except ValueError:
+            pass
+    value = await get_config_value("antigravity_session_bucket_seconds", 900)
+    try:
+        return max(int(value), 60)
+    except (TypeError, ValueError):
+        return 900
+
+
 async def get_keepalive_url() -> str:
     """
     Get keep-alive URL setting.
