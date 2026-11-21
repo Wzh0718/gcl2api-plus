@@ -383,7 +383,7 @@ async def test_protocol_mode_metadata_survives_normalization(path, body, protoco
         observed.append(request_timing.get().details()['request'])
 
     await RequestTimingMiddleware(app)({'type': 'http', 'method': 'POST', 'path': path}, None, None)
-    assert observed == [{'protocol': protocol, 'transport': transport, 'mode': mode}]
+    assert observed == [{'protocol': protocol, 'transport': transport, 'mode': mode, 'worker_inflight_at_entry': 1}]
     assert request_timing.get() is None
 
 

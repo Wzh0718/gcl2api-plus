@@ -107,7 +107,7 @@ class PostgresManager(SQLiteManager):
         fields = tuple(name for name in self.API_KEY_COLUMNS if name != "secret_ciphertext")
         row = await self._db_path.single_row(
             f"SELECT {', '.join(fields)} FROM api_keys WHERE key_prefix=%s AND kind='managed'",
-            (key_prefix,),
+            (key_prefix,), operation="get_api_key_by_prefix",
         )
         return dict(zip(fields, row)) if row else None
 
@@ -116,7 +116,7 @@ class PostgresManager(SQLiteManager):
         period, start = ApiKeySchedule().period(timestamp)
         (reason,) = await self._db_path.single_row(
             "SELECT gcli_admit_key(%s, %s, %s, %s)",
-            (api_key_id, timestamp, period == "day", start),
+            (api_key_id, timestamp, period == "day", start), operation="admit_api_key_request",
         )
         return reason
 
@@ -133,7 +133,7 @@ class PostgresManager(SQLiteManager):
                 # Queue in this worker before consuming a shared DB connection.
                 with measure_pg("local_queue"):
                     await stack.enter_async_context(self._selection_lock)
-                db = await stack.enter_async_context(self._db_path.connect())
+                db = await stack.enter_async_context(self._db_path.connect("claim_dormant"))
                 await db.execute("SELECT pg_advisory_xact_lock(72210440)")
             with measure_phase("selection_locked_work"):
                 now = time.time()
@@ -208,7 +208,7 @@ class PostgresManager(SQLiteManager):
         self._ensure_initialized()
         try:
             table = self._get_table_name(mode)
-            async with self._db_path.connect() as db:
+            async with self._db_path.connect("set_model_cooldown") as db:
                 if cooldown_until is None:
                     expression = "(coalesce(model_cooldowns, '{}')::jsonb - ?::text)::text"
                     args = [model_name]
