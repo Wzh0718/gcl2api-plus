@@ -129,10 +129,14 @@ async def handle_error_with_retry(
     # 上游 5xx 是服务端瞬时错误，不构成账号证据：就地冷却该账号（默认 600s），
     # 本次请求换号重试。放在自动封禁之前，保证配置里残留 500/502/503 也不生效。
     if mode == "antigravity" and status_code in (500, 502, 503):
-        await _hold_transient(credential_manager, status_code, credential_name)
-        if retry_enabled and attempt < max_retries:
+        # Give a single-account pool one retry before imposing the local hold.
+        # The caller independently persists any explicit upstream cooldown.
+        can_retry = retry_enabled and attempt < max_retries
+        if status_code != 503 or attempt > 0 or not can_retry:
+            await _hold_transient(credential_manager, status_code, credential_name)
+        if can_retry:
             log.info(
-                f"[{mode.upper()} RETRY] {status_code} transient, credential cooled down; "
+                f"[{mode.upper()} RETRY] {status_code} transient; "
                 f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
             )
             await asyncio.sleep(retry_interval)
