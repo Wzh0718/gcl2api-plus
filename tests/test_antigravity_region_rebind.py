@@ -300,3 +300,69 @@ async def test_geo_403_does_not_disable_or_pause_the_account(monkeypatch):
     assert manager.disabled == []
     assert manager.paused == []
     assert manager.health["eligibility_status"] == "geo_blocked"
+
+
+@pytest.mark.asyncio
+async def test_gate_resolves_unbound_pg_selection_instead_of_raising(monkeypatch):
+    """PostgreSQL 的领取结果在「组内尚未绑定节点」时 network 为 None。
+
+    门禁必须回退到 resolve_credential_network 绑定一个空闲节点，而不是
+    在这个快照上取字段（此前会 AttributeError）。
+    """
+    import config
+    from src.credential_manager import CredentialManager
+    from src.storage.sqlite_manager import SelectedAntigravityCredential
+
+    manager = CredentialManager()
+    manager._initialized = True
+    resolved = {
+        "proxy_mode": "group",
+        "proxy_group_id": 7,
+        "proxy_url": "http://proxy-a.example:8080",
+        "proxy_node_id": 1,
+        "bound_proxy_node_id": 1,
+        "exclusive_assignment": False,
+    }
+    manager._storage_adapter = SimpleNamespace(
+        resolve_credential_network=AsyncMock(return_value=resolved),
+        get_antigravity_account_health=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        config, "get_antigravity_network_check_enabled", AsyncMock(return_value=False)
+    )
+
+    selected = SelectedAntigravityCredential(
+        {"access_token": "token", "project_id": "project"}, "a.json", None, None
+    )
+    ready = await manager.ensure_antigravity_account_ready("a.json", selected)
+
+    assert ready is not None
+    assert ready["proxy_url"] == "http://proxy-a.example:8080"
+    manager._storage_adapter.resolve_credential_network.assert_awaited_once_with(
+        "a.json", mode="antigravity"
+    )
+
+
+@pytest.mark.asyncio
+async def test_region_rejection_binds_a_node_when_the_account_has_none():
+    storage = _FakeStorage(
+        network={"proxy_mode": "group", "proxy_group_id": 7},
+        rotated=False,
+    )
+    storage.assigned = {
+        "proxy_mode": "group",
+        "proxy_group_id": 7,
+        "proxy_url": "http://proxy-c.example:8080",
+        "bound_proxy_node_id": 3,
+    }
+
+    async def resolve(filename, mode="antigravity"):
+        return dict(storage.assigned)
+
+    storage.resolve_credential_network = resolve
+    manager = _manager(storage)
+
+    rotated = await manager.rotate_antigravity_egress("a.json")
+
+    assert rotated is not None
+    assert storage.health["binding_status"] == "unchecked"
