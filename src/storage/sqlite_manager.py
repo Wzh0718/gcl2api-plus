@@ -1374,8 +1374,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     _ADVANCE_TURN = _ADVANCE_TURN_SQL.format(target="?")
 
     @staticmethod
-    def _claim_filter(model_name, attempted, credential_name, current_time):
-        params: List[Any] = [current_time, current_time, current_time]
+    def _claim_filter(model_name, attempted, credential_name, current_time, *, include_held=False):
+        params: List[Any] = [current_time, current_time]
         where_sql = """disabled = 0
             AND (
                 COALESCE(proxy_mode, 'inherit') <> 'group'
@@ -1395,8 +1395,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 SELECT 1 FROM antigravity_warmup_accounts w
                 WHERE w.credential_name = antigravity_credentials.filename
                   AND w.status IN ('paused', 'account_forbidden')
-            )
-            AND COALESCE(transient_hold_until, 0) <= ?"""
+            )"""
+        if not include_held:
+            where_sql += " AND COALESCE(transient_hold_until, 0) <= ?"
+            params.append(current_time)
         # The exclusive gate would reject these recent results after claiming.
         # Leave other accounts all their selection attempts; recheck this route
         # after a short interval even when the success TTL is much longer.

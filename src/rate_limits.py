@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 # Earliest recovery among otherwise eligible accounts for this task’s last selection.
+selection_retry_at = ContextVar("selection_retry_at", default=0)
 selection_usage_resume_at = ContextVar("selection_usage_resume_at", default=0)
 
 CREDITS_EXHAUSTED_MARKER = "INSUFFICIENT_G1_CREDITS_BALANCE"

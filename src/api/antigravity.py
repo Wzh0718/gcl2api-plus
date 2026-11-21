@@ -841,11 +841,14 @@ def _selection_usage_rejection() -> Response | None:
 
 
 def _account_pool_429() -> Response:
-    if (response := _selection_usage_rejection()) is not None:
-        return response
-    response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
-                        media_type="application/json")
-    response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
+    from src.rate_limits import selection_retry_at
+    response = _selection_usage_rejection()
+    if response is None:
+        response = Response(content=json.dumps({"error": "当前无可用凭证"}), status_code=429,
+                            media_type="application/json")
+        response.rate_limit = RateLimit("gateway", "account_pool_unavailable")
+    if retry_at := selection_retry_at.get():
+        response.headers["Retry-After"] = str(max(1, math.ceil(retry_at - time.time())))
     return response
 
 
