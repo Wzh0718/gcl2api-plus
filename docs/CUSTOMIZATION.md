@@ -360,3 +360,15 @@ ghcr.io/wzh0718/gcl2api-plus:v20260727
 ### PostgreSQL 模型调用统计
 
 设置 `MODEL_STATS_POSTGRES_DSN` 后，服务将新增的按模型累计、按日统计写入 PostgreSQL。连接池每个进程最多 4 个连接，需为应用账号提供独立 schema 的建表权限。面板按“凭证 × 模型”累加 SQLite 历史和 PostgreSQL 增量；日账、额度和凭证状态仍由 SQLite 维护。撤掉 DSN 后界面仅显示 SQLite 数据，再次接入同一 PostgreSQL 后会重新合并历史。启用期间请保留两处存储。PostgreSQL 写失败会记录错误，可能缺失该次模型统计。
+
+### PostgreSQL 主库
+
+应用通过 `MAIN_POSTGRES_DSN` 选择 PostgreSQL 主库，`MAIN_POSTGRES_SCHEMA` 默认是 `gcli_main`。未配置主库 DSN 的安装继续使用 SQLite。通过容器的服务级 `env_file` 提供连接信息。已有单独模型统计库的安装保留原 `MODEL_STATS_POSTGRES_DSN`，看板将导入的历史统计和现有增量合并。保留原凭证目录挂载，API 密钥和导入队列的加密密钥仍从该目录加载。
+
+切换现有安装时，在已确认的维护窗口内停止接收新流量，排空在途结算、监控队列及后台写入任务，再停止旧应用的所有写入进程。使用有权在目标空 schema 创建对象的数据库角色运行导入程序。设定 `MAIN_POSTGRES_DSN` 后，从新版本代码目录运行：
+
+```bash
+python scripts/postgres/import_main.py /app/creds/credentials.db gcli_main --import-all
+```
+
+省略 `--import-all` 可在独立空 schema 演练；样本导入完成后回滚。全量导入会在同一事务中检查表、列和行数，重建索引、序列并迁移同目录提示词缓存的有效条目。对账时核对日账请求数、token、金额、密钥当前额度及最近监控记录。应用应报告 `backend_type=postgresql`。重新开放流量前验证鉴权、凭证选取、准入和结算。恢复写流量后若需回切，先对齐新增业务数据。

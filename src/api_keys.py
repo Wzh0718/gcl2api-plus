@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import psycopg
 import sqlite3
 import stat
 import uuid
@@ -280,7 +281,7 @@ class ApiKeyService:
                     now=current.timestamp(),
                 )
                 return {"item": self._public(record, current), "api_key": api_key}
-            except sqlite3.IntegrityError as exc:
+            except (sqlite3.IntegrityError, psycopg.IntegrityError) as exc:
                 if "key_prefix" in str(exc) or "secret_hash" in str(exc):
                     continue
                 if "name" in str(exc):
@@ -382,7 +383,7 @@ class ApiKeyService:
             normalized["expires_at"] = _expires_at(updates["expires_at"])
         try:
             record = await self.storage.update_api_key_record(api_key_id, **normalized)
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, psycopg.IntegrityError) as exc:
             raise ValueError("密钥名称已存在") from exc
         return self._public(record, current)
 

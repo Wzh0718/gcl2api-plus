@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from config import get_proxy_config
 from log import log
+from src.storage.main_postgres import main_dsn
 from src.api.antigravity import build_antigravity_headers
 from src.httpx_client import post_async
 from src.proxy_groups import (
@@ -151,7 +152,7 @@ async def billing_summary(
     return await storage.get_billing_summary(_range(range), api_key_id=api_key_id)
 
 
-async def _sqlite_dashboard(
+async def _main_dashboard(
     storage: Any, range_name: str, page_size: int,
     api_key_id: str | None, *, degraded: bool = False,
 ) -> Dict[str, Any]:
@@ -166,7 +167,7 @@ async def _sqlite_dashboard(
         storage.get_billing_keys(range_name, 1, page_size),
     )
     return {
-        "source": "sqlite",
+        "source": "postgresql" if main_dsn() else "sqlite",
         "degraded": degraded,
         "scanned_keys": 0,
         "summary": summary,
@@ -181,13 +182,13 @@ async def billing_dashboard(
     range: str = "today", page_size: int = 10, api_key_id: str | None = None,
     _token: str = Depends(verify_panel_token),
 ):
-    """Read the SQLite ledger by default; Redis is an explicit opt-in mirror."""
+    """Read the main ledger by default; Redis is an explicit opt-in mirror."""
     storage = await get_storage_adapter()
     range_name = _range(range)
     bounded_page_size = min(max(page_size, 1), 100)
     source = os.getenv("BILLING_DASHBOARD_SOURCE", "sqlite").strip().lower()
     if source != "redis":
-        return await _sqlite_dashboard(
+        return await _main_dashboard(
             storage, range_name, bounded_page_size, api_key_id
         )
 
@@ -198,9 +199,9 @@ async def billing_dashboard(
         )
     except BillingRedisUnavailable as exc:
         log.warning(
-            f"[BILLING] Redis dashboard unavailable; using SQLite: {type(exc).__name__}"
+            f"[BILLING] Redis dashboard unavailable; using the main ledger: {type(exc).__name__}"
         )
-        return await _sqlite_dashboard(
+        return await _main_dashboard(
             storage, range_name, bounded_page_size, api_key_id, degraded=True
         )
 

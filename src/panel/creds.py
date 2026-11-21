@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import psycopg
 import sqlite3
 import time
 import zipfile
@@ -1009,7 +1010,7 @@ async def update_account_usage_policy(
     _validate_usage_policy_filename(filename)
     try:
         saved = await set_account_usage_policy(filename, mode=request.mode, limits=request.limits)
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, psycopg.Error, OSError) as exc:
         log.error(f"[ACCOUNT USAGE] Policy save failed: {type(exc).__name__}")
         raise HTTPException(status_code=503, detail="账号用量策略暂时无法保存") from exc
     if not saved:

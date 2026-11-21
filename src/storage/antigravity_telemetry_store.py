@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 
+import psycopg
 import aiosqlite
 
 from src.storage.sqlite_pragmas import connect as sqlite_connect
@@ -166,7 +167,7 @@ class AntigravityTelemetryStore:
                     updated_at=excluded.updated_at""",
                     (row[0], subject or old[0], installation, mode, uuid.uuid4().hex,
                      json.dumps(environment, sort_keys=True), time.time()))
-            except aiosqlite.IntegrityError:
+            except (aiosqlite.IntegrityError, psycopg.IntegrityError):
                 raise ValueError("同一 Google 账号已绑定另一份遥测环境，请先处理重复凭证") from None
             await db.commit()
 
