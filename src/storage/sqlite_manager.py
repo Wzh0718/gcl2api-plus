@@ -5532,13 +5532,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         advanced = False
         try:
             async with sqlite_connect(self._db_path) as db:
-                # Serialize one account's ladder across workers: SQLite write lock
-                # or the shared PostgreSQL advisory lock.
-                await db.execute("BEGIN IMMEDIATE")
+                # Serialize the read and update of this account's backoff window.
+                if not self.main_postgres:
+                    await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(
                     """SELECT COALESCE(transient_hold_until, 0),
                               COALESCE(transient_error_count, 0)
-                       FROM antigravity_credentials WHERE filename = ?""",
+                       FROM antigravity_credentials WHERE filename = ?"""
+                    + (" FOR UPDATE" if self.main_postgres else ""),
                     (filename,),
                 ) as cursor:
                     row = await cursor.fetchone()

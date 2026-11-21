@@ -74,7 +74,9 @@ async def pg_store(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("*.db"))
 
 
-async def test_pg_auth_billing_dedupe_and_quota(pg_store):
+async def test_pg_auth_billing_dedupe_and_quota_during_account_hold(pg_store, monkeypatch):
+    from src.storage.main_postgres import Session
+
     service = ApiKeyService(pg_store)
     created = await service.create_key(name="Accounting", quota_amount="1.00")
     key = created["api_key"]
@@ -103,7 +105,30 @@ async def test_pg_auth_billing_dedupe_and_quota(pg_store):
             api_key_id=principal.api_key_id,
         )
 
-    writes = await asyncio.gather(*(record(i % 10) for i in range(40)))
+    held_account = "cooling.json"
+    assert await pg_store.store_credential(held_account, {}, mode="antigravity")
+    before_commit = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = Session.commit
+
+    async def pause_hold_commit(session):
+        if asyncio.current_task() is hold:
+            before_commit.set()
+            await release.wait()
+        await original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", pause_hold_commit)
+    hold = asyncio.create_task(pg_store.hold_antigravity_transient(held_account, status_code=503))
+    try:
+        # Keep A's transaction open while B settles ten distinct requests four times each.
+        await asyncio.wait_for(before_commit.wait(), timeout=5)
+        writes = await asyncio.wait_for(
+            asyncio.gather(*(record(i % 10) for i in range(40))), timeout=5
+        )
+    finally:
+        release.set()
+        deadline = await hold
+    assert deadline > 0
     assert sum(writes) == 10
     stored = await pg_store.get_api_key_record(principal.api_key_id)
     assert stored["quota_used"] == "1.00000000"
