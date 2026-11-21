@@ -3348,13 +3348,17 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             for value in (input_cost, output_cost, cache_cost, total_cost)
         )
         daily_key = (billing_date, api_key_id, os.path.basename(credential_name), model, currency)
+        if self.main_postgres:
+            token_counts = tuple(max(int(n), 0) for n in (input_tokens, output_tokens, cache_tokens, thought_tokens, total_tokens))
+            args = (request_id, now, expires_at, *daily_key, *token_counts,
+                    *(Decimal(value) for value in incoming_costs), int(bool(success)), int(not success), int(bool(unknown_usage)))
+            placeholders = ", ".join(["%s"] * len(args))
+            (first,) = await self._db_path.single_row(
+                f"SELECT gcli_settle_usage({placeholders})", args, operation="record_billing_usage"
+            )
+            return first
         async with sqlite_connect(self._db_path) as db:
-            if self.main_postgres:
-                # Repairs and bulk resets acquire the exclusive form of this lock.
-                await db.execute("SELECT pg_advisory_xact_lock_shared(72210439)")
-                await db.execute("SELECT id FROM api_keys WHERE id=? FOR UPDATE", (api_key_id,))
-            else:
-                await db.execute("BEGIN IMMEDIATE")
+            await db.execute("BEGIN IMMEDIATE")
             # Claim this request before sweeping other expired rows. Concurrent
             # sweepers skip locks held by live settlements on PostgreSQL.
             inserted = await db.execute(
@@ -3364,11 +3368,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                    WHERE billing_request_dedupe.expires_at < excluded.created_at""",
                 (request_id, now, expires_at),
             )
-            skip_locked = " FOR UPDATE SKIP LOCKED" if self.main_postgres else ""
             await db.execute(
                 f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
                        SELECT request_id FROM billing_request_dedupe
-                       WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500{skip_locked}
+                       WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500
                    )""",
                 (now,),
             )

@@ -39,3 +39,59 @@ BEGIN
     RETURN NULL;
 END;
 $$;
+
+-- Keep the ledger, idempotency claim and key quota in the caller's single transaction.
+CREATE OR REPLACE FUNCTION gcli_settle_usage(
+    req text, at_time double precision, expiry double precision, bill_date text,
+    key_id text, account_name text, model_name text, unit text,
+    tokens_in bigint, tokens_out bigint, tokens_cache bigint, tokens_thought bigint, tokens_total bigint,
+    cost_in numeric, cost_out numeric, cost_cache numeric, cost_total numeric,
+    succeeded bigint, failed bigint, unknown_count bigint
+) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    key_state record;
+    new_month text := left(bill_date, 7) || '-01';
+    reset_due boolean;
+    first_entry boolean;
+BEGIN
+    PERFORM pg_advisory_xact_lock_shared(72210439);
+    SELECT kind, reset_mode, quota_period_start, quota_used, quota_tokens_used INTO key_state
+      FROM api_keys WHERE id = key_id FOR UPDATE;
+    INSERT INTO billing_request_dedupe(request_id, created_at, expires_at) VALUES(req, at_time, expiry)
+        ON CONFLICT(request_id) DO UPDATE SET created_at=excluded.created_at, expires_at=excluded.expires_at
+        WHERE billing_request_dedupe.expires_at < excluded.created_at;
+    first_entry := FOUND;
+    DELETE FROM billing_request_dedupe WHERE request_id IN (
+        SELECT request_id FROM billing_request_dedupe WHERE expires_at < at_time
+        ORDER BY expires_at, request_id LIMIT 500 FOR UPDATE SKIP LOCKED
+    );
+    IF NOT first_entry THEN RETURN false; END IF;
+
+    INSERT INTO billing_daily AS d(billing_date,api_key_id,credential_name,model,currency,
+        input_tokens,output_tokens,cache_tokens,thought_tokens,total_tokens,input_cost,output_cost,
+        cache_cost,total_cost,success_count,failed_count,unknown_usage_count,updated_at)
+    VALUES(bill_date,key_id,account_name,model_name,unit,tokens_in,tokens_out,tokens_cache,tokens_thought,
+        tokens_total,cost_in::text,cost_out::text,cost_cache::text,cost_total::text,succeeded,failed,
+        unknown_count,floor(extract(epoch FROM statement_timestamp())))
+    ON CONFLICT(billing_date,api_key_id,credential_name,model,currency) DO UPDATE SET
+        input_tokens=d.input_tokens+tokens_in, output_tokens=d.output_tokens+tokens_out,
+        cache_tokens=d.cache_tokens+tokens_cache, thought_tokens=d.thought_tokens+tokens_thought,
+        total_tokens=d.total_tokens+tokens_total, input_cost=round(d.input_cost::numeric+cost_in,8)::text,
+        output_cost=round(d.output_cost::numeric+cost_out,8)::text, cache_cost=round(d.cache_cost::numeric+cost_cache,8)::text,
+        total_cost=round(d.total_cost::numeric+cost_total,8)::text, success_count=d.success_count+succeeded,
+        failed_count=d.failed_count+failed, unknown_usage_count=d.unknown_usage_count+unknown_count,
+        updated_at=excluded.updated_at;
+
+    reset_due := key_state.kind='managed' AND key_state.reset_mode='monthly' AND key_state.quota_period_start<>new_month;
+    IF reset_due THEN
+        INSERT INTO api_key_quota_events(api_key_id,event_type,amount_before,amount_after,created_at)
+        VALUES(key_id,'monthly_reset',round(key_state.quota_used::numeric,8)::text,'0.00000000',at_time);
+    END IF;
+    UPDATE api_keys SET quota_used=round((CASE WHEN reset_due THEN 0 ELSE quota_used::numeric END)+cost_total,8)::text,
+        quota_tokens_used=(CASE WHEN reset_due THEN 0 ELSE greatest(quota_tokens_used,0) END)+tokens_total,
+        quota_period_start=CASE WHEN reset_due THEN new_month ELSE quota_period_start END,
+        last_reset_at=CASE WHEN reset_due THEN at_time ELSE last_reset_at END,last_used_at=at_time,updated_at=at_time
+    WHERE id=key_id;
+    RETURN true;
+END;
+$$;
