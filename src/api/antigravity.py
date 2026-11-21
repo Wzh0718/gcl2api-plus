@@ -111,6 +111,8 @@ class Antigravity403HandlingResult:
     decision: Antigravity403Decision
     should_retry: bool
     cooldown_until: Optional[float] = None
+    # 地区拒绝/绑定异常：换掉出口 IP 后可以用同一账号重试本次请求
+    rebind_retry: bool = False
 
 
 @dataclass(frozen=True)
@@ -885,6 +887,9 @@ def _upstream_403_to_503(response: Any) -> Any:
     )
 
 
+# 一次请求内同一账号因地区拒绝最多换几个出口 IP：覆盖「连续几个组内节点都不可用」
+_REGION_REBIND_LIMIT = 2
+
 # 模型冷却默认秒数；VALIDATION_REQUIRED 是账号级临时验证，冷却更长
 MODEL_FORBIDDEN_COOLDOWN_SECONDS = 300
 VALIDATION_REQUIRED_COOLDOWN_SECONDS = 600
@@ -934,13 +939,18 @@ async def _handle_antigravity_403(
         note_dynamic_warmup_outcome(credential_name, "forbidden")
     elif decision.category in {
         "validation_required",
-        "geo_blocked",
         "proxy_drift",
         "proxy_failed",
     }:
         note_dynamic_warmup_outcome(credential_name, "paused")
+    # geo_blocked 不暂停账号：地区结论只属于当前出口 IP，换节点后账号照常使用。
 
-    if decision.tos_violation or await check_should_auto_ban(403):
+    # 地区拒绝和绑定异常是出口问题，不是账号级证据：保留账号、换 IP 重试。
+    # 只有明确的账号级拒绝（或无法归类的 403 且配置要求封禁）才禁用账号。
+    account_level_denial = decision.disable_account or decision.category == "unknown_403"
+    if decision.tos_violation or (
+        account_level_denial and await check_should_auto_ban(403)
+    ):
         await credential_manager.set_cred_disabled(
             credential_name, True, mode="antigravity"
         )
@@ -959,7 +969,49 @@ async def _handle_antigravity_403(
             cooldown_until=timestamp + MODEL_FORBIDDEN_COOLDOWN_SECONDS,
         )
 
-    return Antigravity403HandlingResult(decision, should_retry=False)
+    return Antigravity403HandlingResult(
+        decision,
+        should_retry=False,
+        rebind_retry=bool(decision.retry_after_rebind),
+    )
+
+
+async def _retry_same_account_on_new_egress(
+    credential_name: str,
+    credential_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """地区拒绝后把同一账号换到组内空闲 IP，返回刷新后的凭证数据。
+
+    只对组绑定生效。换绑失败（组内无空闲节点、自定义代理、固定 IP）返回 None，
+    调用方按原有失败路径处理，账号不会被静默丢弃。
+    """
+    rotate = getattr(credential_manager, "rotate_antigravity_egress", None)
+    reload_credential = getattr(
+        credential_manager, "reload_antigravity_credential", None
+    )
+    if rotate is None or reload_credential is None:
+        return None
+    try:
+        rotated = await rotate(credential_name, attempts=1)
+    except Exception as exc:  # noqa: BLE001 - rotation must not break the retry path
+        log.warning(
+            "[ANTIGRAVITY REGION] egress rotation failed: "
+            f"credential={credential_name}, error={type(exc).__name__}: {exc}"
+        )
+        return None
+    if rotated is None:
+        return None
+    try:
+        fresh = await reload_credential(credential_name)
+    except Exception as exc:  # noqa: BLE001 - keep the original failure path intact
+        log.warning(
+            "[ANTIGRAVITY REGION] credential reload failed: "
+            f"credential={credential_name}, error={type(exc).__name__}: {exc}"
+        )
+        return None
+    if not fresh or not (fresh.get("access_token") or fresh.get("token")):
+        return None
+    return fresh
 
 
 async def _alert_all_accounts_unavailable_if_needed(
@@ -1192,6 +1244,7 @@ async def _stream_request_inner(
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
+    region_rebinds: Dict[str, int] = {}  # 同一请求内每个账号已为地区拒绝换过的出口 IP 数
     usage_metadata = None
     upstream_model = None  # 上游响应 modelVersion：真实执行模型（归一后的物理模型）
     usage_remainder = ""
@@ -1317,6 +1370,7 @@ async def _stream_request_inner(
     while attempt <= max_retries:
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
+        same_account_retry = False  # 地区拒绝换 IP 后，用同一账号重试
         usage_attempt = None
         usage_metadata = upstream_model = None
         usage_remainder = ""
@@ -1388,6 +1442,12 @@ async def _stream_request_inner(
                         error_body = ""
                     _mark_upstream_429(chunk, error_body, request_id=request_id, credential_name=current_file,
                                        model=model_name, upstream_request=final_payload)
+                    if status_code == 503:
+                        # 503 必须在观测到响应时就冷藏账号：不依赖重试开关、
+                        # 重试次数或后续分支，避免「503 了但账号还在轮转」。
+                        await hold_transient_account(
+                            credential_manager, status_code, current_file
+                        )
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
@@ -1425,6 +1485,26 @@ async def _stream_request_inner(
                             upstream_seconds=time.monotonic() - attempt_started,
                             gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None
                         )
+
+                        if (
+                            classified_403 is not None
+                            and classified_403.rebind_retry
+                            and region_rebinds.get(current_file, 0) < _REGION_REBIND_LIMIT
+                        ):
+                            fresh = await _retry_same_account_on_new_egress(
+                                current_file, credential_data
+                            )
+                            if fresh and await apply_cred_result(
+                                (current_file, fresh), rebuild_payload=False
+                            ):
+                                region_rebinds[current_file] = (
+                                    region_rebinds.get(current_file, 0) + 1
+                                )
+                                attempted_credentials.discard(current_file)
+                                rate_limited_credentials.discard(current_file)
+                                need_retry = True
+                                same_account_retry = True
+                                break
 
                         if status_code in (403, 429):
                             if status_code == 429 and await check_should_auto_ban(status_code):
@@ -1538,6 +1618,15 @@ async def _stream_request_inner(
             
             # 统一处理重试
             if need_retry:
+                if same_account_retry:
+                    same_account_retry = False
+                    log.warning(
+                        "[ANTIGRAVITY STREAM] 地区拒绝后已换出口 IP，用同一账号重试: "
+                        f"{current_file} / {model_name}"
+                    )
+                    attempt += 1
+                    continue
+
                 log.info(f"[ANTIGRAVITY STREAM] 重试请求 (attempt {attempt + 2}/{max_retries + 1})...")
 
                 if lease_tracker is not None:
@@ -1745,6 +1834,7 @@ async def _non_stream_image_request_inner(
     max_account_attempts = min(max(configured_attempts, 1), 3) if retry_enabled else 1
     disable_error_codes = await get_auto_ban_error_codes()
     attempted_credentials: Set[str] = set()
+    region_rebinds: Dict[str, int] = {}  # 同一请求内该账号已为地区拒绝换过的出口 IP 数
     last_response: Optional[Response] = None
     last_was_capacity = False
     last_was_slot_backpressure = False
@@ -1988,6 +2078,26 @@ async def _non_stream_image_request_inner(
                 error_text=error_text,
             )
             cooldown_until = classified_403.cooldown_until
+        if (
+            classified_403 is not None
+            and classified_403.rebind_retry
+            and region_rebinds.get(current_file, 0) < _REGION_REBIND_LIMIT
+        ):
+            fresh = await _retry_same_account_on_new_egress(
+                current_file, credential_data
+            )
+            if fresh:
+                region_rebinds[current_file] = (
+                    region_rebinds.get(current_file, 0) + 1
+                )
+                attempted_credentials.discard(current_file)
+                log.warning(
+                    "[ANTIGRAVITY IMAGE] 地区拒绝后已换出口 IP，重新进入候选: "
+                    f"{current_file} / {requested_model}"
+                )
+                account_attempt += 1
+                continue
+
         retryable = status_code not in (400, 403, 429) and (
             status_code in (404, 500, 503) or status_code in disable_error_codes
         )
@@ -2188,6 +2298,7 @@ async def non_stream_request(
     next_cred_task = None  # 预热的下一个凭证任务
     attempted_credentials: set[str] = set()
     rate_limited_credentials: set[str] = set()  # 当前模型上429失败或发送前已冷却的凭证
+    region_rebinds: Dict[str, int] = {}  # 同一请求内每个账号已为地区拒绝换过的出口 IP 数
     usage_metadata = None
     upstream_model = None  # 上游响应 modelVersion：真实执行模型
     billing_recorded = False
@@ -2403,6 +2514,11 @@ async def non_stream_request(
                     pass
                 _mark_upstream_429(last_error_response, error_text, request_id=request_id,
                                    credential_name=current_file, model=model_name, upstream_request=final_payload)
+                if status_code == 503:
+                    # 与流式路径一致：503 先冷藏账号，再决定是否换号重试。
+                    await hold_transient_account(
+                        credential_manager, status_code, current_file
+                    )
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                     log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}")
@@ -2439,6 +2555,29 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None
                     )
+
+                    if (
+                        classified_403 is not None
+                        and classified_403.rebind_retry
+                        and region_rebinds.get(current_file, 0) < _REGION_REBIND_LIMIT
+                    ):
+                        fresh = await _retry_same_account_on_new_egress(
+                            current_file, credential_data
+                        )
+                        if fresh and await apply_cred_result(
+                            (current_file, fresh), rebuild_payload=False
+                        ):
+                            region_rebinds[current_file] = (
+                                region_rebinds.get(current_file, 0) + 1
+                            )
+                            attempted_credentials.discard(current_file)
+                            rate_limited_credentials.discard(current_file)
+                            log.warning(
+                                "[ANTIGRAVITY] 地区拒绝后已换出口 IP，用同一账号重试: "
+                                f"{current_file} / {model_name}"
+                            )
+                            attempt += 1
+                            continue
 
                     if status_code in (403, 429):
                         if status_code == 429 and await check_should_auto_ban(status_code):

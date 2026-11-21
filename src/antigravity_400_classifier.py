@@ -68,7 +68,14 @@ def classify_antigravity_400(
         return result("account_forbidden", "TOS_VIOLATION", "The service reports an account restriction.")
     if "VALIDATION_REQUIRED" in reasons or any(v in message for v in ("requires verification", "verify your account", "validation_required")):
         return result("validation_required", "VALIDATION_REQUIRED", "The account requires verification.")
-    if any(v in message for v in ("location is not supported", "not available in your location", "unsupported location", "unsupported country")):
+    if (
+        {"UNSUPPORTED_LOCATION", "LOCATION_RESTRICTED", "UNSUPPORTED_REGION"} & reasons
+        or any(v in message for v in (
+            "location is not supported", "not available in your location",
+            "unsupported location", "unsupported country",
+            "unsupported_location", "location_restricted",
+        ))
+    ):
         return result("geo_blocked", "LOCATION_RESTRICTED", "The request is unavailable in this location.")
     if "model" in message and any(v in message for v in ("not supported", "not found", "not available", "unknown model", "not permitted")):
         return result("model_error", "MODEL_ERROR", "The requested model is unavailable or unsupported.")

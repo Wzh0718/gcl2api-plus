@@ -182,3 +182,67 @@ async def test_storage_adapter_requires_postgres(monkeypatch):
     adapter = StorageAdapter()
     with pytest.raises(RuntimeError, match="MAIN_POSTGRES_DSN"):
         await adapter.initialize()
+
+
+@pytest.mark.asyncio
+async def test_first_503_cools_the_account_immediately(tmp_path, monkeypatch):
+    """一次 503 就必须冷藏账号：首档 60 秒，不依赖重试次数或重试开关。"""
+    manager = await make_manager(tmp_path, monkeypatch)
+
+    before = time.time()
+    hold_until = await manager.hold_antigravity_transient(
+        "a.json", seconds=600, status_code=503
+    )
+
+    assert hold_until == pytest.approx(before + 60, abs=5)
+    _, count, disabled = await read_hold(manager, "a.json")
+    assert count == 1
+    assert disabled == 0
+    picked = await manager.get_next_available_credential(mode="antigravity")
+    assert picked is not None and picked[0] == "b.json"
+
+
+@pytest.mark.asyncio
+async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, monkeypatch):
+    manager = await make_manager(tmp_path, monkeypatch)
+
+    async def expire(name):
+        async with __import__("src.storage.sqlite_pragmas", fromlist=["connect"]).connect(
+            manager._db_path
+        ) as db:
+            await db.execute(
+                "UPDATE antigravity_credentials SET transient_hold_until = ? WHERE filename = ?",
+                (time.time() - 1, name),
+            )
+            await db.commit()
+
+    for expected in (60, 120, 240, 480, 600, 600):
+        hold_until = await manager.hold_antigravity_transient(
+            "a.json", seconds=600, status_code=503
+        )
+        assert hold_until - time.time() == pytest.approx(expected, abs=5)
+        await expire("a.json")
+
+    await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
+    await expire("a.json")
+    hold_until = await manager.hold_antigravity_transient(
+        "a.json", seconds=600, status_code=503
+    )
+    assert hold_until - time.time() == pytest.approx(60, abs=5)
+
+
+@pytest.mark.asyncio
+async def test_parallel_503_failures_share_one_window(tmp_path, monkeypatch):
+    import asyncio
+
+    manager = await make_manager(tmp_path, monkeypatch)
+
+    deadlines = await asyncio.gather(*(
+        manager.hold_antigravity_transient("a.json", seconds=600, status_code=503)
+        for _ in range(4)
+    ))
+
+    assert max(deadlines) == min(deadlines)
+    assert deadlines[0] - time.time() == pytest.approx(60, abs=5)
+    _, count, _ = await read_hold(manager, "a.json")
+    assert count == 1, "同一窗口内的并发 503 不得叠加阶梯"

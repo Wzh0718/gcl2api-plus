@@ -41,6 +41,8 @@ _EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
         'IP echo read failed: ReadError', 'IP echo read failed: ReadTimeout',
         'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout'
     )))"""
+# 503 连续失败退避阶梯（秒），最后一档之外统一使用配置上限。
+_TRANSIENT_BACKOFF_STEPS = (60, 120, 240, 480, 900)
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -5510,52 +5512,70 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """把账号放进瞬时冷却窗口，不改 ``disabled``。
 
         上游 5xx 是服务端瞬时错误，不构成封号证据：选择器在窗口内跳过该账号，
-        窗口到期自动放回；每命中一次累计 ``transient_error_count``，
-        恢复后按正常轮转顺序选号。
+        窗口到期自动放回。503 按连续失败次数退避（60/120/240/480 秒，随后取
+        ``seconds`` 配置上限），500/502 直接使用配置时长；命中一次累计
+        ``transient_error_count``，成功请求清零后重新从最短一档开始。
+
+        同一窗口内的并发失败不叠加、不推进阶梯：先读后写在同一个事务里完成，
+        后到的失败只会返回已有截止时间。这保证「一次 503 一定把账号移出轮转」，
+        同时避免多 worker 把一次故障放大成整段上限冷却。
         """
         self._ensure_initialized()
         filename = os.path.basename(filename)
         now = time.time()
-        hold_until = now + max(float(seconds or 0), 0.0)
+        cap = max(float(seconds or 0), 0.0)
+        if cap <= 0:
+            return 0.0
+        hold_until = 0.0
+        advanced = False
         try:
             async with sqlite_connect(self._db_path) as db:
-                if status_code == 503:
-                    # The UPDATE holds the account row lock. In-flight failures
-                    # from the same hold window do not advance the staircase.
-                    cap = max(float(seconds or 0), 0.0)
-                    delays = [min(delay, cap) for delay in (15, 30, 60, 120, 240, 480)]
-                    async with db.execute("""
-                        UPDATE antigravity_credentials
-                        SET transient_hold_until = CASE WHEN transient_hold_until > ? THEN transient_hold_until
-                            ELSE ? + CASE transient_error_count
-                                WHEN 0 THEN ? WHEN 1 THEN ? WHEN 2 THEN ?
-                                WHEN 3 THEN ? WHEN 4 THEN ? WHEN 5 THEN ? ELSE ? END END,
-                            transient_error_count = transient_error_count +
-                                CASE WHEN transient_hold_until > ? THEN 0 ELSE 1 END,
-                            transient_error_at = ?, updated_at = ?
-                        WHERE filename = ?
-                        RETURNING transient_hold_until
-                    """, (now, now, *delays, cap, now, now, now, filename)) as cursor:
-                        row = await cursor.fetchone()
-                        if row is None:
-                            return 0.0
-                        hold_until = row[0]
+                # Serialize one account's ladder across workers: SQLite write lock
+                # or the shared PostgreSQL advisory lock.
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    """SELECT COALESCE(transient_hold_until, 0),
+                              COALESCE(transient_error_count, 0)
+                       FROM antigravity_credentials WHERE filename = ?""",
+                    (filename,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return 0.0
+                current_hold = float(row[0] or 0.0)
+                count = max(int(row[1] or 0), 0)
+                if current_hold > now:
+                    if status_code == 503 or current_hold - now >= cap:
+                        # Same 503 window (or the configured 500/502 hold is no
+                        # shorter): keep it, do not advance the ladder.
+                        await db.rollback()
+                        return current_hold
+                    delay = cap  # 500/502 may lengthen its own hold
+                elif status_code == 503:
+                    delay = min(
+                        _TRANSIENT_BACKOFF_STEPS[
+                            min(count, len(_TRANSIENT_BACKOFF_STEPS) - 1)
+                        ],
+                        cap,
+                    )
                 else:
-                    await db.execute("""
-                        UPDATE antigravity_credentials
-                        SET transient_hold_until = CASE
-                                WHEN COALESCE(transient_hold_until, 0) > ? THEN transient_hold_until
-                                ELSE ? END,
-                            transient_error_count = COALESCE(transient_error_count, 0) + 1,
-                            transient_error_at = ?,
-                            updated_at = ?
-                        WHERE filename = ?
-                    """, (hold_until, hold_until, now, now, filename))
+                    delay = cap
+                hold_until = now + delay
+                await db.execute(
+                    """UPDATE antigravity_credentials
+                       SET transient_hold_until = ?, transient_error_count = ?,
+                           transient_error_at = ?, updated_at = ?
+                       WHERE filename = ?""",
+                    (hold_until, count + 1, now, now, filename),
+                )
                 await db.commit()
-            log.warning(
-                f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "
-                f"{int(hold_until - now)}s（不封号）"
-            )
+                advanced = True
+            if advanced:
+                log.warning(
+                    f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "
+                    f"{int(hold_until - now)}s（不封号）"
+                )
         except Exception as e:
             log.error(f"Error holding transient credential {filename}: {e}")
         return hold_until
