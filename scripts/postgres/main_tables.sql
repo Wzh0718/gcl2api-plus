@@ -46,6 +46,10 @@ CREATE TABLE antigravity_credentials (
                 -- tier 状态 (默认为 pro)
                 tier TEXT DEFAULT 'pro',
 
+                transient_hold_until DOUBLE PRECISION NOT NULL DEFAULT 0,
+                transient_error_count BIGINT NOT NULL DEFAULT 0,
+                transient_error_at DOUBLE PRECISION NOT NULL DEFAULT 0,
+
                 -- 是否启用信用额度模式（仅 antigravity，有效值 0/1）
                 enable_credit BIGINT DEFAULT 0,
 

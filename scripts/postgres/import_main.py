@@ -47,7 +47,11 @@ async def transfer(source, conn, schema, full):
     tables.sort(key=lambda name: name not in PARENT_TABLES)
     for table in tables:
         cols = [r[1] for r in source.execute('PRAGMA table_info(' + quoted(table) + ')')]
-        if set(cols) != set(pg_columns[table]):
+        expected = set(pg_columns[table])
+        if table == "antigravity_credentials":
+            # Older snapshots predate the transient cooldown. COPY uses PG defaults.
+            expected -= {"transient_hold_until", "transient_error_count", "transient_error_at"} - set(cols)
+        if set(cols) != expected:
             raise ValueError(f"Column mismatch for {table}")
         binary = [i for i, name in enumerate(cols) if pg_columns[table][name]['data_type'] == 'bytea']
         query = 'SELECT ' + ','.join(map(quoted, cols)) + ' FROM ' + quoted(table)
