@@ -115,7 +115,7 @@ async def _generate(source, model, account, credential, api_key_id):
     """Use the selected account directly; never re-enter routing/fusion or switch pools."""
     from src.api.antigravity import wrap_cli_request, build_antigravity_headers, get_effective_proxy_url
     from src.httpx_client import post_async
-    from src.antigravity_pacing import acquire_credential_slot, release_credential_slot, pace_credential
+    from src.antigravity_pacing import acquire_limited_credential_slot, release_limited_credential_slot, pace_credential
     from src.antigravity_usage import begin_account_usage
     from config import get_antigravity_api_url
     from src.billing import get_billing_recorder, extract_usage_metadata
@@ -132,7 +132,7 @@ async def _generate(source, model, account, credential, api_key_id):
     )
     started = time.monotonic()
     response = None
-    await acquire_credential_slot(account)
+    await acquire_limited_credential_slot(account)
     try:
         await pace_credential(account)
         target_url = f'{await get_antigravity_api_url()}/v1internal:generateContent'
@@ -159,7 +159,7 @@ async def _generate(source, model, account, credential, api_key_id):
             raise ValueError('Invalid optimizer response')
         return guidance.strip()
     finally:
-        release_credential_slot(account)
+        release_limited_credential_slot(account)
         # Internal optimization is attributable to the caller, separate from the main request.
         try:
             usage = extract_usage_metadata(response.json()) if response is not None and response.status_code == 200 else None

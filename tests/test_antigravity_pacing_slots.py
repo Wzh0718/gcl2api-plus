@@ -118,6 +118,9 @@ async def test_stream_releases_slot_when_consumer_abandons(monkeypatch):
     """客户端中途断开（提前 aclose）：槽位必须归还。"""
     cred = _patch_common(monkeypatch)
 
+    release = AsyncMock()
+    monkeypatch.setattr(agy, "release_dynamic_warmup_slot", release)
+
     async def fake_stream(**kwargs):
         yield 'data: {"candidates": [{"content": {"parts": [{"text": "a"}]}}]}\n\n'
         await asyncio.sleep(10)  # 上游还有数据，但消费者已经走了
@@ -128,9 +131,10 @@ async def test_stream_releases_slot_when_consumer_abandons(monkeypatch):
     stream = agy.stream_request(_body())
     first = await stream.__anext__()
     assert first
-    assert _inflight(cred[0]) == 1  # 在飞期间占用一个槽位
+    assert _inflight(cred[0]) == 0  # 文本流无需单账号槽位
 
     await stream.aclose()
+    release.assert_awaited_once_with(cred[0])
     assert _inflight(cred[0]) == 0
 
 
@@ -214,48 +218,6 @@ async def test_concurrent_streams_with_limit_one_all_release(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_slot_wait_timeout_returns_429_without_releasing_owner(monkeypatch):
-    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
-    cred = _patch_common(monkeypatch)
-    await pacing.acquire_credential_slot(cred[0])
-
-    async def unexpected_stream(**kwargs):
-        raise AssertionError("背压请求不应触达上游")
-        yield
-
-    monkeypatch.setattr(agy, "stream_post_async", unexpected_stream)
-    chunks = [item async for item in agy.stream_request(_body())]
-
-    assert len(chunks) == 1
-    assert chunks[0].status_code == 429
-    assert chunks[0].rate_limit.as_dict() == {"source": "gateway", "reason": "capacity_busy"}
-    assert chunks[0].headers["retry-after"] == "1"
-    assert json.loads(chunks[0].body)["error"]["code"] == 429
-    assert _inflight(cred[0]) == 1
-    pacing.release_credential_slot(cred[0])
-
-
-@pytest.mark.asyncio
-async def test_non_stream_slot_wait_timeout_returns_429_without_releasing_owner(monkeypatch):
-    monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
-    cred = _patch_common(monkeypatch)
-    await pacing.acquire_credential_slot(cred[0])
-
-    async def unexpected_post(**kwargs):
-        raise AssertionError("背压请求不应触达上游")
-
-    monkeypatch.setattr(agy, "post_async", unexpected_post)
-    response = await agy.non_stream_request(_body())
-
-    assert response.status_code == 429
-    assert response.rate_limit.as_dict() == {"source": "gateway", "reason": "capacity_busy"}
-    assert response.headers["retry-after"] == "1"
-    assert json.loads(response.body)["error"]["code"] == 429
-    assert _inflight(cred[0]) == 1
-    pacing.release_credential_slot(cred[0])
-
-
-@pytest.mark.asyncio
 async def test_disabled_pacing_never_registers_slot(monkeypatch):
     monkeypatch.setenv("ANTIGRAVITY_PACING_ENABLED", "false")
     cred = _patch_common(monkeypatch)
@@ -314,7 +276,7 @@ async def test_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_busy_account_switches_to_idle_account(monkeypatch):
+async def test_stream_uses_rotated_account_even_when_local_slot_is_full(monkeypatch):
     account_a = ("a.json", {"access_token": "token-a", "project_id": "project-a"})
     account_b = ("b.json", {"access_token": "token-b", "project_id": "project-b"})
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
@@ -331,7 +293,7 @@ async def test_stream_busy_account_switches_to_idle_account(monkeypatch):
         return next(credentials, None)
 
     monkeypatch.setattr(agy.credential_manager, "get_valid_credential", select_credential)
-    await pacing.acquire_credential_slot(account_a[0])
+    await pacing.acquire_limited_credential_slot(account_a[0])
     upstream_tokens = []
 
     async def fake_stream(**kwargs):
@@ -342,9 +304,9 @@ async def test_stream_busy_account_switches_to_idle_account(monkeypatch):
     try:
         chunks = [item async for item in agy.stream_request(_body())]
     finally:
-        pacing.release_credential_slot(account_a[0])
+        pacing.release_limited_credential_slot(account_a[0])
 
-    assert upstream_tokens == ["Bearer token-b"]
+    assert upstream_tokens == ["Bearer token-a"]
     assert not any(isinstance(item, Response) and item.status_code == 429 for item in chunks)
     assert _inflight(account_b[0]) == 0
 
@@ -415,7 +377,7 @@ async def test_non_stream_retry_rebuilds_envelope_for_new_credential(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_non_stream_busy_account_switches_to_idle_account(monkeypatch):
+async def test_non_stream_uses_rotated_account_even_when_local_slot_is_full(monkeypatch):
     account_a = ("a.json", {"access_token": "token-a", "project_id": "project-a"})
     account_b = ("b.json", {"access_token": "token-b", "project_id": "project-b"})
     monkeypatch.setenv("ANTIGRAVITY_PACING_CONCURRENCY", "1")
@@ -432,7 +394,7 @@ async def test_non_stream_busy_account_switches_to_idle_account(monkeypatch):
         return next(credentials, None)
 
     monkeypatch.setattr(agy.credential_manager, "get_valid_credential", select_credential)
-    await pacing.acquire_credential_slot(account_a[0])
+    await pacing.acquire_limited_credential_slot(account_a[0])
     upstream_tokens = []
 
     async def fake_post(**kwargs):
@@ -443,15 +405,15 @@ async def test_non_stream_busy_account_switches_to_idle_account(monkeypatch):
     try:
         response = await agy.non_stream_request(_body())
     finally:
-        pacing.release_credential_slot(account_a[0])
+        pacing.release_limited_credential_slot(account_a[0])
 
     assert response.status_code == 200
-    assert upstream_tokens == ["Bearer token-b"]
+    assert upstream_tokens == ["Bearer token-a"]
     assert _inflight(account_b[0]) == 0
 
 
 @pytest.mark.asyncio
-async def test_fifteen_account_pool_absorbs_one_busy_account(monkeypatch):
+async def test_pool_uses_all_accounts_even_with_occupied_slot(monkeypatch):
     accounts = [
         (f"account-{index:02d}.json", {
             "access_token": f"token-{index:02d}",
@@ -479,7 +441,7 @@ async def test_fifteen_account_pool_absorbs_one_busy_account(monkeypatch):
         return selected
 
     monkeypatch.setattr(agy.credential_manager, "get_valid_credential", select_credential)
-    await pacing.acquire_credential_slot(accounts[0][0])
+    await pacing.acquire_limited_credential_slot(accounts[0][0])
     upstream_tokens = []
 
     async def fake_stream(**kwargs):
@@ -494,7 +456,7 @@ async def test_fifteen_account_pool_absorbs_one_busy_account(monkeypatch):
     try:
         results = await asyncio.gather(*(consume() for _ in range(30)))
     finally:
-        pacing.release_credential_slot(accounts[0][0])
+        pacing.release_limited_credential_slot(accounts[0][0])
 
     local_429s = [
         item
@@ -505,7 +467,7 @@ async def test_fifteen_account_pool_absorbs_one_busy_account(monkeypatch):
     assert local_429s == []
     assert len(upstream_tokens) == 30
     assert set(upstream_tokens) == {
-        f"Bearer token-{index:02d}" for index in range(1, 15)
+        f"Bearer token-{index:02d}" for index in range(15)
     }
     assert all(_inflight(name) == 0 for name, _ in accounts)
 

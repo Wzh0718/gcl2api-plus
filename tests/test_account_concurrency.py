@@ -27,17 +27,17 @@ async def test_account_request_limits_are_isolated(account_limits, monkeypatch):
     monkeypatch.setattr(warmup, 'release_dynamic_warmup_slot', AsyncMock())
     monkeypatch.setattr(config, 'get_antigravity_pacing_enabled_sync', lambda: True)
     monkeypatch.setattr(config, 'get_antigravity_pacing_slot_wait_seconds_sync', lambda: 0.01)
-    await pacing.acquire_credential_slot('a.json')
-    await pacing.acquire_credential_slot('a.json')
+    await pacing.acquire_limited_credential_slot('a.json')
+    await pacing.acquire_limited_credential_slot('a.json')
     with pytest.raises(pacing.CredentialSlotWaitTimeout):
-        await pacing.acquire_credential_slot('a.json')
-    await pacing.acquire_credential_slot('b.json')
+        await pacing.acquire_limited_credential_slot('a.json')
+    await pacing.acquire_limited_credential_slot('b.json')
     pacing.note_transient_429('a.json')
     pacing.note_success('a.json')
     pacing.note_success('a.json')
     assert pacing._SLOTS['a.json'].limit == 2
-    pacing.release_credential_slot('a.json')
-    await pacing.acquire_credential_slot('a.json')
+    pacing.release_limited_credential_slot('a.json')
+    await pacing.acquire_limited_credential_slot('a.json')
 
 
 @pytest.mark.asyncio
@@ -138,5 +138,5 @@ async def test_cancel_during_warmup_returns_fleet_permit(monkeypatch):
     monkeypatch.setattr(fleet, 'release', release)
     monkeypatch.setattr(warmup, 'acquire_dynamic_warmup_slot', AsyncMock(side_effect=asyncio.CancelledError))
     with pytest.raises(asyncio.CancelledError):
-        await pacing.acquire_credential_slot('a.json')
+        await pacing.acquire_limited_credential_slot('a.json')
     release.assert_called_once_with()
