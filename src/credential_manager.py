@@ -535,12 +535,24 @@ class CredentialManager:
         ttl_seconds = await get_antigravity_network_check_ttl_seconds()
         if exclusive and health.get("eligibility_status") in {"geo_blocked", "error"}:
             ttl_seconds = min(ttl_seconds, EXCLUSIVE_PROBE_RETRY_SECONDS)
+        def usable_exclusive_route(check):
+            if account_health_is_fresh_eligible(check, ttl_seconds=ttl_seconds):
+                return True
+            return (
+                bool(network.get("proxy_url") and network.get("proxy_node_id"))
+                and check.get("eligibility_status") == "error"
+                and check.get("binding_status") in {"unchecked", "proxy_failed"}
+                and check.get("eligibility_reason") in {
+                    "IP echo read failed: ReadError", "IP echo read failed: ReadTimeout",
+                    "IP check failed: ValueError: ReadError", "IP check failed: ValueError: ReadTimeout",
+                }
+                and not check.get("last_403_category")
+            )
+
         if not force and account_health_check_is_fresh(
             health, ttl_seconds=ttl_seconds
         ):
-            if exclusive and not account_health_is_fresh_eligible(
-                health, ttl_seconds=ttl_seconds
-            ):
+            if exclusive and not usable_exclusive_route(health):
                 log.warning(
                     "[ANTIGRAVITY HEALTH] exclusive account failed strict cached gate: "
                     f"credential={credential_name}, binding={health.get('binding_status')}, "
@@ -576,9 +588,7 @@ class CredentialManager:
             credential_data,
             network=network, current_health=health,
         )
-        if exclusive and not account_health_is_fresh_eligible(
-            result, ttl_seconds=ttl_seconds
-        ):
+        if exclusive and not usable_exclusive_route(result):
             log.warning(
                 "[ANTIGRAVITY HEALTH] exclusive account failed strict fresh gate: "
                 f"credential={credential_name}, binding={result.get('binding_status')}, "

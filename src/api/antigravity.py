@@ -56,6 +56,7 @@ from src.antigravity_dynamic_warmup import (
 from src.api.utils import (
     check_should_auto_ban,
     handle_auto_ban,
+    hold_transient_account,
     handle_error_with_retry,
     get_retry_config,
     record_api_call_success,
@@ -1783,7 +1784,6 @@ async def _non_stream_image_request_inner(
                 f"[BILLING] failed to record image request: {type(exc).__name__}"
             )
 
-    retry_same_image_account = None
     account_attempt = 0
     while account_attempt < max_account_attempts:
         await lease_tracker.release()
@@ -1793,12 +1793,6 @@ async def _non_stream_image_request_inner(
             exclude_filenames=attempted_credentials,
             image_request=True,
         )
-        if not cred_result and retry_same_image_account:
-            # Re-enter normal admission and reserve a fresh image lease.
-            cred_result = await credential_manager.get_valid_credential(
-                mode="antigravity", model_name=requested_model, image_request=True,
-                exclude_filenames=attempted_credentials - {retry_same_image_account},
-            )
         if not cred_result:
             if last_response is None:
                 last_response = _selection_usage_rejection()
@@ -1809,10 +1803,9 @@ async def _non_stream_image_request_inner(
         await lease_tracker.activate(
             current_file, credential_data.pop("_image_lease_id", None)
         )
-        if current_file in attempted_credentials and current_file != retry_same_image_account:
+        if current_file in attempted_credentials:
             await lease_tracker.release()
             break
-        retry_same_image_account = None
         attempted_credentials.add(current_file)
         account_attempt += 1
         access_token = credential_data.get("access_token") or credential_data.get(
@@ -1964,6 +1957,8 @@ async def _non_stream_image_request_inner(
         last_was_capacity = is_image_model_capacity_exhausted(
             status_code, error_text
         )
+        if status_code == 503:
+            await hold_transient_account(credential_manager, status_code, current_file)
         if last_was_capacity and status_code != 429:
             await _record_image_account_outcome(
                 current_file,
@@ -2010,8 +2005,6 @@ async def _non_stream_image_request_inner(
         )
 
         if will_retry and status_code == 503:
-            if cooldown_until is None:
-                retry_same_image_account = current_file
             await asyncio.sleep(retry_config["retry_interval"])
 
         if not retry_enabled or not retryable:

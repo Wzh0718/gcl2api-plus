@@ -67,7 +67,7 @@ async def handle_auto_ban(
         )
 
 
-async def _hold_transient(
+async def hold_transient_account(
     credential_manager: CredentialManager,
     status_code: int,
     credential_name: str,
@@ -129,11 +129,9 @@ async def handle_error_with_retry(
     # 上游 5xx 触发账号冷却；503 按连续失败窗口退避，其余使用配置时长。
     # 本次请求换号重试。放在自动封禁之前，保证配置里残留 500/502/503 也不生效。
     if mode == "antigravity" and status_code in (500, 502, 503):
-        # Give a single-account pool one retry before imposing the local hold.
         # The caller independently persists any explicit upstream cooldown.
         can_retry = retry_enabled and attempt < max_retries
-        if status_code != 503 or attempt > 0 or not can_retry:
-            await _hold_transient(credential_manager, status_code, credential_name)
+        await hold_transient_account(credential_manager, status_code, credential_name)
         if can_retry:
             log.info(
                 f"[{mode.upper()} RETRY] {status_code} transient; "

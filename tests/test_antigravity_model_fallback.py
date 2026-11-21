@@ -635,8 +635,8 @@ async def test_non_429_failure_can_retry_same_only_credential(monkeypatch, strea
                 yield 'data: {"candidates": []}\n\n'
         monkeypatch.setattr(agy, "stream_post_async", stream)
     response = await _run_text_request(streaming, model)
-    assert response.status_code == (200 if recovers else 503 if failure == "503" else 500)
-    assert len(sent) == 2
+    assert response.status_code == (503 if failure == "503" else 200 if recovers else 500)
+    assert len(sent) == (1 if failure == "503" else 2)
     assert all(token == "Bearer a" for _, token in sent)
 
 

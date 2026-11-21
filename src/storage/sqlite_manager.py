@@ -34,6 +34,13 @@ from src.storage.refresh_import_queue import RefreshImportQueue
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
 EXCLUSIVE_PROBE_RETRY_SECONDS = 60
+# Only definite eligibility failures and undiagnosed probe errors skip selection.
+# A failed IP echo read is advisory; readiness still validates the bound route.
+_EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
+    h.eligibility_status = 'error' AND COALESCE(h.eligibility_reason, '') NOT IN (
+        'IP echo read failed: ReadError', 'IP echo read failed: ReadTimeout',
+        'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout'
+    )))"""
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -1391,10 +1398,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         # The exclusive gate would reject these recent results after claiming.
         # Leave other accounts all their selection attempts; recheck this route
         # after a short interval even when the success TTL is much longer.
-        where_sql += """ AND NOT EXISTS (
+        where_sql += f""" AND NOT EXISTS (
             SELECT 1 FROM antigravity_account_health h
             WHERE h.credential_name = antigravity_credentials.filename
-              AND h.eligibility_status IN ('geo_blocked','error')
+              AND {_EXCLUSIVE_PROBE_FAILURE}
               AND h.eligibility_checked_at BETWEEN ? AND ?
               AND (fixed_proxy_ip IS NOT NULL OR EXISTS (
                 SELECT 1 FROM proxy_groups g WHERE g.id = proxy_group_id
@@ -4778,7 +4785,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at,
                                c.transient_hold_until,
                                CASE WHEN (c.fixed_proxy_ip IS NOT NULL OR g.exclusive_assignment = 1)
-                                    AND h.eligibility_status IN ('geo_blocked','error')
+                                    AND {_EXCLUSIVE_PROBE_FAILURE}
                                     THEN h.eligibility_checked_at + {EXCLUSIVE_PROBE_RETRY_SECONDS} END
                         FROM {table_name} c
                         LEFT JOIN proxy_groups g ON g.id = c.proxy_group_id
@@ -4923,7 +4930,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                h.egress_ip, h.egress_country, h.binding_status,
                                h.eligibility_status, h.eligibility_checked_at,
                                h.last_403_category, h.last_403_reason,
-                               h.eligibility_reason
+                               h.eligibility_reason, a.transient_hold_until
                         FROM {table_name} a
                         LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                         LEFT JOIN antigravity_account_health h
@@ -4986,6 +4993,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         }
 
                         if mode != "geminicli":
+                            summary["transient_hold_until"] = row[21]
                             summary["enable_credit"] = bool(row[8]) if row[8] is not None else False
                             summary["proxy_mode"] = row[9] or "inherit"
                             summary["proxy_group_id"] = row[10]

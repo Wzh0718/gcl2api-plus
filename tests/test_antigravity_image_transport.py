@@ -1082,6 +1082,7 @@ async def test_image_non_stream_recovers_from_503(
             return True
 
     manager = FakeCredentialManager()
+    manager.hold_transient = AsyncMock()
     upstream_calls = []
 
     async def fake_resolve_dynamic_model(**kwargs):
@@ -1161,14 +1162,14 @@ async def test_image_non_stream_recovers_from_503(
     )
 
     assert billing_records[0]['request_model'] == 'client-image-alias'
-    assert response.status_code == 200
+    manager.hold_transient.assert_awaited_once_with("ultra.json", status_code=503, mode="antigravity")
+    assert response.status_code == (503 if single_account else 200)
     assert len(billing_records) == 1
     if single_account:
-        assert manager.selections == [set(), {"ultra.json"}, set()]
-        assert [call["json_body"]["project"] for call in upstream_calls] == ["ultra-project"] * 2
-        assert manager.releases == [("ultra.json", "lease-ultra")] * 2
+        assert manager.selections == [set(), {"ultra.json"}]
+        assert [call["json_body"]["project"] for call in upstream_calls] == ["ultra-project"]
+        assert manager.releases == [("ultra.json", "lease-ultra")]
         persistent_error.assert_awaited_once()
-        alert.assert_not_awaited()
         return
     assert manager.selections == [set(), {"ultra.json"}]
     assert [call["json_body"]["model"] for call in upstream_calls] == [

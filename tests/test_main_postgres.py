@@ -633,3 +633,34 @@ async def test_pg_skips_recent_exclusive_probe_failure_then_rechecks(pg_store, s
         await db.commit()
     picked = await backend.get_next_available_credential("antigravity", "m")
     assert picked[0] == "probe.json"
+
+
+@pytest.mark.parametrize("reason,binding", [
+    ("IP check failed: ValueError: ReadError", "proxy_failed"),
+    ("IP echo read failed: ReadError", "unchecked"),
+])
+async def test_pg_echo_read_error_allows_request_through_bound_node(pg_store, monkeypatch, reason, binding):
+    import time
+    from unittest.mock import AsyncMock
+    from src.credential_manager import CredentialManager, rank_antigravity_image_candidates
+
+    filename = "echo.json"
+    await pg_store.store_credential(filename, {"access_token": "test"}, mode="antigravity")
+    backend = pg_store._backend
+    async with backend._db_path.connect() as db:
+        [(group,)] = await db.execute_fetchall("INSERT INTO proxy_groups(name,exclusive_assignment) VALUES ('fixed',1) RETURNING id")
+        [(node,)] = await db.execute_fetchall("INSERT INTO proxy_group_nodes(group_id,proxy_url) VALUES (?,?) RETURNING id", (group,"http://bound.invalid"))
+        await db.execute("UPDATE antigravity_credentials SET proxy_mode='group', proxy_group_id=?, bound_proxy_node_id=? WHERE filename=?", (group,node,filename))
+        await db.execute("INSERT INTO antigravity_account_health(credential_name,binding_status,eligibility_status,eligibility_reason,eligibility_checked_at) VALUES (?,?,'error',?,?)", (filename,binding,reason,time.time()))
+        await db.commit()
+    manager = CredentialManager()
+    manager._initialized = True
+    manager._storage_adapter = pg_store
+    monkeypatch.setattr("config.get_antigravity_egress_ip_check_url", AsyncMock(return_value="https://echo.invalid"))
+    monkeypatch.setattr("config.get_antigravity_network_check_ttl_seconds", AsyncMock(return_value=600))
+    name, selected = await backend.get_next_available_credential("antigravity", "m")
+    ready = await manager.ensure_antigravity_account_ready(name, selected)
+    assert ready["proxy_url"] == "http://bound.invalid"
+    assert ready["proxy_node_id"] == node
+    states = await backend.get_all_credential_states("antigravity")
+    assert rank_antigravity_image_candidates(states, model_name="m") == [filename]
