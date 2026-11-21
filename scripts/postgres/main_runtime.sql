@@ -102,3 +102,59 @@ ALTER TABLE antigravity_credentials
     ADD COLUMN IF NOT EXISTS transient_hold_until double precision NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS transient_error_count bigint NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS transient_error_at double precision NOT NULL DEFAULT 0;
+
+-- Only lock rows requiring repair. An unrelated account can complete on a
+-- different connection, and healthy calls do not write or take a row lock.
+CREATE OR REPLACE FUNCTION gcli_record_antigravity_success(account_name text, model text)
+RETURNS double precision LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    started timestamptz;
+    lock_ms double precision := 0;
+    cred record;
+    ts double precision := extract(epoch FROM statement_timestamp());
+    has_errors boolean;
+    expired boolean;
+BEGIN
+    started := clock_timestamp();
+    SELECT c.error_codes, c.model_cooldowns::jsonb AS cooldowns, c.transient_error_count
+      INTO cred FROM antigravity_credentials c
+     WHERE c.filename = account_name AND (
+         coalesce(c.error_codes, '') NOT IN ('', '[]') OR c.transient_error_count > 0
+         OR (c.model_cooldowns::jsonb ? model AND CASE
+             WHEN jsonb_typeof(c.model_cooldowns::jsonb -> model) = 'number'
+             THEN (c.model_cooldowns::jsonb ->> model)::numeric <= ts ELSE true END)
+     ) FOR NO KEY UPDATE;
+    lock_ms := extract(epoch FROM clock_timestamp()-started)*1000;
+    IF FOUND THEN
+        has_errors := coalesce(cred.error_codes, '') NOT IN ('', '[]');
+        expired := cred.cooldowns ? model AND CASE
+            WHEN jsonb_typeof(cred.cooldowns -> model) = 'number'
+            THEN (cred.cooldowns ->> model)::numeric <= ts ELSE true END;
+        UPDATE antigravity_credentials SET
+            last_success = CASE WHEN has_errors THEN floor(ts) ELSE last_success END,
+            error_codes = CASE WHEN has_errors THEN '[]' ELSE error_codes END,
+            error_messages = CASE WHEN has_errors THEN '{}' ELSE error_messages END,
+            model_cooldowns = CASE WHEN expired THEN (cred.cooldowns - model)::text ELSE model_cooldowns END,
+            transient_error_at = CASE WHEN transient_error_count > 0 THEN 0 ELSE transient_error_at END,
+            transient_error_count = 0, updated_at = floor(ts)
+        WHERE filename = account_name;
+    END IF;
+
+    started := clock_timestamp();
+    PERFORM 1 FROM antigravity_account_health WHERE credential_name = account_name AND (
+        last_403_category IS NOT NULL OR binding_status IN ('proxy_drift','proxy_failed') OR
+        eligibility_status IN ('geo_blocked','account_blocked','validation_required','error')
+    ) FOR NO KEY UPDATE;
+    lock_ms := lock_ms + extract(epoch FROM clock_timestamp()-started)*1000;
+    IF FOUND THEN
+        UPDATE antigravity_account_health SET
+            binding_status = CASE WHEN binding_status IN ('proxy_drift','proxy_failed')
+                                  THEN 'healthy' ELSE binding_status END,
+            eligibility_status = 'eligible', eligibility_reason = NULL,
+            eligibility_checked_at = floor(ts), last_403_category = NULL, last_403_reason = NULL,
+            last_403_at = NULL, updated_at = floor(ts)
+        WHERE credential_name = account_name;
+    END IF;
+    RETURN lock_ms;
+END;
+$$;

@@ -123,10 +123,13 @@ async def check_antigravity_account_health(
     api_base_url: str,
     checked_at: Optional[float] = None,
     credential_data: Optional[Mapping[str, Any]] = None,
+    current_health: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
     """Check IP stability and eligibility through one account's bound proxy."""
     timestamp = time.time() if checked_at is None else float(checked_at)
-    current = await storage.get_antigravity_account_health(credential_name)
+    current = current_health
+    if current is None:
+        current = await storage.get_antigravity_account_health(credential_name)
 
     if not ip_check_url:
         return await storage.update_antigravity_account_health(
