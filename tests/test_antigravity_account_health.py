@@ -44,7 +44,7 @@ class Antigravity403ClassifierTests(unittest.TestCase):
 
         return classify_antigravity_403(text, account_health=health or {})
 
-    def test_health_geo_block_wins_and_invalidates_binding(self):
+    def test_health_geo_block_preserves_binding(self):
         decision = self.classify(
             "permission denied",
             {
@@ -55,8 +55,8 @@ class Antigravity403ClassifierTests(unittest.TestCase):
 
         self.assertEqual(decision.category, "geo_blocked")
         self.assertFalse(decision.disable_account)
-        self.assertTrue(decision.invalidate_binding)
-        self.assertTrue(decision.retry_after_rebind)
+        self.assertFalse(decision.invalidate_binding)
+        self.assertFalse(decision.retry_after_rebind)
 
     def test_explicit_model_denial_wins_over_stale_geo_health(self):
         decision = self.classify(
@@ -717,7 +717,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
         self.assertEqual(manager.health["last_403_category"], "geo_blocked")
 
-    async def test_geo_403_keeps_account_and_requests_egress_rebind(self):
+    async def test_geo_403_keeps_account_and_returns_denial(self):
         from src.api import antigravity
 
         manager = _Fake403CredentialManager(
@@ -743,8 +743,7 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "geo_blocked")
         self.assertFalse(result.should_retry)
-        # 地区结论属于出口 IP：账号保留、不暂停，交给请求路径换 IP 重试
-        self.assertTrue(result.rebind_retry)
+        self.assertFalse(result.rebind_retry)
         self.assertEqual(manager.disabled, [])
         self.assertEqual(manager.health["eligibility_status"], "geo_blocked")
 

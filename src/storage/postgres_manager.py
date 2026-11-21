@@ -50,6 +50,8 @@ class PostgresManager(SQLiteManager):
             self._claim_tasks = set()
             self._cooldown_refresh = None
             self._next_cooldown_refresh = 0
+            self._claim_minute = int(time.time()) // 60
+            self._claim_counts = {"claim_batches": 0, "snapshot_reads": 0, "cache_hits": 0}
             self._claim_slots = asyncio.Semaphore(claim_connections)
             self._claim_pool = AsyncConnectionPool(
                 main_dsn(), min_size=0, max_size=claim_connections, open=False,
@@ -177,6 +179,15 @@ class PostgresManager(SQLiteManager):
                 await db.commit()
                 return row, 0, False
 
+    def _count_claim_work(self, kind, count=1):
+        minute = int(time.time()) // 60
+        if minute != self._claim_minute:
+            totals = " ".join(f"{name}={n}" for name, n in self._claim_counts.items())
+            log.info(f"[CLAIM_COUNTS] minute={self._claim_minute} pid={os.getpid()} {totals}")
+            self._claim_counts = dict.fromkeys(self._claim_counts, 0)
+            self._claim_minute = minute
+        self._claim_counts[kind] += count
+
     async def _read_cooldown_rows(self):
         # The same eligibility predicates as a claim, before applying account and model deadlines.
         # Keep all models so a cached miss on one can never suppress another.
@@ -187,6 +198,7 @@ class PostgresManager(SQLiteManager):
                 "SELECT filename, usage_resume_at, model_cooldowns, transient_hold_until "
                 f"FROM antigravity_credentials WHERE {where}", params[:-1],
             )
+        self._count_claim_work("snapshot_reads")
         rows = []
         for name, usage, models, hold in records:
             cooldowns = json.loads(models or "{}")
@@ -241,6 +253,7 @@ class PostgresManager(SQLiteManager):
             if snapshot is not None:
                 _, resume = cache.selection(snapshot[1], model, excluded, pinned, time.time())
                 if resume is not None:
+                    self._count_claim_work("cache_hits", sum(not f.done() for f in waiters))
                     for future in waiters:
                         if not future.done():
                             future.set_result(resume)
@@ -258,6 +271,7 @@ class PostgresManager(SQLiteManager):
                     if snapshot is not None and snapshot[0] > time.time():
                         blocked, _ = cache.selection(snapshot[1], model, excluded, pinned, time.time())
                     rows, resume, retry_at, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active), blocked)
+            self._count_claim_work("claim_batches")
             roundtrip = (time.monotonic() - connected) * 1000
             if (snapshot is None and time.monotonic() >= self._next_cooldown_refresh
                     and (self._cooldown_refresh is None or self._cooldown_refresh.done())):

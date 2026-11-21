@@ -846,3 +846,27 @@ async def test_exhausted_chain_preserves_retry_header_and_reason(monkeypatch, st
     assert response.status_code == 429
     assert response.rate_limit.reason == "account_usage_limit"
     assert 28 <= int(response.headers["retry-after"]) <= 30
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_explicit_location_denial_returns_once(monkeypatch, streaming):
+    from unittest.mock import AsyncMock
+    model = "gemini-2.5-flash-lite"
+    _patch_common(monkeypatch, [model, "gemini-3.1-flash-lite"])
+    choose = AsyncMock(return_value=("a.json", {"access_token": "test", "project_id": "test"}))
+    monkeypatch.setattr(agy.credential_manager, "get_valid_credential", choose)
+    monkeypatch.setattr(agy.credential_manager, "get_antigravity_account_health",
+                        AsyncMock(return_value={"binding_status": "proxy_drift"}))
+    monkeypatch.setattr(agy.credential_manager, "update_antigravity_account_health", AsyncMock())
+    rotate = AsyncMock()
+    monkeypatch.setattr(agy, "_retry_same_account_on_new_egress", rotate)
+    sent = []
+    def denied(selected, _):
+        sent.append(selected)
+        return _FakeResponse(403, b'{"error":{"reason":"UNSUPPORTED_LOCATION"}}')
+    _patch_text_transport(monkeypatch, denied)
+    response = await _run_text_request(streaming, model)
+    assert response.status_code == 403 and b"UNSUPPORTED_LOCATION" in response.body
+    assert sent == [model]
+    choose.assert_awaited_once()
+    rotate.assert_not_awaited()

@@ -946,9 +946,9 @@ async def _handle_antigravity_403(
         "proxy_failed",
     }:
         note_dynamic_warmup_outcome(credential_name, "paused")
-    # geo_blocked 不暂停账号：地区结论只属于当前出口 IP，换节点后账号照常使用。
+    # 地区拒绝保留绑定并向调用方返回原始拒绝。
 
-    # 地区拒绝和绑定异常是出口问题，不是账号级证据：保留账号、换 IP 重试。
+    # 绑定故障和地区拒绝本身都不证明账号已被禁用。
     # 只有明确的账号级拒绝（或无法归类的 403 且配置要求封禁）才禁用账号。
     account_level_denial = decision.disable_account or decision.category == "unknown_403"
     if decision.tos_violation or (
@@ -983,7 +983,7 @@ async def _retry_same_account_on_new_egress(
     credential_name: str,
     credential_data: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """地区拒绝后把同一账号换到组内空闲 IP，返回刷新后的凭证数据。
+    """修复代理绑定故障后，返回刷新后的凭证数据。
 
     只对组绑定生效。换绑失败（组内无空闲节点、自定义代理、固定 IP）返回 None，
     调用方按原有失败路径处理，账号不会被静默丢弃。
@@ -995,7 +995,7 @@ async def _retry_same_account_on_new_egress(
     if rotate is None or reload_credential is None:
         return None
     try:
-        rotated = await rotate(credential_name, attempts=1)
+        rotated = await rotate(credential_name)
     except Exception as exc:  # noqa: BLE001 - rotation must not break the retry path
         log.warning(
             "[ANTIGRAVITY REGION] egress rotation failed: "
@@ -1648,7 +1648,7 @@ async def _stream_request_inner(
                 if same_account_retry:
                     same_account_retry = False
                     log.warning(
-                        "[ANTIGRAVITY STREAM] 地区拒绝后已换出口 IP，用同一账号重试: "
+                        "[ANTIGRAVITY STREAM] 代理绑定故障已修复，用同一账号重试: "
                         f"{current_file} / {model_name}"
                     )
                     attempt += 1
@@ -2119,7 +2119,7 @@ async def _non_stream_image_request_inner(
                 )
                 attempted_credentials.discard(current_file)
                 log.warning(
-                    "[ANTIGRAVITY IMAGE] 地区拒绝后已换出口 IP，重新进入候选: "
+                    "[ANTIGRAVITY IMAGE] 代理绑定故障已修复，重新进入候选: "
                     f"{current_file} / {requested_model}"
                 )
                 account_attempt += 1
@@ -2582,7 +2582,7 @@ async def non_stream_request(
                             attempted_credentials.discard(current_file)
                             rate_limited_credentials.discard(current_file)
                             log.warning(
-                                "[ANTIGRAVITY] 地区拒绝后已换出口 IP，用同一账号重试: "
+                                "[ANTIGRAVITY] 代理绑定故障已修复，用同一账号重试: "
                                 f"{current_file} / {model_name}"
                             )
                             attempt += 1

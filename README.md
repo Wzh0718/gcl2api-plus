@@ -26,7 +26,7 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 | --- | --- |
 | API 协议接入 | Antigravity 支持 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Messages；Vertex 支持 OpenAI Chat Completions 和 Gemini。当前不提供 GeminiCLI 通道。 |
 | API Key 管理 | 签发、复制、启停和吊销独立密钥；配置金额额度、到期时间，以及手动或每月额度重置；查看各密钥用量和剩余额度。 |
-| 登录与凭证池 | 支持 Antigravity OAuth 登录、Refresh Token（RT）导入和多账号凭证管理；按可用账号轮转，每个工作进程每四次分配最多一次优先考虑近一小时生成量少至少 8,192 token 的账号。账号经普通轮转选中后最多获得一次优先机会。控制每账号并发并在异常时切换凭证。 |
+| 登录与凭证池 | 支持 Antigravity OAuth 登录、Refresh Token（RT）导入和多账号凭证管理；按可用账号轮转，控制每账号并发并在异常时切换凭证。 |
 | 账号检查与恢复 | 检查账号健康、模型额度与网络资格；对可恢复的 403 定期复检，明确的 TOS / account_forbidden 账号仅人工复检；提供额度对账。 |
 | 动态养号与渐进放量 | 可按账号或批量开启，使用真实业务请求逐档放量；限制账号及同出口 IP 组的并发和请求间隔，异常时退避或暂停。详见[状态机说明](docs/ANTIGRAVITY_DYNAMIC_WARMUP_SPEC.md)。 |
 | 账号代理与出口管理 | 支持继承全局代理、独立代理、直连及代理组；可启用一账号一节点的独占绑定，并检查出口 IP、地区资格和代理健康。 |

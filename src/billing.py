@@ -543,9 +543,6 @@ class BillingRecorder:
             )
         mark_stage("billing_saved")
         if first:
-            if channel == "antigravity":
-                from src.antigravity_priority import account_priority
-                account_priority.record_tokens(credential_name, metrics.output_tokens + metrics.thought_tokens)
             was_connected = self.redis.client is not None
             client = await self.redis._get_client()
             if client is not None and not was_connected:

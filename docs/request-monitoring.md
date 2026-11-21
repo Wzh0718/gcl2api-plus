@@ -35,3 +35,5 @@ PostgreSQL 主库的 Antigravity 常规文本取号使用 `REDIS_URL` 跨 worker
 Redis 中每个限制对应一个独立 key。以账号 `a.json` 为例，可用 `redis-cli --scan --pattern 'gcli:cooldown:v2:*:a.json:*'` 找到该账号的标记，再用 `TTL <完整 key>` 查看剩余秒数。`:a.json:model:gemini-A` 只限制模型 A，`:a.json:usage` 和 `:a.json:hold` 对该账号所有模型生效。普通标记值为 `1`，到恢复时间自动消失。账号名和模型名中的分隔符使用百分号编码。候选名单按取号流量刷新，Redis 没有近期名单时先查主库。提前解禁会在下次同步时删除旧标记；长期没有取号时，标记按最后一次同步的截止时间自行过期。
 
 文本请求首次取号时按配置的降级顺序尝试，从请求模型所在的位置开始。每一跳独立检查该模型的 key，并同时检查账号共用的额度和临时冷却 key。找到可用账号就使用对应模型。整条可尝试的链都无号时，429 的 `Retry-After` 取各跳中最早已知的可用时间。Redis 候选名单尚未建立时，PostgreSQL 常规领取路径也会计算该时间。仅允许单一模型的密钥只检查获准模型。
+
+生产日志 `[CLAIM_COUNTS]` 按 worker 输出上一个有流量的 UTC 分钟。常规文本取号成功执行的物理 SQL 数为 `2 × claim_batches + snapshot_reads`（每个批次一次锁查询、一次领取查询）。`cache_hits` 是直接从冷却缓存返回的逻辑领取次数。认证、告警和调用记录查询单独统计。
