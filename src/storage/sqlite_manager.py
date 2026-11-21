@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from src.request_timing import measured_db_lock
 from src.storage.sqlite_pragmas import connect as sqlite_connect
 
 from log import log
@@ -143,6 +144,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._selection_lock = asyncio.Lock()
         self._success_write_lock = asyncio.Lock()
         self._stats_write_lock = asyncio.Lock()
+        self._pg_stats = None
+        self._success_reader = None
 
         # 逐条调用记录的后台批量写队列（见 enqueue_call_record）。
         self._call_queue: Optional[asyncio.Queue] = None
@@ -226,6 +229,17 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 # 加载配置到内存
                 await self._load_config_cache()
 
+                dsn = os.getenv("MODEL_STATS_POSTGRES_DSN")
+                if dsn:
+                    from src.storage.pg_model_stats import PostgresModelStats
+                    self._pg_stats = await PostgresModelStats.open(dsn)
+                    try:
+                        self._success_reader = await aiosqlite.connect(self._db_path)
+                        await self._success_reader.execute("PRAGMA query_only=ON")
+                    except BaseException:
+                        await self.close()
+                        raise
+                    log.info("Model statistics writes use PostgreSQL")
                 self._initialized = True
                 log.info(f"SQLite storage initialized at {self._db_path}")
 
@@ -1122,6 +1136,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             await self.flush_call_records()
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 关闭前写入剩余调用记录失败: {type(exc).__name__}")
+        if self._success_reader is not None:
+            await self._success_reader.close()
+            self._success_reader = None
+        if self._pg_stats is not None:
+            await self._pg_stats.pool.close()
+            self._pg_stats = None
         self._initialized = False
         log.debug("SQLite storage closed")
 
@@ -1186,7 +1206,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             if mode == "antigravity":
                 # 排队发生在打开 aiosqlite 连接之前，避免同进程高并发同时
                 # 占用大量 FD，并绕开 SQLite busy_timeout 的退避延迟。
-                async with self._selection_lock:
+                async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                     return await self._get_next_antigravity_credential(
                         model_name=model_name,
                         excluded=excluded,
@@ -1392,7 +1412,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         params = [*routing_params, *params]
 
         try:
-            async with self._selection_lock:
+            async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     result = await db.execute(
@@ -5238,9 +5258,26 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             table_name = self._get_table_name(mode)
+            if self._success_reader is not None and mode == "antigravity":
+                # A healthy account needs no write. Read one SQLite snapshot on
+                # a shared reader before entering the serialized repair path.
+                rows = await self._success_reader.execute_fetchall("""
+                    SELECT c.error_codes, c.model_cooldowns, EXISTS (
+                        SELECT 1 FROM antigravity_account_health h WHERE h.credential_name = ?
+                        AND (h.last_403_category IS NOT NULL OR
+                             h.eligibility_status IN ('geo_blocked','account_blocked','validation_required','error')
+                             OR h.binding_status IN ('proxy_drift','proxy_failed')))
+                    FROM antigravity_credentials c WHERE c.filename = ?
+                """, (filename, filename))
+                if rows:
+                    errors, raw_cooldowns, unhealthy = rows[0]
+                    cooldowns = json.loads(raw_cooldowns or '{}')
+                    if (errors in (None, '', '[]') and not unhealthy and
+                            (model_name not in cooldowns or model_name in _active_model_cooldowns(cooldowns, time.time()))):
+                        return
             # 成功响应可能在短时间内大量并发到达。这里只允许一个 SQLite
             # 成功状态事务持有连接，防止 aiosqlite 连接/线程堆积耗尽 nofile。
-            async with self._success_write_lock:
+            async with measured_db_lock(self._success_write_lock, "success_lock_wait", "success_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
 
@@ -5326,6 +5363,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return
         filename = os.path.basename(filename)
         stat_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+        if self._pg_stats is not None:
+            await self._pg_stats.increment(mode, stat_date, filename, model_name, success,
+                                           status_code, upstream_seconds, gateway_seconds)
+            return
         upstream_inc = float(upstream_seconds) if upstream_seconds is not None else 0.0
         upstream_cnt = 1 if upstream_seconds is not None else 0
         gateway_inc = float(gateway_seconds) if gateway_seconds is not None else 0.0
@@ -5333,7 +5374,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         try:
             # 与成功状态写入同理：串行化轻量统计写入，避免高并发下连接堆积
-            async with self._stats_write_lock:
+            async with measured_db_lock(self._stats_write_lock, "model_stats_lock_wait", "model_stats_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
                     await db.execute("PRAGMA busy_timeout = 5000")
                     await db.execute("""
@@ -5432,7 +5473,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     params = (mode,)
                 async with db.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
-                    return [
+                    history = [
                         {
                             "credential_name": row[0],
                             "model_name": row[1],
@@ -5449,6 +5490,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         }
                         for row in rows
                     ]
+                if self._pg_stats is None:
+                    return history
+                credentials = await db.execute_fetchall(f"SELECT filename,user_email,tier FROM {table_name}")
+            return await self._pg_stats.combined(mode, date, history, {name: (email, tier) for name, email, tier in credentials})
         except Exception as e:
+            if self._pg_stats is not None:
+                raise
             log.error(f"Error reading model stats (mode={mode}, date={date}): {e}")
             return []

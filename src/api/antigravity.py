@@ -2038,14 +2038,15 @@ async def non_stream_request(
 
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
-    from src.request_timing import mark_stage
+    from src.request_timing import mark_stage, measure_phase
     mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
     # 1. 获取有效凭证
-    cred_result = await credential_manager.get_valid_credential(
-        mode="antigravity", model_name=model_name
-    )
+    with measure_phase("credential_lookup"):
+        cred_result = await credential_manager.get_valid_credential(
+            mode="antigravity", model_name=model_name
+        )
 
     # 当前模型号池无可用凭证时，按配置的降级链尝试后续模型
     if not cred_result:
@@ -2056,9 +2057,10 @@ async def non_stream_request(
                 f"[ANTIGRAVITY] 模型 {model_name} 号池无可用凭证，降级到 {next_model}"
             )
             model_name = next_model
-            cred_result = await credential_manager.get_valid_credential(
-                mode="antigravity", model_name=model_name
-            )
+            with measure_phase("credential_lookup"):
+                cred_result = await credential_manager.get_valid_credential(
+                    mode="antigravity", model_name=model_name
+                )
             next_model = _next_fallback_model(chain, model_name)
 
     if not cred_result:
@@ -2152,10 +2154,11 @@ async def non_stream_request(
 
     async def refresh_credential_fast():
         nonlocal current_file, credential_data, access_token, auth_headers, project_id, final_payload, proxy_url, request_id
-        cred_result = await credential_manager.get_valid_credential(
-            mode="antigravity", model_name=model_name,
-            exclude_filenames=set(rate_limited_credentials),
-        )
+        with measure_phase("credential_lookup"):
+            cred_result = await credential_manager.get_valid_credential(
+                mode="antigravity", model_name=model_name,
+                exclude_filenames=set(rate_limited_credentials),
+            )
         if not cred_result:
             return None
         new_file, new_data = cred_result
@@ -2226,9 +2229,11 @@ async def non_stream_request(
 
         slot_acquired = False
         try:
-            pacing_waited += await acquire_credential_slot(slot_holder)
+            with measure_phase("slot_acquire"):
+                pacing_waited += await acquire_credential_slot(slot_holder)
             slot_acquired = True
-            pacing_waited += await pace_credential(slot_holder)
+            with measure_phase("pacing"):
+                pacing_waited += await pace_credential(slot_holder)
             if (
                 current_file in rate_limited_credentials
                 or not await _text_credential_is_available(current_file, model_name)
@@ -2241,7 +2246,8 @@ async def non_stream_request(
                 response = _upstream_403_to_503(last_error_response) if last_error_response is not None else _account_pool_429()
                 await record_billing_once(False, response=response)
                 return response
-            usage_attempt = await begin_account_usage(slot_holder)
+            with measure_phase("usage_admission"):
+                usage_attempt = await begin_account_usage(slot_holder)
             attempted_credentials.add(current_file)
             attempt_started = time.monotonic()  # 本次上游尝试起点（时效性统计口径 B）
             if pacing_waited >= 0.2:

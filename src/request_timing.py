@@ -1,4 +1,5 @@
 """Constant-space request timing: no body copies, queues, tasks or global request map."""
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import time
@@ -22,6 +23,7 @@ class RequestTiming:
     defer_monitor_insert: bool = False
     pending_monitor_row: dict | None = None
     stages: dict = field(default_factory=dict)
+    phase_ms: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
     request_info: dict = field(default_factory=dict)
     # 调用监控行：record() 时组装，等 finish_timing() 补齐计时后一次性入库，
@@ -31,13 +33,53 @@ class RequestTiming:
 
     def details(self):
         return {"stages": dict(self.stages), "parameters": dict(self.parameters),
-                "request": dict(self.request_info)}
+                "request": dict(self.request_info), "phase_ms": dict(self.phase_ms)}
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar('request_timing', default=None)
 
 # One scalar per worker; no request objects or bodies are retained.
 _inflight_requests = 0
+
+
+_next_slow_log = 0.0
+
+
+@contextmanager
+def measure_phase(name):
+    """Accumulate elapsed milliseconds across attempts for a fixed call-site label."""
+    state = request_timing.get()
+    if state is None:
+        yield
+        return
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        state.phase_ms[name] = state.phase_ms.get(name, 0.0) + (time.monotonic() - started) * 1000
+
+
+@asynccontextmanager
+async def measured_db_lock(lock, wait_name, work_name):
+    with measure_phase(wait_name):
+        await lock.acquire()
+    try:
+        with measure_phase(work_name):
+            yield
+    finally:
+        lock.release()
+
+
+def _log_slow_request(state):
+    global _next_slow_log
+    total = state.response_total_seconds
+    if total is None or total < 10 or not state.phase_ms:
+        return
+    now = time.monotonic()
+    if now >= _next_slow_log:
+        _next_slow_log = now + 10
+        phases = " ".join(f"{name}={ms:.1f}" for name, ms in state.phase_ms.items())
+        log.info(f"[SLOW_REQUEST] timing_id={state.timing_id} total_ms={total * 1000:.1f} phase_ms: {phases}")
 
 
 def get_inflight_requests() -> int:
@@ -196,6 +238,7 @@ class RequestTimingMiddleware:
         finally:
             _inflight_requests -= 1
             request_timing.reset(token)
+            _log_slow_request(state)
             # Finish telemetry inline after the response, including on disconnect.
             state.defer_monitor_insert = False
             if state.monitor is not None:
