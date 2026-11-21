@@ -55,6 +55,12 @@ async def connect(path: str, *, row_factory=None, isolation_level=None):
     Mirrors ``aiosqlite.connect`` semantics closely enough for the existing
     ``async with ... as db`` call sites; only the pragmas are added.
     """
+    from src.storage.main_postgres import PostgresDatabase
+    if isinstance(path, PostgresDatabase):
+        async with path.connect() as db:
+            db.row_factory = row_factory
+            yield db
+        return
     async with aiosqlite.connect(path, isolation_level=isolation_level) as db:
         if row_factory is not None:
             db.row_factory = row_factory

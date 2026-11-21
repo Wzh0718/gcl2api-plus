@@ -10,6 +10,7 @@ from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 import asyncpg
 
@@ -39,7 +40,8 @@ async def transfer(source, conn, schema, full):
         SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'
         ORDER BY rowid
     """)]
-    if set(tables) != set(pg_columns):
+    # The rolling account window is created lazily in older SQLite installations.
+    if set(tables) - set(pg_columns) or set(pg_columns) - set(tables) - {"account_usage"}:
         raise ValueError("Source and destination table sets differ")
     # Referenced tables must be inserted first even if a prior migration rebuilt them.
     tables.sort(key=lambda name: name not in PARENT_TABLES)
@@ -74,6 +76,23 @@ async def transfer(source, conn, schema, full):
     await conn.execute((SQL_DIR / 'main_indexes.sql').read_text())
 
 
+async def transfer_fusion(path, dest, schema, full):
+    await dest.execute((SQL_DIR / "main_runtime.sql").read_text())
+    if not path.is_file():
+        return
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as cache:
+        cache.execute("BEGIN")
+        tables = {r[0] for r in cache.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        now = time.time()
+        for table, columns in (("fusion", ("key", "value", "expires")), ("leases", ("key", "owner", "expires"))):
+            if table not in tables:
+                continue
+            query = f"SELECT {','.join(columns)} FROM {table} WHERE expires>?"
+            cursor = cache.execute(query if full else query + " LIMIT 32", (now,))
+            while rows := cursor.fetchmany(128):
+                await dest.copy_records_to_table(table, schema_name=schema, columns=columns, records=rows)
+
+
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
@@ -88,6 +107,8 @@ async def main():
             await tx.start()
             try:
                 await transfer(source, dest, args.schema, args.import_all)
+                await transfer_fusion(args.source.with_name("prompt_fusion_cache.sqlite3"),
+                                      dest, args.schema, args.import_all)
             except BaseException:
                 await tx.rollback()
                 raise
@@ -100,4 +121,9 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except asyncpg.PostgresError as exc:
+        # PostgreSQL DETAIL can include secret columns from the rejected row.
+        raise SystemExit(f"Import failed: {type(exc).__name__}, SQLSTATE {exc.sqlstate}, "
+                         f"constraint {exc.constraint_name or '(none)'}") from None

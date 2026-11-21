@@ -79,8 +79,10 @@ services:
       # - MONGODB_URI=${MONGODB_URI}
       # - MONGODB_DATABASE=${MONGODB_DATABASE:-gcli2api}
 
-      # Optional: PostgreSQL configuration (for distributed storage)
-      # - POSTGRES_DSN=${POSTGRES_DSN}
+      # Optional main PostgreSQL store (also supported via service env_file).
+      # - MAIN_POSTGRES_DSN=${MAIN_POSTGRES_DSN}
+      # - MAIN_POSTGRES_SCHEMA=${MAIN_POSTGRES_SCHEMA:-gcli_main}
+      # Existing incremental statistics stores keep MODEL_STATS_POSTGRES_DSN.
 
       # Optional: Proxy configuration
       # - PROXY=${PROXY}

@@ -858,7 +858,7 @@ async function openProxyPolicyDialog({ filename = null, filenames = null } = {})
     ).join('');
     dialog.innerHTML = `<form method="dialog" class="proxy-policy-form">
         <div class="proxy-dialog-head"><div><span class="proxy-dialog-kicker">NETWORK POLICY</span><h3>${filename ? escapeHtml(filename) : `批量切换 ${targetFiles.length} 个账号`}</h3></div><button value="cancel" class="proxy-dialog-close" aria-label="关闭">×</button></div>
-        <p class="proxy-dialog-copy">配置会写入 SQLite，下一次请求、Token 刷新和额度检查都会实时使用新代理，无需重启服务。</p>
+        <p class="proxy-dialog-copy">配置会写入主数据库，下一次请求、Token 刷新和额度检查都会实时使用新代理，无需重启服务。</p>
         <label class="proxy-dialog-field"><span>代理策略</span><select id="proxyPolicyMode">
             <option value="inherit" ${current.proxy_mode === 'inherit' ? 'selected' : ''}>继承全局代理</option>
             <option value="group" ${current.proxy_mode === 'group' ? 'selected' : ''}>使用代理组</option>
@@ -6748,7 +6748,8 @@ function populateConfigForm() {
     setConfigField('dingtalkWebhookUrl', c.dingtalk_webhook_url || '');
     const webhookSource = document.getElementById('dingtalkWebhookSource');
     if (webhookSource) {
-        const source = AppState.webhookSource === 'sqlite' ? 'SQLite 保存值' :
+        const source = AppState.webhookSource === 'postgresql' ? 'PostgreSQL 保存值' :
+            AppState.webhookSource === 'sqlite' ? 'SQLite 保存值' :
             AppState.webhookSource === 'environment' ? 'Compose / 环境变量' : '未配置';
         webhookSource.textContent = `当前来源：${source}${!c.dingtalk_webhook_url ? '（空）' : ''}`;
     }
@@ -7018,7 +7019,7 @@ async function resetWebhookToEnvironment() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '恢复环境配置失败');
         await loadConfig();
-        showStatus('已取消 SQLite Webhook 覆盖，使用 Compose / 环境变量', 'success');
+        showStatus('已取消数据库 Webhook 覆盖，使用 Compose / 环境变量', 'success');
     } catch (error) { showStatus(error.message, 'error'); }
 }
 

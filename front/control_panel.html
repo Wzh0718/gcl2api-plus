@@ -3054,7 +3054,7 @@
                                 <div>
                                     <span class="proxy-kicker">LIVE NETWORK</span>
                                     <h4 id="proxyConsoleTitle">代理组与实时导入</h4>
-                                    <p>代理节点写入 SQLite 后立即可用于下一次 Antigravity 请求，无需重启服务。</p>
+                                    <p>代理节点写入 主数据库 后立即可用于下一次 Antigravity 请求，无需重启服务。</p>
                                 </div>
                                 <strong id="proxyGroupSummary" class="proxy-summary">正在读取代理组…</strong>
                             </div>
@@ -3531,7 +3531,7 @@
                             <div class="form-group">
                                 <label for="systemPromptAppend">前置文本:</label>
                                 <textarea id="systemPromptAppend" class="config-input" rows="6" maxlength="20000" placeholder="留空不注入，支持多行文本"></textarea>
-                                <small class="config-note">配置文本 A 与请求已有系统提示 B 直接拼接为 AB，不自动添加换行；B 为空时不注入。适用于 GeminiCLI、Antigravity、Vertex 通道。SQLite 保存值优先于 .env，清空保存即可关闭，最多 20000 字符。</small>
+                                <small class="config-note">配置文本 A 与请求已有系统提示 B 直接拼接为 AB，不自动添加换行；B 为空时不注入。适用于 GeminiCLI、Antigravity、Vertex 通道。主数据库 保存值优先于 .env，清空保存即可关闭，最多 20000 字符。</small>
                             </div>
                         </div>
                         </section>
@@ -3561,7 +3561,7 @@
                             <div class="form-group">
                                 <label for="dingtalkWebhookUrl">Webhook URL:</label>
                                 <input type="url" id="dingtalkWebhookUrl" class="config-input" placeholder="留空则禁用，例如 https://oapi.dingtalk.com/robot/send?..." />
-                                <small class="config-note">SQLite 优先于 Compose / .env 环境变量；清空已填写的地址并保存可禁用。</small>
+                                <small class="config-note">主数据库 优先于 Compose / .env 环境变量；清空已填写的地址并保存可禁用。</small>
                                 <small id="dingtalkWebhookSource" class="config-note" aria-live="polite"></small>
                                 <button type="button" class="btn btn-small" onclick="resetWebhookToEnvironment()">使用 Compose / 环境变量</button>
                             </div>

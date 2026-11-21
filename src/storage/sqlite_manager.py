@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 import time
 from time import monotonic, sleep
 from datetime import date, datetime, timedelta, timezone
@@ -138,6 +138,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             ("gateway_timed_count", "INTEGER NOT NULL DEFAULT 0")
         ]
     }
+
+    main_postgres = False
 
     def __init__(self):
         self._db_path = None
@@ -1265,17 +1267,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         selection_usage_resume_at.set(0)
         attempted = set(excluded)
         for _ in range(candidate_limit):
-            async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
-                worker = asyncio.create_task(asyncio.to_thread(
-                    self._claim_antigravity_row, model_name, attempted, credential_name
-                ))
-                try:
-                    row, resume_at, dormant = await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    # A running sqlite3 call cannot be cancelled. Release the slot
-                    # only after its transaction and connection have closed.
-                    await worker
-                    raise
+            row, resume_at, dormant = await self._claim_next(model_name, attempted, credential_name)
             if row is None:
                 selection_usage_resume_at.set(resume_at)
                 return None
@@ -1302,11 +1294,51 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return filename, credential_data
         return None
 
-    def _claim_antigravity_row(self, model_name, attempted, credential_name):
-        """Select and advance one row in one worker call and one SQLite transaction."""
-        from src.antigravity_pacing import is_dormant
+    async def _claim_next(self, model_name, attempted, credential_name):
+        async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
+            worker = asyncio.create_task(asyncio.to_thread(
+                self._claim_antigravity_row, model_name, attempted, credential_name
+            ))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # A running sqlite3 call cannot be cancelled. Release the slot
+                # only after its transaction and connection have closed.
+                await worker
+                raise
 
-        current_time = time.time()
+    _SELECT_CREDENTIAL = """
+                SELECT filename, credential_data, model_cooldowns,
+                       enable_credit, proxy_mode, proxy_url,
+                       proxy_group_id
+                FROM antigravity_credentials
+                WHERE {where_sql} AND usage_resume_at <= ?
+                ORDER BY COALESCE(routing_turn, 0) ASC,
+                         COALESCE(rotation_order, 0) ASC,
+                         filename ASC
+                LIMIT 1
+            """
+    _RESUME_CREDENTIAL = """
+                    SELECT MIN(usage_resume_at) FROM antigravity_credentials
+                    WHERE {where_sql} AND usage_resume_at > ?
+                """
+    _ADVANCE_TURN = """UPDATE antigravity_credentials
+                   SET call_count = COALESCE(call_count, 0) + 1,
+                       routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
+                                       FROM antigravity_credentials),
+                       routing_window_started_at = CASE
+                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                           ELSE routing_window_started_at
+                       END,
+                       routing_window_count = CASE
+                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
+                           ELSE COALESCE(routing_window_count, 0) + 1
+                       END,
+                       updated_at = unixepoch()
+                   WHERE filename = ?"""
+
+    @staticmethod
+    def _claim_filter(model_name, attempted, credential_name, current_time):
         params: List[Any] = [current_time, current_time]
         where_sql = """disabled = 0
             AND (
@@ -1340,7 +1372,27 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             where_sql += f" AND filename NOT IN ({','.join('?' for _ in attempted_list)})"
             params.extend(attempted_list)
 
-        routing_cutoff = current_time - ROUTING_WINDOW_SECONDS
+        return where_sql, [*params, current_time]
+
+    def _claim_antigravity_row(self, model_name, attempted, credential_name):
+        from src.antigravity_pacing import is_dormant
+
+        now = time.time()
+        where, params = self._claim_filter(model_name, attempted, credential_name, now)
+        cutoff = now - ROUTING_WINDOW_SECONDS
+        with self._claim_transaction() as db:
+            row = db.execute(self._SELECT_CREDENTIAL.format(where_sql=where), params).fetchone()
+            if row is None:
+                resume, = db.execute(self._RESUME_CREDENTIAL.format(where_sql=where), params).fetchone()
+                return None, resume or 0, False
+            if is_dormant(row[0]):
+                return row, 0, True
+            db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
+            db.commit()
+            return row, 0, False
+
+    @contextmanager
+    def _claim_transaction(self):
         with closing(sqlite3.connect(self._db_path, isolation_level=None)) as db:
             apply_sync_pragmas(db)
             # A single claimant per manager competes with unrelated SQLite writers.
@@ -1356,45 +1408,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         raise
                     sleep(0.001)
             db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
-            row = db.execute(f"""
-                SELECT filename, credential_data, model_cooldowns,
-                       enable_credit, proxy_mode, proxy_url,
-                       proxy_group_id
-                FROM antigravity_credentials
-                WHERE {where_sql} AND usage_resume_at <= ?
-                ORDER BY COALESCE(routing_turn, 0) ASC,
-                         COALESCE(rotation_order, 0) ASC,
-                         filename ASC
-                LIMIT 1
-            """, [*params, current_time]).fetchone()
-            if row is None:
-                resume_at, = db.execute(f"""
-                    SELECT MIN(usage_resume_at) FROM antigravity_credentials
-                    WHERE {where_sql} AND usage_resume_at > ?
-                """, [*params, current_time]).fetchone()
-                return None, resume_at or 0, False
-            filename = row[0]
-            if is_dormant(filename):
-                return row, 0, True
-            db.execute(
-                """UPDATE antigravity_credentials
-                   SET call_count = COALESCE(call_count, 0) + 1,
-                       routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
-                                       FROM antigravity_credentials),
-                       routing_window_started_at = CASE
-                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
-                           ELSE routing_window_started_at
-                       END,
-                       routing_window_count = CASE
-                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
-                           ELSE COALESCE(routing_window_count, 0) + 1
-                       END,
-                       updated_at = unixepoch()
-                   WHERE filename = ?""",
-                (routing_cutoff, current_time, routing_cutoff, filename),
-            )
-            db.commit()
-            return row, 0, False
+            yield db
 
     async def mark_credential_selected(
         self,
@@ -1436,7 +1450,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         try:
             async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
-                    await db.execute("PRAGMA busy_timeout = 5000")
+                    if self.main_postgres:
+                        await db.execute("SELECT pg_advisory_xact_lock(72210440)")
                     result = await db.execute(
                         f"""UPDATE {table_name}
                             SET call_count = COALESCE(call_count, 0) + 1
@@ -1743,10 +1758,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             async with db.execute(
                 """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
                           a.bound_proxy_node_id, n.name, n.proxy_url,
-                          a.fixed_proxy_ip IS NOT NULL OR COALESCE(g.exclusive_assignment, 0),
+                          a.fixed_proxy_ip IS NOT NULL OR COALESCE(g.exclusive_assignment, 0) <> 0,
                           COALESCE(g.enabled = 1 AND n.enabled = 1 AND n.group_id = a.proxy_group_id
                             AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
-                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), 0),
+                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), FALSE),
                           a.fixed_proxy_ip, n.expires_at
                    FROM antigravity_credentials a
                    LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
@@ -2086,7 +2101,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 cursor = await db.execute(
                     """INSERT INTO proxy_groups(
                            name, description, strategy, enabled, exclusive_assignment
-                       ) VALUES (?, ?, ?, ?, ?)""",
+                       ) VALUES (?, ?, ?, ?, ?) RETURNING id""",
                     (
                         name,
                         str(description or "").strip(),
@@ -2099,7 +2114,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 if "UNIQUE" in str(exc).upper():
                     raise ValueError("代理组名称已存在") from exc
                 raise
-            group_id = cursor.lastrowid
+            group_id = (await cursor.fetchone())[0]
             await db.commit()
         return await self.get_proxy_group(int(group_id))
 
@@ -3112,12 +3127,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     async def admit_api_key_request(self, api_key_id: str, now: float | None = None) -> str | None:
         """Serialize admissions across workers sharing the credentials database."""
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("BEGIN IMMEDIATE")
+            if not self.main_postgres:
+                await db.execute("BEGIN IMMEDIATE")
             timestamp = time.time() if now is None else now
             period, start = ApiKeySchedule().period(timestamp)
             async with db.execute(
                 f"""SELECT limit_enabled, {period}_rpm, {period}_total,
-                           limit_period_start, limit_period_used FROM api_keys WHERE id = ?""",
+                           limit_period_start, limit_period_used FROM api_keys WHERE id = ?"""
+                + (" FOR UPDATE" if self.main_postgres else ""),
                 (api_key_id,),
             ) as cursor:
                 enabled, rpm, total, previous_start, used = await cursor.fetchone()
@@ -3165,11 +3182,16 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     ) -> bool:
         self._ensure_initialized()
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("BEGIN IMMEDIATE")
+            if self.main_postgres:
+                await db.execute("SELECT pg_advisory_xact_lock_shared(72210439)")
+            else:
+                await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT kind, reset_mode, quota_period_start, quota_used
-                   FROM api_keys WHERE id = ?""",
-                (api_key_id,),
+                   FROM api_keys WHERE id = ?"""
+                + (" AND kind='managed' AND reset_mode='monthly' AND quota_period_start<>? FOR UPDATE"
+                   if self.main_postgres else ""),
+                (api_key_id, month_start) if self.main_postgres else (api_key_id,),
             ) as cursor:
                 row = await cursor.fetchone()
             if row is None:
@@ -3326,20 +3348,28 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         )
         daily_key = (billing_date, api_key_id, os.path.basename(credential_name), model, currency)
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("BEGIN IMMEDIATE")
-            await db.execute(
-                "DELETE FROM billing_request_dedupe WHERE request_id IN (SELECT request_id FROM billing_request_dedupe WHERE expires_at < ? LIMIT 500)",
-                (now,),
-            )
-            # A request whose own TTL elapsed must be eligible immediately even
-            # when the bounded batch above has other expired rows to remove.
-            await db.execute(
-                "DELETE FROM billing_request_dedupe WHERE request_id = ? AND expires_at < ?",
-                (request_id, now),
-            )
+            if self.main_postgres:
+                # Repairs and bulk resets acquire the exclusive form of this lock.
+                await db.execute("SELECT pg_advisory_xact_lock_shared(72210439)")
+                await db.execute("SELECT id FROM api_keys WHERE id=? FOR UPDATE", (api_key_id,))
+            else:
+                await db.execute("BEGIN IMMEDIATE")
+            # Claim this request before sweeping other expired rows. Concurrent
+            # sweepers skip locks held by live settlements on PostgreSQL.
             inserted = await db.execute(
-                "INSERT OR IGNORE INTO billing_request_dedupe(request_id, created_at, expires_at) VALUES (?, ?, ?)",
+                """INSERT INTO billing_request_dedupe(request_id, created_at, expires_at)
+                   VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
+                       created_at=excluded.created_at, expires_at=excluded.expires_at
+                   WHERE billing_request_dedupe.expires_at < excluded.created_at""",
                 (request_id, now, expires_at),
+            )
+            skip_locked = " FOR UPDATE SKIP LOCKED" if self.main_postgres else ""
+            await db.execute(
+                f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
+                       SELECT request_id FROM billing_request_dedupe
+                       WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500{skip_locked}
+                   )""",
+                (now,),
             )
             if inserted.rowcount == 0:
                 await db.commit()
@@ -3529,6 +3559,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         usage_by_key: Dict[str, Decimal] = {}
         async with sqlite_connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 """SELECT api_keys.id, billing_daily.total_cost
                    FROM api_keys
@@ -4435,10 +4466,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 deleted_at = time.time()
                 if mode == "antigravity" and old_row:
                     await db.execute("""
-                        INSERT OR REPLACE INTO antigravity_egress_reservations
+                        INSERT INTO antigravity_egress_reservations
                             (credential_name, egress_ip, deleted_at, expires_at)
                         SELECT filename, fixed_proxy_ip, ?, ? FROM antigravity_credentials
                         WHERE filename = ? AND fixed_proxy_ip IS NOT NULL
+                        ON CONFLICT(credential_name, egress_ip) DO UPDATE SET
+                            deleted_at=excluded.deleted_at, expires_at=excluded.expires_at
                     """, (deleted_at, deleted_at + 7 * 86400, filename))
                 # 精确匹配删除
                 result = await db.execute(f"""
@@ -4448,12 +4481,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
                 if mode == "antigravity" and deleted_count:
                     await db.execute("""
-                        INSERT OR REPLACE INTO antigravity_egress_reservations
+                        INSERT INTO antigravity_egress_reservations
                             (credential_name, egress_ip, deleted_at, expires_at)
                         SELECT credential_name, egress_ip, ?, ?
                         FROM antigravity_account_health
                         WHERE credential_name = ? AND egress_ip IS NOT NULL
                           AND egress_ip <> ''
+                        ON CONFLICT(credential_name, egress_ip) DO UPDATE SET
+                            deleted_at=excluded.deleted_at, expires_at=excluded.expires_at
                     """, (deleted_at, deleted_at + 7 * 86400, filename))
                     await db.execute(
                         "DELETE FROM antigravity_account_health WHERE credential_name = ?",
@@ -5315,7 +5350,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 成功状态事务持有连接，防止 aiosqlite 连接/线程堆积耗尽 nofile。
             async with measured_db_lock(self._success_write_lock, "success_lock_wait", "success_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
-                    await db.execute("PRAGMA busy_timeout = 5000")
 
                     # 条件写入：只有 error_codes 非空时才触发
                     await db.execute(f"""
@@ -5332,7 +5366,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     if model_name:
                         async with db.execute(f"""
                             SELECT model_cooldowns FROM {table_name} WHERE filename = ?
-                        """, (filename,)) as cursor:
+                        """ + (" FOR UPDATE" if self.main_postgres else ""), (filename,)) as cursor:
                             row = await cursor.fetchone()
                             if row:
                                 cooldowns = json.loads(row[0] or '{}')
@@ -5412,7 +5446,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             # 与成功状态写入同理：串行化轻量统计写入，避免高并发下连接堆积
             async with measured_db_lock(self._stats_write_lock, "model_stats_lock_wait", "model_stats_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
-                    await db.execute("PRAGMA busy_timeout = 5000")
                     await db.execute("""
                         INSERT INTO credential_model_stats
                             (mode, credential_name, model_name,
@@ -5422,13 +5455,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                              updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
                         ON CONFLICT (mode, credential_name, model_name) DO UPDATE SET
-                            success_count = success_count + excluded.success_count,
-                            failed_count  = failed_count + excluded.failed_count,
+                            success_count = credential_model_stats.success_count + excluded.success_count,
+                            failed_count  = credential_model_stats.failed_count + excluded.failed_count,
                             last_status   = excluded.last_status,
-                            upstream_total_seconds = upstream_total_seconds + excluded.upstream_total_seconds,
-                            upstream_timed_count   = upstream_timed_count + excluded.upstream_timed_count,
-                            gateway_total_seconds  = gateway_total_seconds + excluded.gateway_total_seconds,
-                            gateway_timed_count    = gateway_timed_count + excluded.gateway_timed_count,
+                            upstream_total_seconds = credential_model_stats.upstream_total_seconds + excluded.upstream_total_seconds,
+                            upstream_timed_count   = credential_model_stats.upstream_timed_count + excluded.upstream_timed_count,
+                            gateway_total_seconds  = credential_model_stats.gateway_total_seconds + excluded.gateway_total_seconds,
+                            gateway_timed_count    = credential_model_stats.gateway_timed_count + excluded.gateway_timed_count,
                             updated_at    = excluded.updated_at
                     """, (
                         mode, filename, model_name,
@@ -5448,13 +5481,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
                         ON CONFLICT (mode, stat_date, credential_name, model_name)
                         DO UPDATE SET
-                            success_count = success_count + excluded.success_count,
-                            failed_count  = failed_count + excluded.failed_count,
+                            success_count = credential_model_stats_daily.success_count + excluded.success_count,
+                            failed_count  = credential_model_stats_daily.failed_count + excluded.failed_count,
                             last_status   = excluded.last_status,
-                            upstream_total_seconds = upstream_total_seconds + excluded.upstream_total_seconds,
-                            upstream_timed_count   = upstream_timed_count + excluded.upstream_timed_count,
-                            gateway_total_seconds  = gateway_total_seconds + excluded.gateway_total_seconds,
-                            gateway_timed_count    = gateway_timed_count + excluded.gateway_timed_count,
+                            upstream_total_seconds = credential_model_stats_daily.upstream_total_seconds + excluded.upstream_total_seconds,
+                            upstream_timed_count   = credential_model_stats_daily.upstream_timed_count + excluded.upstream_timed_count,
+                            gateway_total_seconds  = credential_model_stats_daily.gateway_total_seconds + excluded.gateway_total_seconds,
+                            gateway_timed_count    = credential_model_stats_daily.gateway_timed_count + excluded.gateway_timed_count,
                             updated_at    = excluded.updated_at
                     """, (
                         mode, stat_date, filename, model_name,

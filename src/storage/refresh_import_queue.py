@@ -160,6 +160,7 @@ class RefreshImportQueue:
 
     async def claim_next(self):
         async with sqlite_connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """UPDATE refresh_import_items

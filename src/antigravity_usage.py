@@ -2,12 +2,15 @@
 
 import asyncio
 from collections.abc import Mapping
-from contextlib import closing
+from contextlib import closing, contextmanager
 from functools import lru_cache
 import json
 import os
 from pathlib import Path
 import sqlite3
+
+import psycopg
+from src.storage.main_postgres import main_dsn, sync_connection
 from concurrent.futures import ThreadPoolExecutor
 
 from src.storage.sqlite_pragmas import apply_sync_pragmas
@@ -87,9 +90,23 @@ def _db_path() -> Path:
     return Path(os.getenv("CREDENTIALS_DIR", "./creds")) / "credentials.db"
 
 
+@contextmanager
+def _connection(path, *, readonly=False):
+    if main_dsn():
+        with sync_connection() as db:
+            yield db
+    elif readonly:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+            yield db
+    else:
+        with closing(sqlite3.connect(path, timeout=5)) as db, db:
+            apply_sync_pragmas(db)
+            yield db
+
+
 @lru_cache(maxsize=8)
 def _shared_settings(path: Path, second: int):
-    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+    with _connection(path, readonly=True) as db:
         row = db.execute("SELECT value FROM config WHERE key = ?", (CONFIG_KEY,)).fetchone()
     return validate_usage_settings(json.loads(row[0]) if row else DEFAULT_USAGE_LIMITS)
 
@@ -104,8 +121,7 @@ async def get_usage_settings(*, for_admission: bool = False):
 
 @lru_cache(maxsize=8)
 def _initialize(path: Path) -> None:
-    with closing(sqlite3.connect(path, timeout=5)) as db, db:
-        apply_sync_pragmas(db)
+    with _connection(path) as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS account_usage (
                 account TEXT NOT NULL,
@@ -122,8 +138,8 @@ def _add(db, account, bucket, requests, generated_tokens):
     db.execute("""
         INSERT INTO account_usage VALUES (?, ?, ?, ?)
         ON CONFLICT (account, bucket) DO UPDATE SET
-            requests = requests + excluded.requests,
-            generated_tokens = generated_tokens + excluded.generated_tokens
+            requests = account_usage.requests + excluded.requests,
+            generated_tokens = account_usage.generated_tokens + excluded.generated_tokens
     """, (account, bucket, requests, generated_tokens))
 
 
@@ -175,8 +191,7 @@ def _effective_limits(global_limits, exempt, overrides):
 
 def _set_account_usage_policy(path: Path, account: str, mode: str, limits: dict | None) -> bool:
     overrides = None if mode == "off" else json.dumps(limits or {})
-    with closing(sqlite3.connect(path, timeout=5)) as db, db:
-        apply_sync_pragmas(db)
+    with _connection(path) as db:
         result = db.execute(
             """UPDATE antigravity_credentials
                SET usage_resume_at = 0, usage_limit_disabled = ?, usage_limit_overrides = COALESCE(?, usage_limit_overrides)
@@ -191,13 +206,16 @@ async def set_account_usage_policy(account: str, *, mode: str, limits: dict | No
 
 
 def _read_usage_state(path: Path, accounts: list[str], now: int, global_limits: dict):
-    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
-        db.execute("BEGIN")
+    with _connection(path, readonly=True) as db:
+        if main_dsn():
+            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        else:
+            db.execute("BEGIN")
         policies = _account_policies(db, accounts)
         tracked = [account for account in accounts if _should_track(global_limits, policies.get(account, (False, {}))[1])]
-        table_exists = tracked and db.execute(
+        table_exists = tracked and (main_dsn() or db.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'account_usage'"
-        ).fetchone()
+        ).fetchone())
         return policies, _usage_totals(db, tracked, now) if table_exists else {}
 
 
@@ -210,7 +228,7 @@ async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bo
         policies, totals = await _in_db_thread(
             _read_usage_state, _db_path(), accounts, now, global_limits,
         )
-    except (sqlite3.Error, OSError, ValueError) as exc:
+    except (sqlite3.Error, psycopg.Error, OSError, ValueError) as exc:
         log.warning(f"[ACCOUNT USAGE] Snapshot unavailable: {type(exc).__name__}")
         return {account: {"state": "unavailable"} for account in accounts}
 
@@ -241,16 +259,19 @@ async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bo
 
 def _admit(path: Path, account: str, global_limits: dict) -> int | None:
     global_tracking = _should_track(global_limits, {})
-    if not global_tracking and not path.is_file():
+    if not global_tracking and not main_dsn() and not path.is_file():
         return None
-    with closing(sqlite3.connect(path, timeout=5)) as db, db:
-        apply_sync_pragmas(db)
+    with _connection(path) as db:
         if not global_tracking:
             _, overrides = _account_policies(db, [account]).get(account, (False, {}))
             if not _should_track(global_limits, overrides):
                 return None
-        _initialize(path)
-        db.execute("BEGIN IMMEDIATE")
+        if main_dsn():
+            db.execute("SELECT pg_advisory_xact_lock(72210441, hashtext(?))", (account,))
+            db.execute("SELECT filename FROM antigravity_credentials WHERE filename=? FOR UPDATE", (account,))
+        else:
+            _initialize(path)
+            db.execute("BEGIN IMMEDIATE")
         exempt, overrides = _account_policies(db, [account]).get(account, (False, {}))
         if not _should_track(global_limits, overrides):
             return None
@@ -288,14 +309,19 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
                        (now + retry_after, account))
             db.commit()  # Persist isolation before the exception exits the transaction.
             raise AccountUsageLimitReached(retry_after, rules=tuple(name for name, *_ in blocked))
-        db.execute("DELETE FROM account_usage WHERE bucket <= ?", (hour,))
+        if main_dsn():
+            db.execute("""DELETE FROM account_usage WHERE (account, bucket) IN (
+                SELECT account, bucket FROM account_usage WHERE bucket <= ?
+                ORDER BY bucket, account LIMIT 512 FOR UPDATE SKIP LOCKED
+            )""", (hour,))
+        else:
+            db.execute("DELETE FROM account_usage WHERE bucket <= ?", (hour,))
         _add(db, account, now, 1, 0)
     return now
 
 
 def _undo_admission(path: Path, account: str, bucket: int) -> None:
-    with closing(sqlite3.connect(path, timeout=5)) as db, db:
-        apply_sync_pragmas(db)
+    with _connection(path) as db:
         db.execute(
             "UPDATE account_usage SET requests = requests - 1 WHERE account = ? AND bucket = ?",
             (account, bucket),
@@ -303,8 +329,7 @@ def _undo_admission(path: Path, account: str, bucket: int) -> None:
 
 
 def _confirm(path: Path, account: str, tokens: int) -> None:
-    with closing(sqlite3.connect(path, timeout=5)) as db, db:
-        apply_sync_pragmas(db)
+    with _connection(path) as db:
         _add(db, account, int(time.time()), 0, tokens)
 
 
@@ -328,7 +353,7 @@ class AccountUsageAttempt:
         if tokens:
             try:
                 await _in_db_thread(_confirm, self.path, self.account, tokens)
-            except sqlite3.Error as exc:
+            except (sqlite3.Error, psycopg.Error) as exc:
                 self.confirmed = False
                 log.error(f"[ACCOUNT USAGE] Failed to record confirmed tokens: {type(exc).__name__}")
 
@@ -356,10 +381,10 @@ async def begin_account_usage(account: str) -> AccountUsageAttempt | None:
                     await _in_db_thread(_undo_admission, path, account, bucket)
             except AccountUsageLimitReached:
                 pass
-            except (sqlite3.Error, OSError, ValueError) as exc:
+            except (sqlite3.Error, psycopg.Error, OSError, ValueError) as exc:
                 log.error(f"[ACCOUNT USAGE] Failed to cancel admission: {type(exc).__name__}")
             raise
-    except (sqlite3.Error, OSError, ValueError) as exc:
+    except (sqlite3.Error, psycopg.Error, OSError, ValueError) as exc:
         log.error(f"[ACCOUNT USAGE] Admission store unavailable: {type(exc).__name__}")
         raise AccountUsageLimitReached(1, store_unavailable=True) from exc
     return AccountUsageAttempt(path, account) if bucket is not None else None
