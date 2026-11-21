@@ -81,7 +81,6 @@ class AntigravityWarmupStore:
         defaults = await self.get_config("antigravity_warmup_defaults", {})
         results: Dict[str, Dict[str, Any]] = {}
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("PRAGMA busy_timeout = 5000")
             placeholders = ",".join("?" for _ in names)
             async with db.execute(
                 f"SELECT filename FROM antigravity_credentials WHERE filename IN ({placeholders})",
@@ -221,7 +220,6 @@ class AntigravityWarmupStore:
         filename = os.path.basename(filename)
         now = time.time() if now is None else float(now)
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute("BEGIN IMMEDIATE")
             try:
                 async with db.execute(
@@ -357,7 +355,6 @@ class AntigravityWarmupStore:
 
         now = time.time() if now is None else float(now)
         async with sqlite_connect(self._db_path) as db:
-            await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute("BEGIN IMMEDIATE")
             try:
                 async with db.execute(

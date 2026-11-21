@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 import config
 from log import log
+from src.storage.main_postgres import main_dsn
 from src.keeplive import keepalive_service
 from src.models import ConfigSaveRequest
 from src.storage_adapter import get_storage_adapter
@@ -180,7 +181,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         )
         current_config.update(capture_settings())
         webhook_source = (
-            "sqlite" if storage_config.get("dingtalk_webhook_url") is not None else
+            ("postgresql" if main_dsn() else "sqlite") if storage_config.get("dingtalk_webhook_url") is not None else
             "environment" if os.getenv("DINGTALK_WEBHOOK_URL", "").strip() else "unset"
         )
         return JSONResponse(content={"config": current_config, "env_locked": list(env_locked_keys),

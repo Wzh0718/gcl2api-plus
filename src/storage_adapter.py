@@ -1,4 +1,4 @@
-"""SQLite-only storage adapter used by the billing/account-proxy features."""
+"""Main storage adapter for credentials, request admission and billing."""
 
 import asyncio
 import json
@@ -107,7 +107,7 @@ class StorageBackend(Protocol):
 
 
 class StorageAdapter:
-    """固定使用 SQLite 的存储适配器。"""
+    """主库存储适配器。"""
 
     def __init__(self):
         self._backend: Optional["StorageBackend"] = None
@@ -120,12 +120,16 @@ class StorageAdapter:
             if self._initialized:
                 return
 
-            # SQLite manages credentials and billing; model statistics can use PostgreSQL.
             from .storage.sqlite_manager import SQLiteManager
 
-            self._backend = SQLiteManager()
+            from .storage.main_postgres import main_dsn
+            if main_dsn():
+                from .storage.postgres_manager import PostgresManager
+                self._backend = PostgresManager()
+            else:
+                self._backend = SQLiteManager()
             await self._backend.initialize()
-            log.info("Using SQLite for credential and billing storage")
+            log.info(f"Main storage: {type(self._backend).__name__}")
 
             self._initialized = True
 
@@ -591,7 +595,7 @@ class StorageAdapter:
             elif backend_type == "postgresql":
                 info.update(
                     {
-                        "dsn": getattr(self._backend, "_dsn", None),
+                        "schema": getattr(getattr(self._backend, "_db_path", None), "schema", None),
                     }
                 )
 
@@ -608,7 +612,7 @@ async def get_storage_adapter() -> StorageAdapter:
 
     if _storage_adapter is None:
         _storage_adapter = StorageAdapter()
-        await _storage_adapter.initialize()
+    await _storage_adapter.initialize()
 
     return _storage_adapter
 

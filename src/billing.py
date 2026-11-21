@@ -1,6 +1,6 @@
-"""SQLite-backed token billing with optional best-effort Redis mirroring.
+"""Database-backed token billing with optional best-effort Redis mirroring.
 
-The SQLite transaction is the source of truth.  Redis is deliberately kept out
+The ledger transaction is the source of truth.  Redis is deliberately kept out
 of the request path when ``REDIS_URL`` is not configured and never gets an
 in-memory retry queue.
 """
@@ -188,7 +188,7 @@ class _RedisBillingMirror:
         except Exception as exc:
             await self._discard_client()
             self._next_retry_at = time.monotonic() + 30.0
-            log.warning(f"[BILLING] Redis readiness write failed; SQLite retained: {type(exc).__name__}")
+            log.warning(f"[BILLING] Redis readiness write failed; ledger retained: {type(exc).__name__}")
 
     async def mirror(self, *, billing_date: str, api_key_id: str, credential: str, model: str, currency: str,
                      metrics: UsageMetrics, costs: Mapping[str, Decimal], success: bool,
@@ -231,7 +231,7 @@ class _RedisBillingMirror:
         except Exception as exc:
             await self._discard_client()
             self._next_retry_at = time.monotonic() + 30.0
-            log.warning(f"[BILLING] Redis mirror write failed; SQLite retained: {type(exc).__name__}")
+            log.warning(f"[BILLING] Redis mirror write failed; ledger retained: {type(exc).__name__}")
 
     async def replace(self, *, billing_date: str, api_key_id: str, credential: str, model: str, currency: str,
                       metrics: UsageMetrics, costs: Mapping[str, Decimal], success_count: int,
@@ -261,7 +261,7 @@ class _RedisBillingMirror:
         except Exception as exc:
             await self._discard_client()
             self._next_retry_at = time.monotonic() + 30.0
-            log.warning(f"[BILLING] Redis mirror rebuild failed; SQLite retained: {type(exc).__name__}")
+            log.warning(f"[BILLING] Redis mirror rebuild failed; ledger retained: {type(exc).__name__}")
 
     @staticmethod
     def _text(value: Any) -> str:
@@ -290,7 +290,7 @@ class _RedisBillingMirror:
     async def dashboard(
         self, range_name: str, page_size: int = 10, api_key_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Build one bounded dashboard response from Redis without touching SQLite."""
+        """Build one bounded dashboard response from Redis without reading the primary ledger."""
         client = await self._get_client()
         if client is None:
             raise BillingRedisUnavailable("Redis 计费镜像不可用")
@@ -583,7 +583,7 @@ class BillingRecorder:
         return first
 
     async def rebuild_redis(self, days: int = 45) -> int:
-        """Rebuild the bounded Redis mirror from SQLite after Redis recovery."""
+        """Rebuild the bounded Redis mirror from the primary ledger after Redis recovery."""
         client = await self.redis._get_client()
         if client is None:
             return 0

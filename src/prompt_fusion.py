@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from src.storage.main_postgres import main_dsn, sync_connection
 import sqlite3
 import time
 import uuid
@@ -72,6 +73,17 @@ async def enabled(account):
 
 
 def _cache(path, key, value=None):
+    if main_dsn():
+        with sync_connection() as db:
+            now = time.time()
+            if value is None:
+                row = db.execute("SELECT value FROM fusion WHERE key=? AND expires>?", (key, now)).fetchone()
+                return row[0] if row else None
+            db.execute("INSERT INTO fusion VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
+                       "value=excluded.value, expires=excluded.expires", (key, value, now + TTL))
+            db.execute("DELETE FROM fusion WHERE expires <= ? OR key IN "
+                       "(SELECT key FROM fusion ORDER BY expires DESC OFFSET ?)", (now, MAX_ENTRIES))
+            return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -163,6 +175,15 @@ async def _generate(source, model, account, credential, api_key_id):
 
 
 def _lease(path, key, owner, claim):
+    if main_dsn():
+        with sync_connection() as db:
+            if not claim:
+                db.execute("DELETE FROM leases WHERE key=? AND owner=?", (key, owner))
+                return True
+            now = time.time()
+            return db.execute("INSERT INTO leases VALUES (?,?,?) ON CONFLICT(key) DO UPDATE "
+                              "SET owner=excluded.owner, expires=excluded.expires WHERE leases.expires<=?",
+                              (key, owner, now + 65, now)).rowcount == 1
     with sqlite3.connect(path, timeout=5) as db:
         db.execute('CREATE TABLE IF NOT EXISTS leases (key TEXT PRIMARY KEY, owner TEXT, expires REAL)')
         db.execute('BEGIN IMMEDIATE')
