@@ -1322,7 +1322,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     SELECT MIN(usage_resume_at) FROM antigravity_credentials
                     WHERE {where_sql} AND usage_resume_at > ?
                 """
-    _ADVANCE_TURN = """UPDATE antigravity_credentials
+    _ADVANCE_TURN_SQL = """UPDATE antigravity_credentials
                    SET call_count = COALESCE(call_count, 0) + 1,
                        routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
                                        FROM antigravity_credentials),
@@ -1335,7 +1335,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                            ELSE COALESCE(routing_window_count, 0) + 1
                        END,
                        updated_at = unixepoch()
-                   WHERE filename = ?"""
+                   WHERE filename = {target}"""
+    _ADVANCE_TURN = _ADVANCE_TURN_SQL.format(target="?")
 
     @staticmethod
     def _claim_filter(model_name, attempted, credential_name, current_time):
