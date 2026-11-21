@@ -1265,9 +1265,16 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         attempted = set(excluded)
         for _ in range(candidate_limit):
             async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
-                row, resume_at, dormant = await asyncio.to_thread(
+                worker = asyncio.create_task(asyncio.to_thread(
                     self._claim_antigravity_row, model_name, attempted, credential_name
-                )
+                ))
+                try:
+                    row, resume_at, dormant = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # A running sqlite3 call cannot be cancelled. Release the slot
+                    # only after its transaction and connection have closed.
+                    await worker
+                    raise
             if row is None:
                 selection_usage_resume_at.set(resume_at)
                 return None
