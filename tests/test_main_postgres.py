@@ -325,3 +325,22 @@ async def test_partial_pg_schema_fails_closed_and_retries(tmp_path, monkeypatch)
         finally:
             await adapter.close()
             await admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(prefix))
+
+
+async def test_concurrent_key_limits_keep_exact_rpm_and_period_counts(pg_store):
+    service = ApiKeyService(pg_store)
+    key = (await service.create_key(name="Limited"))["api_key"]
+    key_id = (await service.authenticate(key)).api_key_id
+    await service.update_key(key_id, limit_enabled=True, day_rpm=3, night_rpm=3,
+                             day_total=4, night_total=4)
+    now = 1795228394.0
+    admit = pg_store.admit_api_key_request
+    results = await asyncio.gather(*(admit(key_id, now) for _ in range(16)))
+    assert results.count(None) == 3
+    assert results.count("已达每分钟请求上限") == 13
+    assert await admit(key_id, now + 60) is None
+    assert await admit(key_id, now + 61) == "时段总额度已耗尽"
+    async with pg_store._backend._db_path.connect() as db:
+        assert await db.execute_fetchall(
+            "SELECT limit_period_used FROM api_keys WHERE id=?", (key_id,)
+        ) == [(4,)]
