@@ -120,12 +120,12 @@ class StorageAdapter:
             if self._initialized:
                 return
 
-            # PostgreSQL/MongoDB 代码保留在仓库中，但新功能始终固定使用 SQLite。
+            # SQLite manages credentials and billing; model statistics can use PostgreSQL.
             from .storage.sqlite_manager import SQLiteManager
 
             self._backend = SQLiteManager()
             await self._backend.initialize()
-            log.info("Using SQLite storage backend (PostgreSQL/MongoDB settings ignored)")
+            log.info("Using SQLite for credential and billing storage")
 
             self._initialized = True
 
