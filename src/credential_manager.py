@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from log import log
+from src.request_timing import database_timing_scope
 from src.rate_limits import selection_usage_resume_at
 from src.operational_audit import emit as audit, reference, refresh_context, expiry_state
 
@@ -832,9 +833,10 @@ class CredentialManager:
             if success:
                 # 必须等待持久化完成。SQLite 后端会串行化这类轻量条件写入，
                 # 避免高并发成功请求创建无界后台任务和大量数据库文件句柄。
-                await self._storage_adapter._backend.record_success(
-                    credential_name, model_name=model_name, mode=mode
-                )
+                with database_timing_scope("credential_save"):
+                    await self._storage_adapter._backend.record_success(
+                        credential_name, model_name=model_name, mode=mode
+                    )
 
             elif error_code:
                 # 记录错误码和错误信息
@@ -876,12 +878,13 @@ class CredentialManager:
                     self._storage_adapter._backend, "increment_model_stats", None
                 )
                 if increment:
-                    await increment(
-                        credential_name, model_name, success,
-                        status_code=error_code, mode=mode,
-                        upstream_seconds=upstream_seconds,
-                        gateway_seconds=gateway_seconds,
-                    )
+                    with database_timing_scope("model_stats"):
+                        await increment(
+                            credential_name, model_name, success,
+                            status_code=error_code, mode=mode,
+                            upstream_seconds=upstream_seconds,
+                            gateway_seconds=gateway_seconds,
+                        )
 
         except Exception as e:
             log.error(f"Error recording API call result for {credential_name}: {e}")

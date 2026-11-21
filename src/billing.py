@@ -511,34 +511,36 @@ class BillingRecorder:
                     upstream_request: Optional[dict] = None) -> bool:
         if not request_id:
             return False
-        from src.request_timing import mark_stage
+        from src.request_timing import database_timing_scope, mark_stage, measure_phase
         mark_stage("billing_started")
         metrics = usage or calculate_usage_metrics(usage_metadata)
-        price = await self._price_for(model)
+        with measure_phase("billing_price_lookup"):
+            price = await self._price_for(model)
         costs = calculate_costs(metrics, price)
         now = timestamp.astimezone(SHANGHAI) if timestamp else datetime.now(SHANGHAI)
         billing_date = now.date().isoformat()
         currency = str(price.get("currency") or self.currency)
-        first = await self.storage.record_billing_usage(
-            request_id=request_id,
-            api_key_id=api_key_id,
-            billing_date=billing_date,
-            credential_name=credential_name,
-            model=model,
-            currency=currency,
-            input_tokens=metrics.input_tokens,
-            output_tokens=metrics.output_tokens,
-            cache_tokens=metrics.cache_tokens,
-            thought_tokens=metrics.thought_tokens,
-            total_tokens=metrics.total_tokens,
-            input_cost=f"{costs['input_cost']:.8f}",
-            output_cost=f"{costs['output_cost']:.8f}",
-            cache_cost=f"{costs['cache_cost']:.8f}",
-            total_cost=f"{costs['total_cost']:.8f}",
-            success=success,
-            unknown_usage=metrics.unknown_usage,
-            dedupe_ttl_seconds=self.dedupe_ttl_seconds,
-        )
+        with database_timing_scope("billing"):
+            first = await self.storage.record_billing_usage(
+                request_id=request_id,
+                api_key_id=api_key_id,
+                billing_date=billing_date,
+                credential_name=credential_name,
+                model=model,
+                currency=currency,
+                input_tokens=metrics.input_tokens,
+                output_tokens=metrics.output_tokens,
+                cache_tokens=metrics.cache_tokens,
+                thought_tokens=metrics.thought_tokens,
+                total_tokens=metrics.total_tokens,
+                input_cost=f"{costs['input_cost']:.8f}",
+                output_cost=f"{costs['output_cost']:.8f}",
+                cache_cost=f"{costs['cache_cost']:.8f}",
+                total_cost=f"{costs['total_cost']:.8f}",
+                success=success,
+                unknown_usage=metrics.unknown_usage,
+                dedupe_ttl_seconds=self.dedupe_ttl_seconds,
+            )
         mark_stage("billing_saved")
         if first:
             was_connected = self.redis.client is not None

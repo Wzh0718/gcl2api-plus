@@ -100,3 +100,13 @@ test('legacy records without stage timing retain the original metrics', () => {
     assert.match(html, /响应等待 28\.24s/);
     assert.doesNotMatch(html, /首次调用上游前|首次至末次|上游末包至下游首包/);
 });
+
+test('settlement tooltip renders only measured phases and converts milliseconds once', () => {
+    const html = latencyCell({timing_details: {phase_ms: {
+        credential_save_pg_pool: 1250, model_stats_pg_sql: 0, billing_price_lookup: 3,
+    }}});
+    assert.match(html, /凭证保存等连接 1\.25s/);
+    assert.match(html, /模型统计 SQL 0\.00ms/);
+    assert.match(html, /计费取价 3\.00ms/);
+    assert.doesNotMatch(html, /凭证保存 SQL|模型统计等连接|计费 SQL/);
+});

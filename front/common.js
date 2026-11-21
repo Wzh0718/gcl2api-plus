@@ -3555,6 +3555,16 @@ function _cmLatencyCell(row) {
             tip.push(`上游末包至下游首包 ${format(firstByte - end)}`);
         }
     }
+    const phases = row.timing_details?.phase_ms || {};
+    for (const [key, label] of [
+        ['credential_save_pg_pool', '凭证保存等连接'], ['credential_save_pg_sql', '凭证保存 SQL'],
+        ['model_stats_pg_pool', '模型统计等连接'], ['model_stats_pg_sql', '模型统计 SQL'],
+        ['billing_price_lookup', '计费取价'],
+        ['billing_pg_pool', '计费等连接'], ['billing_pg_sql', '计费 SQL'],
+    ]) {
+        if (measured(phases[key])) tip.push(`${label} ${format(phases[key] / 1000)}`);
+    }
+    if (row.timing_id && Object.keys(phases).length) tip.push(`timing_id ${row.timing_id}`);
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
     return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
