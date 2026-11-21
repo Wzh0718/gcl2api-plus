@@ -10,14 +10,16 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 from psycopg import sql
+from psycopg_pool import AsyncConnectionPool
 
 from log import log
 from src.api_key_schedule import ApiKeySchedule
 
-from src.storage.main_postgres import PostgresDatabase, close_sync_pool, main_dsn, open_sync_pool
+from src.storage.main_postgres import (PostgresDatabase, close_sync_pool, connection_options,
+                                       main_dsn, open_sync_pool, pg_query, safe_database_errors)
 from src.storage.pg_model_stats import PostgresModelStats
 from src.storage.refresh_import_queue import RefreshImportQueue
-from src.request_timing import measure_pg, measure_phase
+from src.request_timing import add_phase_ms, measure_pg, measure_phase
 from src.storage.sqlite_manager import ROUTING_WINDOW_SECONDS, SQLiteManager
 
 DDL = Path(__file__).resolve().parents[2] / "scripts" / "postgres"
@@ -33,8 +35,13 @@ class PostgresManager(SQLiteManager):
             self._credentials_dir = os.getenv("CREDENTIALS_DIR", "./creds")
             self._db_path = database = PostgresDatabase(main_dsn())
             self.refresh_import_queue = RefreshImportQueue(database, self._credentials_dir)
+            self._claim_pool = AsyncConnectionPool(
+                main_dsn(), min_size=0, max_size=1, open=False,
+                kwargs={**connection_options(database.schema), "autocommit": True},
+            )
             await database.pool.open()
             try:
+                await self._claim_pool.open()
                 async with database.pool.connection() as conn:
                     await conn.execute("SELECT pg_advisory_xact_lock(72210438)")
                     schema = sql.Identifier(database.schema)
@@ -81,6 +88,7 @@ class PostgresManager(SQLiteManager):
                 open_sync_pool(self._sync_key)
                 self._initialized = True
             except BaseException:
+                await self._claim_pool.close()
                 await database.pool.close()
                 raise
 
@@ -92,6 +100,7 @@ class PostgresManager(SQLiteManager):
             await super().close()
         finally:
             close_sync_pool(self._sync_key)
+            await self._claim_pool.close()
             await self._db_path.pool.close()
 
     async def get_api_key_by_prefix(self, key_prefix):
@@ -112,6 +121,11 @@ class PostgresManager(SQLiteManager):
         return reason
 
     async def _claim_next(self, model_name, attempted, credential_name):
+        from config import get_antigravity_dormant_enabled_sync
+
+        if not get_antigravity_dormant_enabled_sync():
+            return await self._claim_active(model_name, attempted, credential_name)
+        # The Python quiet-hours decision must precede advancing a dormant account.
         from src.antigravity_pacing import is_dormant
 
         async with AsyncExitStack() as stack:
@@ -139,6 +153,48 @@ class PostgresManager(SQLiteManager):
                 await db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
                 await db.commit()
                 return row, 0, False
+
+    async def _claim_active(self, model_name, attempted, credential_name):
+        # One connection per worker is reserved for the already-serialized rotation.
+        # Each command gets a new READ COMMITTED snapshot after the advisory lock.
+        async with AsyncExitStack() as stack:
+            with measure_phase("selection_lock_wait"):
+                # Waiters retain request cancellation semantics instead of expiring
+                # as failed pool checkouts when a burst fills the rotation queue.
+                with measure_pg("local_queue"):
+                    await stack.enter_async_context(self._selection_lock)
+                with measure_pg("claim_pool"):
+                    conn = await stack.enter_async_context(self._claim_pool.connection())
+            now = time.time()
+            cutoff = now - ROUTING_WINDOW_SECONDS
+            where, params = self._claim_filter(model_name, attempted, credential_name, now)
+            candidate = self._SELECT_CREDENTIAL.format(where_sql=where) + " FOR UPDATE"
+            resume = self._RESUME_CREDENTIAL.format(where_sql=where)
+            advance = self._ADVANCE_TURN_SQL.format(target="(SELECT filename FROM candidate)")
+            query = f"""
+                WITH candidate AS ({candidate}), claimed AS (
+                    {advance}
+                    RETURNING filename, credential_data, model_cooldowns, enable_credit,
+                              proxy_mode, proxy_url, proxy_group_id
+                )
+                SELECT c.*, CASE WHEN c.filename IS NULL THEN ({resume}) END,
+                       extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000
+                FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed c ON true"""
+            with safe_database_errors(), measure_pg("claim_roundtrip"):
+                async with conn.pipeline():
+                    async with conn.transaction():
+                        lock = await conn.execute(
+                            "SELECT extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000 "
+                            "FROM pg_advisory_xact_lock(72210440)"
+                        )
+                        result = await conn.execute(pg_query(query), (*params, cutoff, now, cutoff, *params))
+            (lock_ms,) = await lock.fetchone()
+            row = await result.fetchone()
+            add_phase_ms("credential_pg_advisory_server", lock_ms)
+            add_phase_ms("selection_lock_wait", lock_ms)
+            add_phase_ms("credential_pg_claim_sql_server", row[-1])
+            add_phase_ms("selection_locked_work", row[-1])
+            return (row[:7] if row[0] is not None else None), row[-2] or 0, False
 
     @staticmethod
     def _money_e8_sql(column):

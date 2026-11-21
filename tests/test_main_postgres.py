@@ -344,3 +344,37 @@ async def test_concurrent_key_limits_keep_exact_rpm_and_period_counts(pg_store):
         assert await db.execute_fetchall(
             "SELECT limit_period_used FROM api_keys WHERE id=?", (key_id,)
         ) == [(4,)]
+
+
+async def test_pipelined_claim_serializes_workers_and_preserves_resume(pg_store, monkeypatch):
+    from collections import Counter
+    import time
+    from src.request_timing import RequestTiming, request_timing
+
+    monkeypatch.setattr("config.get_antigravity_dormant_enabled_sync", lambda: False)
+    names = ["a.json", "b.json"]
+    for name in names:
+        assert await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
+    other = StorageAdapter()
+    await other.initialize()
+    db = pg_store._backend
+    try:
+        workers = [db, other._backend]
+        results = await asyncio.gather(*(
+            workers[i % 2]._claim_next("model", set(), None) for i in range(40)
+        ))
+        assert Counter(row[0] for row, _, _ in results) == {name: 20 for name in names}
+        until = int(time.time()) + 300
+        async with db._db_path.connect() as session:
+            await session.execute("UPDATE antigravity_credentials SET usage_resume_at=?", (until,))
+            await session.commit()
+        state = RequestTiming()
+        token = request_timing.set(state)
+        try:
+            assert await db._claim_next("model", {"a.json"}, "b.json") == (None, until, False)
+            assert state.phase_ms["credential_pg_advisory_server"] >= 0
+            assert state.phase_ms["credential_pg_claim_sql_server"] >= 0
+        finally:
+            request_timing.reset(token)
+    finally:
+        await other.close()

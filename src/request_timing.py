@@ -71,6 +71,12 @@ def database_timing_scope(name):
         _database_scope.reset(token)
 
 
+def add_phase_ms(name, milliseconds):
+    state = request_timing.get()
+    if state is not None:
+        state.phase_ms[name] = state.phase_ms.get(name, 0.0) + milliseconds
+
+
 def measure_pg(operation):
     scope = _database_scope.get()
     return measure_phase(f"{scope}_pg_{operation}") if scope else nullcontext()
