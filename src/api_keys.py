@@ -413,12 +413,14 @@ class ApiKeyService:
             str(record.get("secret_hash") or ""), hash_api_key(api_key)
         ):
             raise ApiKeyAuthError(403, "密钥错误")
-        await self.storage.rollover_api_key_quota(
-            record["id"], month_start=_month_start(current), now=current.timestamp()
-        )
-        record = await self.storage.get_api_key_record(record["id"])
-        if record is None:
-            raise ApiKeyAuthError(403, "密钥错误")
+        month_start = _month_start(current)
+        if record["reset_mode"] == "monthly" and record["quota_period_start"] != month_start:
+            await self.storage.rollover_api_key_quota(
+                record["id"], month_start=month_start, now=current.timestamp()
+            )
+            record = await self.storage.get_api_key_record(record["id"])
+            if record is None:
+                raise ApiKeyAuthError(403, "密钥错误")
         if record["status"] in {"disabled", "revoked"}:
             raise ApiKeyAuthError(403, "密钥已停用或吊销")
         if record.get("expires_at") is not None and float(record["expires_at"]) <= current.timestamp():

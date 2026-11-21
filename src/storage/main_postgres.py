@@ -216,6 +216,19 @@ class PostgresDatabase:
                 with measure_pg("transaction"):
                     await conn.rollback()
 
+    async def single_row(self, query, values):
+        """Run one atomic statement; release its locks before returning to Python."""
+        async with AsyncExitStack() as stack:
+            with measure_pg("pool"):
+                conn = await stack.enter_async_context(self.pool.connection())
+            await conn.set_autocommit(True)
+            try:
+                with safe_database_errors(), measure_pg("sql"):
+                    result = await conn.execute(query, values)
+                    return await result.fetchone()
+            finally:
+                await conn.set_autocommit(False)
+
     async def execute_fetchall(self, query, values=()):
         async with self.connect() as db:
             return await db.execute_fetchall(query, values)
