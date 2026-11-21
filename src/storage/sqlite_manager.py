@@ -33,6 +33,16 @@ from src.storage.refresh_import_queue import RefreshImportQueue
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
+EXCLUSIVE_PROBE_RETRY_SECONDS = 60
+# Only definite eligibility failures and undiagnosed probe errors skip selection.
+# A failed IP echo read is advisory; readiness still validates the bound route.
+_EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
+    h.eligibility_status = 'error' AND COALESCE(h.eligibility_reason, '') NOT IN (
+        'IP echo read failed: ReadError', 'IP echo read failed: ReadTimeout',
+        'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout'
+    )))"""
+# 503 连续失败退避阶梯（秒），最后一档之外统一使用配置上限。
+_TRANSIENT_BACKOFF_STEPS = (60, 120, 240, 480, 900)
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -1387,6 +1397,20 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                   AND w.status IN ('paused', 'account_forbidden')
             )
             AND COALESCE(transient_hold_until, 0) <= ?"""
+        # The exclusive gate would reject these recent results after claiming.
+        # Leave other accounts all their selection attempts; recheck this route
+        # after a short interval even when the success TTL is much longer.
+        where_sql += f""" AND NOT EXISTS (
+            SELECT 1 FROM antigravity_account_health h
+            WHERE h.credential_name = antigravity_credentials.filename
+              AND {_EXCLUSIVE_PROBE_FAILURE}
+              AND h.eligibility_checked_at BETWEEN ? AND ?
+              AND (fixed_proxy_ip IS NOT NULL OR EXISTS (
+                SELECT 1 FROM proxy_groups g WHERE g.id = proxy_group_id
+                  AND g.exclusive_assignment = 1
+              ))
+        )"""
+        params.extend((current_time - EXCLUSIVE_PROBE_RETRY_SECONDS, current_time))
         if credential_name:
             where_sql += " AND filename = ?"
             params.append(credential_name)
@@ -4760,8 +4784,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         SELECT c.filename, c.disabled, c.error_codes, c.last_success,
                                c.user_email, c.model_cooldowns, c.tier, c.enable_credit,
                                c.call_count, c.rotation_order, COALESCE(w.status, 'off'),
-                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at
+                               c.routing_window_started_at, c.routing_window_count, c.routing_turn, c.usage_resume_at,
+                               c.transient_hold_until,
+                               CASE WHEN (c.fixed_proxy_ip IS NOT NULL OR g.exclusive_assignment = 1)
+                                    AND {_EXCLUSIVE_PROBE_FAILURE}
+                                    THEN h.eligibility_checked_at + {EXCLUSIVE_PROBE_RETRY_SECONDS} END
                         FROM {table_name} c
+                        LEFT JOIN proxy_groups g ON g.id = c.proxy_group_id
+                        LEFT JOIN antigravity_account_health h ON h.credential_name = c.filename
                         LEFT JOIN antigravity_warmup_accounts w
                           ON w.credential_name = c.filename
                     """) as cursor:
@@ -4794,6 +4824,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                 "rotation_order": max(int(row[9] or 0), 0),
                                 "warmup_status": row[10],
                                 "usage_resume_at": row[14],
+                                "transient_hold_until": row[15],
+                                "probe_retry_at": row[16],
                                 "routing_turn": max(int(row[13] or 0), 0),
                                 "routing_count": (
                                     max(int(row[12] or 0), 0)
@@ -4900,7 +4932,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                h.egress_ip, h.egress_country, h.binding_status,
                                h.eligibility_status, h.eligibility_checked_at,
                                h.last_403_category, h.last_403_reason,
-                               h.eligibility_reason
+                               h.eligibility_reason, a.transient_hold_until
                         FROM {table_name} a
                         LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
                         LEFT JOIN antigravity_account_health h
@@ -4963,6 +4995,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         }
 
                         if mode != "geminicli":
+                            summary["transient_hold_until"] = row[21]
                             summary["enable_credit"] = bool(row[8]) if row[8] is not None else False
                             summary["proxy_mode"] = row[9] or "inherit"
                             summary["proxy_group_id"] = row[10]
@@ -5479,30 +5512,70 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """把账号放进瞬时冷却窗口，不改 ``disabled``。
 
         上游 5xx 是服务端瞬时错误，不构成封号证据：选择器在窗口内跳过该账号，
-        窗口到期自动放回；每命中一次累计 ``transient_error_count``，
-        恢复后按正常轮转顺序选号。
+        窗口到期自动放回。503 按连续失败次数退避（60/120/240/480 秒，随后取
+        ``seconds`` 配置上限），500/502 直接使用配置时长；命中一次累计
+        ``transient_error_count``，成功请求清零后重新从最短一档开始。
+
+        同一窗口内的并发失败不叠加、不推进阶梯：先读后写在同一个事务里完成，
+        后到的失败只会返回已有截止时间。这保证「一次 503 一定把账号移出轮转」，
+        同时避免多 worker 把一次故障放大成整段上限冷却。
         """
         self._ensure_initialized()
         filename = os.path.basename(filename)
         now = time.time()
-        hold_until = now + max(float(seconds or 0), 0.0)
+        cap = max(float(seconds or 0), 0.0)
+        if cap <= 0:
+            return 0.0
+        hold_until = 0.0
+        advanced = False
         try:
             async with sqlite_connect(self._db_path) as db:
-                await db.execute("""
-                    UPDATE antigravity_credentials
-                    SET transient_hold_until = CASE
-                            WHEN COALESCE(transient_hold_until, 0) > ? THEN transient_hold_until
-                            ELSE ? END,
-                        transient_error_count = COALESCE(transient_error_count, 0) + 1,
-                        transient_error_at = ?,
-                        updated_at = ?
-                    WHERE filename = ?
-                """, (hold_until, hold_until, now, now, filename))
+                # Serialize one account's ladder across workers: SQLite write lock
+                # or the shared PostgreSQL advisory lock.
+                await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    """SELECT COALESCE(transient_hold_until, 0),
+                              COALESCE(transient_error_count, 0)
+                       FROM antigravity_credentials WHERE filename = ?""",
+                    (filename,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return 0.0
+                current_hold = float(row[0] or 0.0)
+                count = max(int(row[1] or 0), 0)
+                if current_hold > now:
+                    if status_code == 503 or current_hold - now >= cap:
+                        # Same 503 window (or the configured 500/502 hold is no
+                        # shorter): keep it, do not advance the ladder.
+                        await db.rollback()
+                        return current_hold
+                    delay = cap  # 500/502 may lengthen its own hold
+                elif status_code == 503:
+                    delay = min(
+                        _TRANSIENT_BACKOFF_STEPS[
+                            min(count, len(_TRANSIENT_BACKOFF_STEPS) - 1)
+                        ],
+                        cap,
+                    )
+                else:
+                    delay = cap
+                hold_until = now + delay
+                await db.execute(
+                    """UPDATE antigravity_credentials
+                       SET transient_hold_until = ?, transient_error_count = ?,
+                           transient_error_at = ?, updated_at = ?
+                       WHERE filename = ?""",
+                    (hold_until, count + 1, now, now, filename),
+                )
                 await db.commit()
-            log.warning(
-                f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "
-                f"{int(hold_until - now)}s（不封号）"
-            )
+                advanced = True
+            if advanced:
+                log.warning(
+                    f"[ANTIGRAVITY TRANSIENT] {filename} 上游 {status_code} 触发就地冷却 "
+                    f"{int(hold_until - now)}s（不封号）"
+                )
         except Exception as e:
             log.error(f"Error holding transient credential {filename}: {e}")
         return hold_until

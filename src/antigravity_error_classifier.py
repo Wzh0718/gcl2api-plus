@@ -26,6 +26,15 @@ _LOCATION_MARKERS = (
     "location restriction",
     "geo restriction",
     "geographic restriction",
+    # 上游以机器码形式返回地区拒绝（生产实测 403 体含 UNSUPPORTED_LOCATION）。
+    # 归一化只做小写和空白折叠，下划线代码必须显式列出，否则会被当成未知 403。
+    "unsupported_location",
+    "unsupported_region",
+    "location_not_supported",
+    "location_restricted",
+    "location_unsupported",
+    "region_not_supported",
+    "unsupported_country",
 )
 
 _MODEL_MARKERS = (

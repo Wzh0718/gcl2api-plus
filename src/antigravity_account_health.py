@@ -159,6 +159,21 @@ async def check_antigravity_account_health(
             return parse_egress_identity(payload)
 
         observation = await observe_egress(ip_check_url, proxy_url, fetch_echo, parse_echo)
+        if observation.error_type in {"ReadError", "ReadTimeout"}:
+            # The echo service could not be read. Preserve any stronger
+            # negative evidence and distinguish this from a failed binding.
+            if (account_health_has_negative_evidence(current)
+                    or current.get("eligibility_status") in {"geo_blocked", "validation_required"}):
+                return await storage.update_antigravity_account_health(
+                    credential_name, eligibility_checked_at=timestamp,
+                )
+            return await storage.update_antigravity_account_health(
+                credential_name,
+                binding_status="unchecked",
+                eligibility_status="error",
+                eligibility_reason=f"IP echo read failed: {observation.error_type}",
+                eligibility_checked_at=timestamp,
+            )
         if observation.error_type:
             raise ValueError(observation.error_type)
         if observation.status != 200:
