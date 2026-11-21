@@ -252,13 +252,16 @@ class PostgresManager(SQLiteManager):
                     updated_at = unixepoch()
                 FROM turns t WHERE a.filename = t.filename
                 RETURNING a.filename, a.credential_data, a.model_cooldowns, a.enable_credit,
-                          a.proxy_mode, a.proxy_url, a.proxy_group_id, t.pos
+                          a.proxy_mode, a.proxy_url, a.proxy_group_id, a.bound_proxy_node_id, a.fixed_proxy_ip, t.pos
             )
-            SELECT c.filename, c.credential_data, c.model_cooldowns, c.enable_credit,
-                   c.proxy_mode, c.proxy_url, c.proxy_group_id,
-                   CASE WHEN c.filename IS NULL THEN ({resume}) END,
+            SELECT a.filename, a.credential_data, a.model_cooldowns, a.enable_credit,
+                   a.proxy_mode, a.proxy_url, a.proxy_group_id, {self._NETWORK_COLUMNS},
+                   to_jsonb(h), CASE WHEN a.filename IS NULL THEN ({resume}) END,
                    extract(epoch FROM clock_timestamp()-statement_timestamp())::float8*1000
-            FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed c ON true ORDER BY c.pos"""
+            FROM (VALUES (1)) AS stub(i) LEFT JOIN claimed a ON true
+            {self._NETWORK_JOINS}
+            LEFT JOIN antigravity_account_health h ON h.credential_name = a.filename
+            ORDER BY a.pos"""
         with safe_database_errors():
             async with conn.pipeline():
                 async with conn.transaction():
@@ -269,7 +272,11 @@ class PostgresManager(SQLiteManager):
                     result = await conn.execute(pg_query(query), (*params, count, count, cutoff, cutoff, now, *params))
             (lock_ms,) = await lock.fetchone()
             records = await result.fetchall()
-        rows = [row[:7] for row in records if row[0] is not None]
+        rows = []
+        for row in records:
+            if row[0] is not None:
+                network = self._resolved_network(self._network_from_row(row[7:-3]))
+                rows.append((*row[:7], network, row[-3] or {}))
         resume_at = records[0][-2] or 0
         sql_ms = max(row[-1] for row in records)
         return rows, resume_at, lock_ms, sql_ms
@@ -281,6 +288,39 @@ class PostgresManager(SQLiteManager):
     @staticmethod
     def _call_record_aggregation_source(since_ts, until_ts):
         return "call_records"
+
+    async def record_success(self, filename, model_name=None, mode="geminicli"):
+        self._ensure_initialized()
+        name = os.path.basename(filename)
+        try:
+            if mode == "antigravity":
+                (lock_ms,) = await self._db_path.single_row(
+                    "SELECT gcli_record_antigravity_success(%s, %s)", (name, model_name or None),
+                    operation="record_success",
+                )
+                add_phase_ms("success_lock_wait", lock_ms)
+            elif mode == "geminicli":
+                # GeminiCLI clears even an active cooldown for the successful model.
+                await self._db_path.single_row("""
+                    UPDATE credentials SET
+                        last_success = CASE WHEN coalesce(error_codes,'') NOT IN ('','[]')
+                            THEN floor(extract(epoch FROM statement_timestamp())) ELSE last_success END,
+                        error_messages = CASE WHEN coalesce(error_codes,'') NOT IN ('','[]')
+                            THEN '{}' ELSE error_messages END,
+                        error_codes = CASE WHEN coalesce(error_codes,'') NOT IN ('','[]')
+                            THEN '[]' ELSE error_codes END,
+                        model_cooldowns = CASE WHEN model_cooldowns::jsonb ? %s
+                            THEN (model_cooldowns::jsonb - %s::text)::text ELSE model_cooldowns END,
+                        updated_at = floor(extract(epoch FROM statement_timestamp()))
+                    WHERE filename = %s AND (coalesce(error_codes,'') NOT IN ('','[]')
+                                             OR model_cooldowns::jsonb ? %s)
+                    RETURNING filename""", (model_name or None, model_name or None, name, model_name or None),
+                    operation="record_success",
+                )
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
+        except Exception as exc:
+            log.error(f"Error recording success for {name}: {type(exc).__name__}")
 
     async def set_model_cooldown(self, filename, model_name, cooldown_until, mode="geminicli"):
         self._ensure_initialized()

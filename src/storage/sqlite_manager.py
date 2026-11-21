@@ -37,6 +37,16 @@ ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
 
+class SelectedAntigravityCredential(dict):
+    """One selection's trusted routing evidence, separate from persisted credential JSON."""
+
+    def __init__(self, data, filename, network, health):
+        super().__init__(data)
+        self.filename = filename
+        self.network = network
+        self.health = health
+
+
 def _active_model_cooldowns(
     model_cooldowns: Dict[str, Any], current_time: float
 ) -> Dict[str, float]:
@@ -1282,12 +1292,20 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             if dormant:
                 attempted.add(row[0])
                 continue
-            filename, credential_json, _, enable_credit, proxy_mode, proxy_url, proxy_group_id = row
+            filename, credential_json, _, enable_credit, proxy_mode, proxy_url, proxy_group_id = row[:7]
             credential_data = json.loads(credential_json)
             credential_data["enable_credit"] = bool(enable_credit)
             credential_data["proxy_mode"] = proxy_mode or "inherit"
             credential_data["proxy_url"] = proxy_url
             credential_data["proxy_group_id"] = proxy_group_id
+            if len(row) > 7:
+                network, health = row[7:]
+                if network is not None:
+                    if (network.get("fixed_proxy_ip") or network["proxy_mode"] == "group") and not network.get("proxy_url"):
+                        attempted.add(filename)
+                        continue
+                    credential_data.update(network)
+                    return filename, SelectedAntigravityCredential(credential_data, filename, network, health)
             if credential_data["proxy_mode"] == "group":
                 if not proxy_group_id:
                     attempted.add(filename)
@@ -1752,6 +1770,16 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             log.error(f"Error getting credential {filename}: {e}")
             return None
 
+    _NETWORK_COLUMNS = """a.proxy_mode, a.proxy_url, a.proxy_group_id,
+                          a.bound_proxy_node_id, n.name, n.proxy_url,
+                          a.fixed_proxy_ip IS NOT NULL OR COALESCE(g.exclusive_assignment, 0) <> 0,
+                          COALESCE(g.enabled = 1 AND n.enabled = 1 AND n.group_id = a.proxy_group_id
+                            AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
+                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), FALSE),
+                          a.fixed_proxy_ip, n.expires_at"""
+    _NETWORK_JOINS = """LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
+                   LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id"""
+
     async def get_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
         """读取账号级代理配置，不返回完整凭证内容。"""
         self._ensure_initialized()
@@ -1765,20 +1793,15 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             }
         async with sqlite_connect(self._db_path, single_select=True) as db:
             async with db.execute(
-                """SELECT a.proxy_mode, a.proxy_url, a.proxy_group_id,
-                          a.bound_proxy_node_id, n.name, n.proxy_url,
-                          a.fixed_proxy_ip IS NOT NULL OR COALESCE(g.exclusive_assignment, 0) <> 0,
-                          COALESCE(g.enabled = 1 AND n.enabled = 1 AND n.group_id = a.proxy_group_id
-                            AND (n.cooldown_until IS NULL OR n.cooldown_until <= unixepoch())
-                            AND (n.expires_at IS NULL OR n.expires_at > unixepoch()), FALSE),
-                          a.fixed_proxy_ip, n.expires_at
-                   FROM antigravity_credentials a
-                   LEFT JOIN proxy_group_nodes n ON n.id = a.bound_proxy_node_id
-                   LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
-                   WHERE a.filename = ?""",
+                f"SELECT {self._NETWORK_COLUMNS} FROM antigravity_credentials a "
+                f"{self._NETWORK_JOINS} WHERE a.filename = ?",
                 (filename,),
             ) as cursor:
                 row = await cursor.fetchone()
+        return self._network_from_row(row)
+
+    @staticmethod
+    def _network_from_row(row):
         if not row:
             return {
                 "proxy_mode": "inherit",
@@ -1799,13 +1822,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             "bound_proxy_expires_at": row[9],
         }
 
-    async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
-        """Resolve and persist the effective account proxy at request time."""
-        self._ensure_initialized()
-        filename = os.path.basename(filename)
-        network = await self.get_credential_network(filename, mode=mode)
-        if mode != "antigravity":
-            return network
+    @staticmethod
+    def _resolved_network(network):
+        """Return a usable binding snapshot, or None when a new node must be selected."""
         if network.get("fixed_proxy_ip"):
             available = network["bound_proxy_available"]
             return {
@@ -1828,6 +1847,20 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     "proxy_node_name": network["bound_proxy_node_name"],
                     "proxy_expires_at": expires_at,
                 }
+            return None
+        return network
+
+    async def resolve_credential_network(self, filename: str, mode: str = "antigravity") -> Dict[str, Any]:
+        """Resolve and persist the effective account proxy at request time."""
+        self._ensure_initialized()
+        filename = os.path.basename(filename)
+        network = await self.get_credential_network(filename, mode=mode)
+        if mode != "antigravity":
+            return network
+        resolved = self._resolved_network(network)
+        if resolved is not None:
+            return resolved
+        if network["proxy_mode"] == "group" and network.get("proxy_group_id"):
             async with sqlite_connect(self._db_path) as db:
                 await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(

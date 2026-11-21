@@ -421,10 +421,6 @@ class CredentialManager:
                     credential_data["tier"] = state.get("tier") or "pro"
                     credential_data["user_email"] = state.get("user_email")
 
-                network = await self._storage_adapter.resolve_credential_network(
-                    filename, mode="antigravity"
-                )
-                credential_data.update(network)
                 ready_data = await self.ensure_antigravity_account_ready(
                     filename, credential_data
                 )
@@ -505,9 +501,18 @@ class CredentialManager:
         from .antigravity_account_health import account_health_has_negative_evidence
         from .antigravity_account_health import account_health_is_fresh_eligible
 
-        network = await self._storage_adapter.resolve_credential_network(
-            credential_name, mode="antigravity"
-        )
+        from src.storage.sqlite_manager import SelectedAntigravityCredential
+
+        selected = isinstance(credential_data, SelectedAntigravityCredential) and credential_data.filename == credential_name
+        if selected:
+            expiry = credential_data.network.get("bound_proxy_expires_at")
+            selected = not force and (expiry is None or expiry > time.time())
+        if selected:
+            network = credential_data.network
+            health = credential_data.health
+        else:
+            network = await self._storage_adapter.resolve_credential_network(credential_name, mode="antigravity")
+            health = None
         if network.get("fixed_proxy_ip") and not network.get("proxy_url"):
             return None
         exclusive = bool(network.get("exclusive_assignment"))
@@ -522,9 +527,8 @@ class CredentialManager:
             )
             return None
 
-        health = await self._storage_adapter.get_antigravity_account_health(
-            credential_name
-        )
+        if health is None:
+            health = await self._storage_adapter.get_antigravity_account_health(credential_name)
         ttl_seconds = await get_antigravity_network_check_ttl_seconds()
         if not force and account_health_check_is_fresh(
             health, ttl_seconds=ttl_seconds
@@ -565,6 +569,7 @@ class CredentialManager:
         result = await self.check_antigravity_account_health(
             credential_name,
             credential_data,
+            network=network, current_health=health,
         )
         if exclusive and not account_health_is_fresh_eligible(
             result, ttl_seconds=ttl_seconds
@@ -598,6 +603,7 @@ class CredentialManager:
         self,
         credential_name: str,
         credential_data: Optional[Dict[str, Any]] = None,
+        *, network=None, current_health=None,
     ) -> Dict[str, Any]:
         """Run one explicit IP and eligibility check, independent of gating mode."""
         await self._ensure_initialized()
@@ -620,10 +626,10 @@ class CredentialManager:
             if not refreshed:
                 raise ValueError("Antigravity access token refresh failed")
             credential_data = refreshed
+            network = current_health = None
 
-        network = await self._storage_adapter.resolve_credential_network(
-            credential_name, mode="antigravity"
-        )
+        if network is None:
+            network = await self._storage_adapter.resolve_credential_network(credential_name, mode="antigravity")
         credential_data = dict(credential_data)
         credential_data.update(network)
         access_token = credential_data.get("access_token") or credential_data.get("token")
@@ -638,6 +644,7 @@ class CredentialManager:
                 ip_check_url=await get_antigravity_egress_ip_check_url(),
                 api_base_url=await get_antigravity_api_url(),
                 credential_data=credential_data,
+                current_health=current_health,
             )
         )
 
