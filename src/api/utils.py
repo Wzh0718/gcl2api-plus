@@ -67,6 +67,28 @@ async def handle_auto_ban(
         )
 
 
+async def _hold_transient(
+    credential_manager: CredentialManager,
+    status_code: int,
+    credential_name: str,
+) -> None:
+    """Place the account in a short cooldown instead of banning it.
+
+    Never raises: a failed hold must not turn a retryable 5xx into a request
+    failure. The window is chosen by ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``.
+    """
+    hold = getattr(credential_manager, "hold_transient", None)
+    if hold is None or not credential_name:
+        return
+    try:
+        await hold(credential_name, status_code=status_code, mode="antigravity")
+    except Exception as exc:  # noqa: BLE001 - retry path must stay intact
+        log.warning(
+            f"[ANTIGRAVITY TRANSIENT] hold failed for {credential_name}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+
 async def handle_error_with_retry(
     credential_manager: CredentialManager,
     status_code: int,
@@ -102,6 +124,19 @@ async def handle_error_with_retry(
     # AGY 400 is a request error, not sufficient evidence to disable an account.
     # Retrying the same invalid payload across the pool can disable every account.
     if mode == "antigravity" and status_code == 400:
+        return False
+
+    # 上游 5xx 是服务端瞬时错误，不构成账号证据：就地冷却该账号（默认 600s），
+    # 本次请求换号重试。放在自动封禁之前，保证配置里残留 500/502/503 也不生效。
+    if mode == "antigravity" and status_code in (500, 502, 503):
+        await _hold_transient(credential_manager, status_code, credential_name)
+        if retry_enabled and attempt < max_retries:
+            log.info(
+                f"[{mode.upper()} RETRY] {status_code} transient, credential cooled down; "
+                f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
+            )
+            await asyncio.sleep(retry_interval)
+            return True
         return False
 
     # 优先检查自动封禁

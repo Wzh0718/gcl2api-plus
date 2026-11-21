@@ -95,3 +95,10 @@ BEGIN
     RETURN true;
 END;
 $$;
+
+-- 上游 5xx 的就地冷却：账号级 10 分钟窗口 + 累计降权计数。
+-- 5xx 是服务端瞬时错误，不改变 disabled；窗口到期由选择器自动放回。
+ALTER TABLE antigravity_credentials
+    ADD COLUMN IF NOT EXISTS transient_hold_until double precision NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS transient_error_count bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS transient_error_at double precision NOT NULL DEFAULT 0;
