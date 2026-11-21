@@ -6,11 +6,63 @@ import json
 import math
 import time
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from log import log
 from redis.exceptions import RedisError
 
 from src.redis_config import RedisConfigurationError, create_redis_client_from_env
+
+
+# Publish a complete DB observation atomically. A delayed worker must never
+# overwrite a newer observation. The index permits removal after an early reset.
+_PUBLISH = """
+local previous = redis.call('GET', KEYS[2])
+if previous then
+    local old = cjson.decode(previous)
+    if tonumber(old.started) >= tonumber(ARGV[1]) then return 0 end
+    for _, suffix in ipairs(old.markers) do redis.call('DEL', KEYS[1] .. suffix) end
+end
+local markers = {}
+local last = tonumber(ARGV[2])
+for i = 4, #ARGV, 3 do
+    local suffix, value, expiry = ARGV[i], ARGV[i+1], tonumber(ARGV[i+2])
+    redis.call('SET', KEYS[1] .. suffix, value, 'PXAT', expiry)
+    table.insert(markers, suffix)
+    last = math.max(last, expiry)
+end
+redis.call('SET', KEYS[2], cjson.encode({started=ARGV[1], markers=markers}), 'PXAT', last)
+redis.call('SET', KEYS[1], ARGV[3], 'PXAT', ARGV[2])
+return 1
+"""
+
+# Check only the requested model and the two account-wide markers. The roster
+# expires independently so a new or re-enabled account becomes visible promptly.
+_READ = """
+local roster = redis.call('GET', KEYS[1])
+if not roster then return false end
+local data = cjson.decode(roster)
+local result = {tostring(data[1])}
+local clock = redis.call('TIME')
+local now = clock[1] * 1000 + math.floor(clock[2] / 1000)
+local function deadline(key)
+    local ttl = redis.call('PTTL', key)
+    if ttl == -2 then return 0 end
+    if ttl == -1 then return false end
+    return now + ttl
+end
+for _, account in ipairs(data[2]) do
+    local prefix = KEYS[1] .. ':' .. account[2]
+    local model_key = prefix .. ':model:' .. ARGV[1]
+    local usage = deadline(prefix .. ':usage')
+    local hold = deadline(prefix .. ':hold')
+    local model = deadline(model_key)
+    if not usage or not hold or not model then return false end
+    if model > 0 and redis.call('GET', model_key) == '?' then return false end
+    table.insert(result, {account[1], usage, hold, model})
+end
+return result
+"""
 
 
 @dataclass(frozen=True)
@@ -25,7 +77,7 @@ class AccountCooldowns:
 
     def __init__(self, database_identity):
         digest = hashlib.sha256(database_identity.encode()).hexdigest()
-        self.key = f"gcli:account-cooldowns:v1:{digest}"
+        self.key = f"gcli:cooldown:v2:{{{digest[:20]}}}"
         try:
             self.client = create_redis_client_from_env(
                 socket_connect_timeout=0.1, socket_timeout=0.1
@@ -34,7 +86,6 @@ class AccountCooldowns:
             self.client = None
             log.warning("Account cooldown cache has invalid Redis configuration")
         self.snapshot = None
-        self.next_read = 0
         self.redis_retry = 0
         log.info("Account cooldown cache backend: " + ("redis" if self.client else "memory"))
 
@@ -49,26 +100,21 @@ class AccountCooldowns:
                 log.warning(f"Account cooldown cache unavailable: {type(exc).__name__}")
             self.redis_retry = time.monotonic() + 5
 
-    async def read(self):
-        now = time.time()
-        if self.snapshot and self.snapshot[0] > now:
-            return self.snapshot[1]
-        if self.client and time.monotonic() >= self.next_read:
-            self.next_read = time.monotonic() + 0.05
-            raw = await self._redis(lambda: self.client.get(self.key))
-            if raw:
-                try:
-                    expires, rows = json.loads(raw)
-                    if (time.time() < expires <= time.time() + self.lifetime
-                            and isinstance(rows, list)
-                            and all(isinstance(name, str) and isinstance(usage, (int, float))
-                                    and math.isfinite(usage) and isinstance(hold, (int, float))
-                                    and math.isfinite(hold) and isinstance(models, dict)
-                                    for name, usage, hold, models in rows)):
-                        self.snapshot = expires, rows
-                        return rows
-                except (TypeError, ValueError):
-                    pass
+    async def read(self, model):
+        if self.client and time.monotonic() >= self.redis_retry:
+            result = await self._redis(lambda: self.client.eval(
+                _READ, 1, self.key, quote(model or "", safe="@")
+            ))
+            if result:
+                expires = int(result[0]) / 1000
+                if expires > time.time():
+                    rows = [(name.decode(), round(usage / 1000), hold / 1000, {model: until / 1000})
+                            for name, usage, hold, until in result[1:]]
+                    return expires, rows
+            if time.monotonic() >= self.redis_retry:
+                return None
+        if self.snapshot and self.snapshot[0] > time.time():
+            return self.snapshot
         return None
 
     async def publish(self, started, rows):
@@ -76,10 +122,31 @@ class AccountCooldowns:
         if expires <= time.time():
             return
         self.snapshot = expires, rows
-        if self.client:
-            await self._redis(lambda: self.client.set(
-                self.key, json.dumps(self.snapshot), pxat=int(expires * 1000)
-            ))
+        if not self.client or time.monotonic() < self.redis_retry:
+            return
+
+        roster = []
+        markers = []
+        now = time.time()
+        for name, usage, hold, models in rows:
+            account = quote(name, safe="@")
+            roster.append((name, account))
+            deadlines = [("usage", usage), ("hold", hold)]
+            deadlines.extend(("model:" + quote(model, safe="@"), value)
+                             for model, value in models.items() if value is not None)
+            for kind, value in deadlines:
+                if not isinstance(value, (int, float)):
+                    value = math.inf  # Mirrors the SQL treatment of nonnumeric JSON.
+                if value > now:
+                    ttl_end = value if math.isfinite(value) else expires
+                    marker = "1" if math.isfinite(value) else "?"
+                    markers.extend((f":{account}:{kind}", marker, math.ceil(ttl_end * 1000)))
+
+        expires_ms = int(expires * 1000)
+        await self._redis(lambda: self.client.eval(
+            _PUBLISH, 2, self.key, self.key + ":index", int(started * 1_000_000),
+            expires_ms, json.dumps([expires_ms, roster]), *markers,
+        ))
 
     @staticmethod
     def selection(rows, model, excluded, pinned, now):

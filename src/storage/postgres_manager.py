@@ -236,9 +236,9 @@ class PostgresManager(SQLiteManager):
         try:
             model, excluded, pinned = key
             cache = self._cooldowns
-            rows_hint = await cache.read()
-            if rows_hint is not None:
-                _, resume = cache.selection(rows_hint, model, excluded, pinned, time.time())
+            snapshot = await cache.read(model)
+            if snapshot is not None:
+                _, resume = cache.selection(snapshot[1], model, excluded, pinned, time.time())
                 if resume is not None:
                     for future in waiters:
                         if not future.done():
@@ -254,11 +254,11 @@ class PostgresManager(SQLiteManager):
                     if not active:
                         return
                     blocked = set()
-                    if cache.snapshot is not None and cache.snapshot[0] > time.time():
-                        blocked, _ = cache.selection(cache.snapshot[1], model, excluded, pinned, time.time())
+                    if snapshot is not None and snapshot[0] > time.time():
+                        blocked, _ = cache.selection(snapshot[1], model, excluded, pinned, time.time())
                     rows, resume, lock_ms, sql_ms = await self._rotate_batch(conn, key, len(active), blocked)
             roundtrip = (time.monotonic() - connected) * 1000
-            if (rows_hint is None and time.monotonic() >= self._next_cooldown_refresh
+            if (snapshot is None and time.monotonic() >= self._next_cooldown_refresh
                     and (self._cooldown_refresh is None or self._cooldown_refresh.done())):
                 self._next_cooldown_refresh = time.monotonic() + cache.lifetime
                 self._cooldown_refresh = asyncio.create_task(self._refresh_cooldowns(), context=Context())

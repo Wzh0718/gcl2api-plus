@@ -702,8 +702,9 @@ async def test_shared_cooldowns_keep_model_and_account_deadlines_separate(pg_sto
     assert claim.await_count == 1
 
     # Advancing only the account-wide deadline reopens m2. m1 stays blocked.
-    rows = await backend._cooldowns.read()
+    _, rows = await backend._cooldowns.read("m2")
     assert AccountCooldowns.selection(rows, "m2", set(), None, usage_until) == (set(), None)
+    _, rows = await backend._cooldowns.read("m1")
     from src.api.antigravity import _account_pool_429
     response = _account_pool_429()
     assert response.rate_limit.reason == "account_pool_unavailable"
@@ -744,7 +745,7 @@ async def test_cooldown_cache_outage_and_expiry_restore_claims(pg_store, monkeyp
     backend = pg_store._backend
     cache = backend._cooldowns
     client = AsyncMock()
-    client.get.side_effect = ConnectionError("offline")
+    client.eval.side_effect = ConnectionError("offline")
     monkeypatch.setattr(cache, "client", client)
     await pg_store.store_credential("a", {"project_id": "test"}, mode="antigravity")
     await backend.set_model_cooldown("a", "short", time.time() + .4, "antigravity")
@@ -756,4 +757,32 @@ async def test_cooldown_cache_outage_and_expiry_restore_claims(pg_store, monkeyp
     await asyncio.sleep(.41)
     assert (await select("antigravity", "short"))[0] == "a"
     assert await select("antigravity", "long") is None
-    client.get.assert_awaited_once()
+    client.eval.assert_awaited_once()
+
+
+async def test_redis_marker_exists_only_for_its_model(pg_store):
+    import time
+
+    if not os.getenv("TEST_ACCOUNT_COOLDOWN_REDIS_URL"):
+        pytest.skip("requires disposable Redis")
+    cache = pg_store._backend._cooldowns
+    now = time.time()
+    rows = [("a.json", 0, 0, {"gemini-A": now + 60, "gemini-B": now + 120})]
+    await cache.publish(now, rows)
+    first = cache.key + ":a.json:model:gemini-A"
+    second = cache.key + ":a.json:model:gemini-B"
+    assert 58 <= await cache.client.ttl(first) <= 60
+    assert 118 <= await cache.client.ttl(second) <= 120
+    # Same value, different TTLs. Expiring A must not unlock B.
+    assert await cache.client.mget(first, second) == [b"1", b"1"]
+    await cache.client.pexpire(first, 1)
+    await asyncio.sleep(.01)
+    assert await cache.client.exists(first) == 0
+    _, candidates = await cache.read("gemini-A")
+    assert cache.selection(candidates, "gemini-A", set(), None, time.time()) == (set(), None)
+    _, candidates = await cache.read("gemini-B")
+    assert cache.selection(candidates, "gemini-B", set(), None, time.time())[0] == {"a.json"}
+    # An early reset and an out-of-order refresh must not resurrect either marker.
+    await cache.publish(time.time(), [("a.json", 0, 0, {})])
+    await cache.publish(now, rows)
+    assert await cache.client.exists(first, second) == 0
