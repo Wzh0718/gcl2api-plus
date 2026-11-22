@@ -90,3 +90,35 @@ async def test_realtime_reads_once_without_flushing(tmp_path, monkeypatch):
             assert len(count_calls) == 1
     finally:
         await adapter.close()
+
+
+async def test_monitor_metadata_only_reads_displayed_accounts(tmp_path, monkeypatch):
+    from src.panel.call_monitor import _attach_account_metadata
+    from src.storage_adapter import StorageAdapter
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    backend = adapter._backend
+    try:
+        with sqlite3.connect(backend._db_path) as db:
+            db.executemany(
+                """INSERT INTO antigravity_credentials (filename, credential_data, user_email)
+                   VALUES (?, '{}', ?)""",
+                [(f"account-{i}", f"{i}@example.test") for i in range(502)],
+            )
+        # Include a second batch, a deleted account, and an accountless key group.
+        rows = [{"group_key": f"account-{i}"} for i in range(501)]
+        rows.extend([{"group_key": "deleted"}, {"credential_name": "", "group_key": "account-501"}])
+
+        async def unexpected_read(*args, **kwargs):
+            pytest.fail("Monitor read the entire credential or warmup inventory")
+
+        monkeypatch.setattr(backend, "get_all_credential_states", unexpected_read)
+        monkeypatch.setattr(backend, "list_antigravity_warmup", unexpected_read)
+        await _attach_account_metadata(rows, backend)
+        assert rows[500]["user_email"] == "500@example.test"
+        assert rows[501]["warmup_status"] == "off"
+        assert rows[502]["user_email"] == ""
+    finally:
+        await adapter.close()
