@@ -77,4 +77,7 @@ async def test_tos_banned_account_excluded_from_stats(tmp_path, monkeypatch):
     assert counts["logs"] == 1
     assert counts["failed"] == 0
 
+    recent = await backend.recent_monitor_snapshot(limit=6)
+    assert [row["credential_name"] for row in recent] == ["healthy.json"]
+
     await adapter.close()

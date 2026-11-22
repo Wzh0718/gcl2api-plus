@@ -4221,6 +4221,37 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             for name, email, status, level, successes, config in rows
         }
 
+    async def recent_monitor_snapshot(self, limit: int) -> List[Dict[str, Any]]:
+        """Select a fixed tail by primary key before applying monitor exclusions."""
+        columns = (
+            "id", "created_at", "api_key_id", "credential_name", "model_name",
+            "upstream_model", "success", "status_code", "gateway_seconds", "total_cost",
+            "currency", "channel", "task_type", "input_tokens", "output_tokens",
+            "cache_tokens", "thought_tokens", "total_tokens",
+        )
+        fields = ", ".join(columns)
+        where, params = self._call_record_filters(0, None, False, None)
+        async with sqlite_connect(self._db_path, single_select=True) as db:
+            async with db.execute(
+                f"""SELECT {fields} FROM (
+                        SELECT {fields} FROM call_records ORDER BY id DESC LIMIT ?
+                    ) AS recent WHERE {where} ORDER BY created_at, id""",
+                [limit, *params],
+            ) as cursor:
+                return [dict(zip(columns, row)) for row in await cursor.fetchall()]
+
+    async def monitor_page_details(self, ids: List[int]) -> List[Dict[str, Any]]:
+        if not ids:
+            return []
+        fields = ", ".join(self._CALL_RECORD_COLUMNS)
+        placeholders = ", ".join("?" for _ in ids)
+        async with sqlite_connect(self._db_path, single_select=True) as db:
+            async with db.execute(
+                f"""SELECT {fields} FROM call_records WHERE id IN ({placeholders})
+                    ORDER BY created_at DESC, id DESC""", ids,
+            ) as cursor:
+                return [self._call_record_row(row) for row in await cursor.fetchall()]
+
     async def list_call_records(
         self,
         *,

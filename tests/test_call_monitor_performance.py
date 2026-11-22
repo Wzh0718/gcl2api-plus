@@ -122,3 +122,43 @@ async def test_monitor_metadata_only_reads_displayed_accounts(tmp_path, monkeypa
         assert rows[502]["user_email"] == ""
     finally:
         await adapter.close()
+
+
+async def test_recent_views_share_a_bounded_filtered_window(tmp_path, monkeypatch):
+    from src.panel import call_monitor as panel
+    from src.storage_adapter import StorageAdapter
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    monkeypatch.setattr("src.storage_adapter._storage_adapter", adapter)
+    backend = adapter._backend
+    try:
+        with sqlite3.connect(backend._db_path) as db:
+            db.executemany(
+                """INSERT INTO call_records
+                   (request_id, created_at, api_key_id, credential_name, model_name, success)
+                   VALUES (?, ?, ?, ?, 'model', ?)""",
+                [(str(i), 100 + i // 2, f"k{i % 2}", "account", i % 3 != 0) for i in range(1200)],
+            )
+
+        async def unexpected_history(*args, **kwargs):
+            pytest.fail("Live views must not query unbounded history or preload details")
+
+        for name in ("aggregate_key_account_usage", "aggregate_call_records",
+                     "count_call_records", "list_call_records", "list_recent_call_records"):
+            monkeypatch.setattr(backend, name, unexpected_history)
+
+        for view in ("account", "key"):
+            result = await panel.call_monitor_overview(view=view, range="recent", failed_only=True)
+            assert result["counters"]["logs"] == 1000
+            assert sum(row["total"] for row in result["rows"]) == 333
+        page = await panel.call_monitor_realtime(
+            page=2, page_size=2, failed_only=True, api_key_id="k0", range="recent",
+        )
+        expected = [str(i) for i in reversed(range(200, 1200)) if i % 6 == 0]
+        assert [row["request_id"] for row in page["records"]] == expected[2:4]
+        assert page["total"] == len(expected)
+        assert page["counters"]["failed"] == 333
+    finally:
+        await adapter.close()

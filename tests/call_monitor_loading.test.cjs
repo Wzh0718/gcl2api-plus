@@ -110,3 +110,23 @@ test('settlement tooltip renders only measured phases and converts milliseconds 
     assert.match(html, /计费取价 3\.00ms/);
     assert.doesNotMatch(html, /凭证保存 SQL|模型统计等连接|计费 SQL/);
 });
+
+test('automatic refresh only queries the bounded recent window', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
+    const body = source.slice(source.indexOf('function startCallMonitorAutoRefresh('), source.indexOf('function _escapeStatsHtml('));
+    const requests = [];
+    let tick;
+    const context = vm.createContext({
+        document: {visibilityState: 'visible', getElementById: () => ({classList: {contains: () => true}})},
+        AppState: {}, callMonitorState: {autoRefresh: true},
+        stopCallMonitorAutoRefresh() {}, setInterval(callback) { tick = callback; },
+        loadCallMonitor() { requests.push(context.callMonitorState.range); },
+    });
+    vm.runInContext(body, context);
+    context.startCallMonitorAutoRefresh();
+    for (const range of ['today', '7d', '30d', 'all', 'recent']) {
+        context.callMonitorState.range = range;
+        tick();
+    }
+    assert.deepEqual(requests, ['recent']);
+});
