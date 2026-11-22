@@ -3490,7 +3490,7 @@ function refreshAntigravityCredsList() { AppState.antigravityCreds.refresh(); }
 
 const callMonitorState = {
     view: 'account',        // account | key | realtime
-    range: 'today',         // today | 7d | 30d | all
+    range: 'recent',        // recent | today | 7d | 30d | all
     failedOnly: false,
     mask: true,
     autoRefresh: true,
@@ -3752,7 +3752,7 @@ function setCallMonitorView(view) {
 }
 
 function onCallMonitorRangeChange(select) {
-    callMonitorState.range = select.value || 'today';
+    callMonitorState.range = select.value || 'recent';
     callMonitorState.page = 1;
     loadCallMonitor();
 }
@@ -4496,7 +4496,7 @@ function startCallMonitorAutoRefresh() {
     AppState.callMonitorRefreshInterval = setInterval(() => {
         const tab = document.getElementById('call-monitorTab');
         if (document.visibilityState !== 'visible' || !tab?.classList.contains('active')) return;
-        if (!callMonitorState.autoRefresh) return;
+        if (!callMonitorState.autoRefresh || callMonitorState.range !== 'recent') return;
         loadCallMonitor({ silent: true });
     }, 10000);
 }

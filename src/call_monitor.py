@@ -264,9 +264,19 @@ class CallMonitor:
         ]
         return rows[: min(max(int(limit), 1), 1000)]
 
+    async def recent_snapshot(self) -> List[Dict[str, Any]]:
+        read = self._backend_method("recent_monitor_snapshot")
+        if read is not None:
+            return await read(limit=REALTIME_BUFFER_SIZE)
+        return sorted(list(self._buffer)[-REALTIME_BUFFER_SIZE:], key=lambda row: row["created_at"])
+
     def buffer_counters(self, *, since_ts: float = 0.0) -> Dict[str, int]:
         """基于内存缓冲的角标计数（实时视图口径）。"""
         rows = [row for row in self._buffer if row.get("created_at", 0.0) >= since_ts]
+        return self.snapshot_counters(rows)
+
+    @staticmethod
+    def snapshot_counters(rows: List[Dict[str, Any]]) -> Dict[str, int]:
         account_rows = [row for row in rows if row.get("credential_name")]
         return {
             "logs": len(rows),
@@ -275,6 +285,23 @@ class CallMonitor:
             "keys": len({row.get("api_key_id") for row in rows}),
             "account_logs": len(account_rows),
             "account_failed": sum(1 for row in account_rows if not row.get("success")),
+        }
+
+    async def recent_page(
+        self, *, page: int, page_size: int, failed_only: bool, api_key_id: Optional[str],
+    ) -> Dict[str, Any]:
+        rows = await self.recent_snapshot()
+        filtered = [row for row in reversed(rows)
+                    if self._matches(row, failed_only=failed_only, api_key_id=api_key_id)]
+        page_size = min(max(int(page_size), 1), 200)
+        page = min(max(int(page), 1), max(1, -(-len(filtered) // page_size)))
+        records = filtered[(page - 1) * page_size:page * page_size]
+        details = self._backend_method("monitor_page_details")
+        if details is not None:
+            records = await details([row["id"] for row in records])
+        return {
+            "records": records, "total": len(filtered), "page": page, "page_size": page_size,
+            "counters": self.snapshot_counters(rows), "degraded": details is None,
         }
 
     async def realtime_page(

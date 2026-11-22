@@ -21,13 +21,13 @@ router = APIRouter(prefix="/call-monitor", tags=["call-monitor"])
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
-_RANGES = {"today", "7d", "30d", "all"}
+_RANGES = {"recent", "today", "7d", "30d", "all"}
 _VIEWS = {"account", "key"}
 
 
 def _range(value: str) -> str:
     if value not in _RANGES:
-        raise HTTPException(status_code=400, detail="range 必须是 today、7d、30d 或 all")
+        raise HTTPException(status_code=400, detail="range 必须是 recent、today、7d、30d 或 all")
     return value
 
 
@@ -53,7 +53,7 @@ def _since_ts(range_name: str) -> float:
 def _range_seconds(range_name: str, since_ts: float, oldest_ts: Optional[float]) -> float:
     """TPS 口径的分母：所选范围覆盖的秒数。"""
     now = time.time()
-    if range_name == "all":
+    if range_name in {"recent", "all"}:
         return max(now - (oldest_ts or now), 1.0)
     return max(now - since_ts, 1.0)
 
@@ -246,7 +246,8 @@ async def call_monitor_overview(
 
     storage = await get_storage_adapter()
     monitor = await get_call_monitor(storage)
-    await monitor.preload()
+    if range_name != "recent":
+        await monitor.preload()
 
     backend = getattr(storage, "_backend", None)
     count_records = getattr(backend, "count_call_records", None)
@@ -265,8 +266,11 @@ async def call_monitor_overview(
 
     degraded = aggregator is None or count_records is None
     oldest_ts: Optional[float] = None
-    if degraded:
-        buffer_rows = list(monitor._buffer)
+    if degraded or range_name == "recent":
+        if range_name == "recent":
+            buffer_rows = await monitor.recent_snapshot()
+        else:
+            buffer_rows = [row for row in monitor._buffer if row["created_at"] >= since_ts]
         rows = _aggregate_from_buffer(
             buffer_rows,
             dims=dims,
@@ -274,7 +278,7 @@ async def call_monitor_overview(
             since_ts=since_ts,
             failed_only=failed_only,
         )
-        counters = monitor.buffer_counters(since_ts=since_ts)
+        counters = monitor.snapshot_counters(buffer_rows)
         if buffer_rows:
             oldest_ts = min(row.get("created_at", 0.0) for row in buffer_rows)
     else:
@@ -326,15 +330,13 @@ async def call_monitor_realtime(
     since_ts = _since_ts(range_name)
     storage = await get_storage_adapter()
     monitor = await get_call_monitor(storage)
-    await monitor.preload()
 
-    paged = await monitor.realtime_page(
-        page=page,
-        page_size=page_size,
-        since_ts=since_ts,
-        failed_only=failed_only,
-        api_key_id=api_key_id,
-    )
+    filters = dict(page=page, page_size=page_size, failed_only=failed_only, api_key_id=api_key_id)
+    if range_name == "recent":
+        paged = await monitor.recent_page(**filters)
+    else:
+        await monitor.preload()
+        paged = await monitor.realtime_page(since_ts=since_ts, **filters)
 
     counters = paged["counters"]
 

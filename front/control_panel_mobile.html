@@ -2102,8 +2102,9 @@
                         <span class="cm-counter">日志: <b id="cmLogsCount">0</b></span>
                         <span class="cm-counter">失败: <b id="cmFailedCount">0</b></span>
                         <select id="cmRange" class="cm-select" onchange="onCallMonitorRangeChange(this)"
-                            aria-label="时间范围">
-                            <option value="today" selected>今日</option>
+                            aria-label="时间范围" title="最近入库记录每 10 秒刷新。历史范围只在手动操作时查询。">
+                            <option value="recent" selected>最近入库 1,000 条</option>
+                            <option value="today">今日</option>
                             <option value="7d">近 7 天</option>
                             <option value="30d">近 30 天</option>
                             <option value="all">全部</option>
@@ -2926,7 +2927,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=account-transient-hold"></script>
+    <script src="./front/common.js?v=bounded-monitor"></script>
 </body>
 
 </html>
