@@ -225,8 +225,8 @@ async def test_aggregate_key_account_usage_nests_by_key_and_account(tmp_path, mo
 async def test_overview_key_view_nests_key_and_account(tmp_path, monkeypatch):
     adapter = await _make_adapter(tmp_path, monkeypatch)
     from unittest.mock import AsyncMock
-    monkeypatch.setattr(adapter._backend, "get_api_key_record", AsyncMock(
-        side_effect=lambda key: {"name": "生产调用密钥"} if key == "key-1" else None
+    monkeypatch.setattr(adapter._backend, "get_call_monitor_key_names", AsyncMock(
+        return_value={"key-1": "生产调用密钥"}
     ))
     import src.storage_adapter as sa
     from src.call_monitor import get_call_monitor

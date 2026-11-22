@@ -164,16 +164,38 @@ def _aggregate_from_buffer(
 
 
 async def _attach_api_key_names(rows: list[Dict[str, Any]], backend: Any) -> None:
-    getter = getattr(backend, "get_api_key_record", None)
+    ids = list(dict.fromkeys(row.get("api_key_id") or "env" for row in rows))
+    batch_getter = getattr(backend, "get_call_monitor_key_names", None)
     names = {}
+    if batch_getter is not None:
+        names = await batch_getter(ids)
+    else:
+        getter = getattr(backend, "get_api_key_record", None)
+        if getter:
+            for key_id in ids:
+                record = await getter(key_id)
+                names[key_id] = (record or {}).get("name")
     for row in rows:
         key_id = row.get("api_key_id") or "env"
-        if key_id not in names:
-            record = await getter(key_id) if getter else None
-            names[key_id] = (record or {}).get("name") or (
-                "环境密钥" if key_id == "env" else "未命名密钥"
-            )
-        row["api_key_name"] = names[key_id]
+        row["api_key_name"] = names.get(key_id) or ("环境密钥" if key_id == "env" else "未命名密钥")
+
+
+async def _attach_account_metadata(rows: list[Dict[str, Any]], backend: Any) -> None:
+    getter = getattr(backend, "get_call_monitor_account_metadata", None)
+    if getter is None:
+        await _attach_account_emails(rows, backend)
+        await _attach_warmup_status(rows, backend)
+        return
+    names = [row.get("credential_name", row.get("group_key")) for row in rows]
+    accounts = await getter(list(dict.fromkeys(name for name in names if name)))
+    for row, name in zip(rows, names):
+        account = accounts.get(name, {})
+        if row.get("channel") != "vertex":
+            row["user_email"] = account.get("user_email", "")
+        row["warmup_status"] = account.get("warmup_status", "off")
+        row["warmup_level"] = account.get("warmup_level", 0)
+        row["warmup_success_count"] = account.get("warmup_success_count", 0)
+        row["warmup_max_level"] = account.get("warmup_max_level", 3)
 
 
 async def _attach_account_emails(rows: list[Dict[str, Any]], backend: Any) -> None:
@@ -270,8 +292,7 @@ async def call_monitor_overview(
 
     if view == "key":
         await _attach_api_key_names(rows, backend)
-    await _attach_account_emails(rows, backend)
-    await _attach_warmup_status(rows, backend)
+    await _attach_account_metadata(rows, backend)
     range_secs = _range_seconds(range_name, since_ts, oldest_ts)
     return {
         "view": view,
@@ -324,8 +345,7 @@ async def call_monitor_realtime(
                     and event["filename"] == row.get("credential_name")]
         row["telemetry"] = {"count": len(matching), "outcomes": list(dict.fromkeys(event["outcome"] for event in matching))}
     await _attach_api_key_names(paged["records"], storage._backend)
-    await _attach_account_emails(paged["records"], storage._backend)
-    await _attach_warmup_status(paged["records"], storage._backend)
+    await _attach_account_metadata(paged["records"], storage._backend)
     total = int(paged["total"])
     page_size = int(paged["page_size"])
     total_pages = max(1, -(-total // page_size))
