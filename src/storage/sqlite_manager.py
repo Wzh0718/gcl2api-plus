@@ -4187,6 +4187,40 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         )
         return " AND ".join(clauses), params
 
+    async def _monitor_lookup(self, query: str, keys: List[str]) -> list:
+        """Batch indexed lookups within SQLite's bind parameter limit."""
+        self._ensure_initialized()
+        rows = []
+        if keys:
+            async with sqlite_connect(self._db_path) as db:
+                for start in range(0, len(keys), 500):
+                    batch = keys[start:start + 500]
+                    placeholders = ", ".join("?" for _ in batch)
+                    async with db.execute(query.format(keys=placeholders), batch) as cursor:
+                        rows.extend(await cursor.fetchall())
+        return rows
+
+    async def get_call_monitor_key_names(self, ids: List[str]) -> Dict[str, str]:
+        return dict(await self._monitor_lookup(
+            "SELECT id, name FROM api_keys WHERE id IN ({keys})", ids
+        ))
+
+    async def get_call_monitor_account_metadata(self, names: List[str]) -> Dict[str, Any]:
+        rows = await self._monitor_lookup(
+            """SELECT c.filename, c.user_email, w.status, w.level, w.success_count, w.config_json
+                 FROM antigravity_credentials c
+                 LEFT JOIN antigravity_warmup_accounts w ON w.credential_name = c.filename
+                WHERE c.filename IN ({keys})""", names
+        )
+        return {
+            name: {
+                "user_email": email or "", "warmup_status": status or "off",
+                "warmup_level": int(level or 0), "warmup_success_count": int(successes or 0),
+                "warmup_max_level": int(json.loads(config or "{}").get("max_level") or 3),
+            }
+            for name, email, status, level, successes, config in rows
+        }
+
     async def list_call_records(
         self,
         *,
