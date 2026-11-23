@@ -14,8 +14,8 @@
 * 轨迹级端点（3）由调用方按 trajectory_id 去重一次。
 
 开关：默认开启；设 ``ANTIGRAVITY_CLIENT_BOOTSTRAP_ENABLED=0`` 可关闭。
-``fetchConfig`` 走 aicode 主机，需要该主机在 native 白名单内
-（``ANTIGRAVITY_NATIVE_TRANSPORT_ALLOWED_HOSTS``），否则自动跳过。
+``fetchConfig`` 走 ``aicode.googleapis.com``，该主机已写入 native 传输的
+默认白名单（``src/agy_native_transport.py``），无需额外环境变量。
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from log import log
 _CONFIG_KEY = "antigravity_client_bootstrap_enabled"
 _SEEN_TTL_SECONDS = 24 * 3600
 _AICODE_CONFIG_URL = "https://aicode.googleapis.com/v1alpha:fetchConfig"
-_ALLOWED_HOSTS_ENV = "ANTIGRAVITY_NATIVE_TRANSPORT_ALLOWED_HOSTS"
 
 # 进程内去重：Redis 不可用时的退路，单进程语义与缓存后端一致。
 _memory_seen: Dict[str, float] = {}
@@ -77,15 +76,6 @@ async def _claim_once(key: str, ttl: int = _SEEN_TTL_SECONDS) -> bool:
             pass
 
 
-def _aicode_allowed() -> bool:
-    hosts = {
-        value.strip().lower()
-        for value in os.getenv(_ALLOWED_HOSTS_ENV, "").split(",")
-        if value.strip()
-    }
-    return "aicode.googleapis.com" in hosts
-
-
 async def _post_fetch_admin_controls(
     *, access_token: str, project_id: str, proxy_url: Any, credential_data: Dict[str, Any], credential_name: str
 ) -> Optional[int]:
@@ -107,8 +97,6 @@ async def _post_fetch_admin_controls(
 async def _get_aicode_fetch_config(
     *, access_token: str, proxy_url: Any, credential_data: Dict[str, Any], credential_name: str
 ) -> Optional[int]:
-    if not _aicode_allowed():
-        return None
     from src.agy_native_transport import agy_native_transport
     from src.api.antigravity import build_antigravity_headers
 
