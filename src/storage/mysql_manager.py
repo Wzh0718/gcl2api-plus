@@ -80,6 +80,17 @@ class MySQLManager(SQLiteManager):
             finally:
                 await self._db_path.close()
 
+    async def _claim_billing_request(self, db, request_id, now, expires_at):
+        # The transaction holds main_write_lock until both the day and quota are updated.
+        await db.execute("DELETE FROM billing_request_dedupe WHERE request_id=? AND expires_at<?", (request_id, now))
+        await db.execute("DELETE FROM billing_request_dedupe WHERE expires_at<? ORDER BY expires_at,request_id LIMIT 500", (now,))
+        row = await (await db.execute("SELECT 1 FROM billing_request_dedupe WHERE request_id=?", (request_id,))).fetchone()
+        if row:
+            return False
+        await db.execute("INSERT INTO billing_request_dedupe(request_id,created_at,expires_at) VALUES (?,?,?)",
+                         (request_id, now, expires_at))
+        return True
+
     @contextmanager
     def _claim_transaction(self):
         with sync_connection() as db:

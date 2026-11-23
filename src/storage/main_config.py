@@ -3,7 +3,10 @@ import os
 
 
 def main_backend():
-    explicit = os.getenv("MAIN_STORAGE_BACKEND", "").strip().lower()
+    # The Compose template passes its interpolation value separately so that an
+    # absent project .env value cannot erase an explicit service env_file choice.
+    explicit = (os.getenv("MAIN_STORAGE_BACKEND", "").strip()
+                or os.getenv("GCLI_COMPOSE_STORAGE_BACKEND", "").strip()).lower()
     dsns = {
         "postgresql": os.getenv("MAIN_POSTGRES_DSN", "").strip(),
         "mysql": os.getenv("MAIN_MYSQL_DSN", "").strip(),

@@ -3419,6 +3419,23 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 raise KeyError(api_key_id)
             await db.commit()
 
+    async def _claim_billing_request(self, db, request_id, now, expires_at):
+        inserted = await db.execute(
+            """INSERT INTO billing_request_dedupe(request_id, created_at, expires_at)
+               VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
+                   created_at=excluded.created_at, expires_at=excluded.expires_at
+               WHERE billing_request_dedupe.expires_at < excluded.created_at""",
+            (request_id, now, expires_at),
+        )
+        await db.execute(
+            f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
+                   SELECT request_id FROM billing_request_dedupe
+                   WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500
+               )""",
+            (now,),
+        )
+        return inserted.rowcount != 0
+
     async def record_billing_usage(
         self,
         *,
@@ -3461,34 +3478,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return first
         async with sqlite_connect(self._db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
-            # Claim this request before sweeping other expired rows. Concurrent
-            # sweepers skip locks held by live settlements on PostgreSQL.
-            if self.main_mysql:
-                # The transaction already holds the main_write_lock row. Expire
-                # this ID even when the bounded maintenance sweep has a backlog.
-                await db.execute("DELETE FROM billing_request_dedupe WHERE request_id=? AND expires_at<?", (request_id, now))
-                inserted = await db.execute(
-                    """INSERT INTO billing_request_dedupe VALUES (?, ?, ?)
-                       ON DUPLICATE KEY UPDATE request_id=billing_request_dedupe.request_id""",
-                    (request_id, now, expires_at),
-                )
-                await db.execute("DELETE FROM billing_request_dedupe WHERE expires_at<? ORDER BY expires_at,request_id LIMIT 500", (now,))
-            else:
-                inserted = await db.execute(
-                    """INSERT INTO billing_request_dedupe(request_id, created_at, expires_at)
-                       VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
-                           created_at=excluded.created_at, expires_at=excluded.expires_at
-                       WHERE billing_request_dedupe.expires_at < excluded.created_at""",
-                    (request_id, now, expires_at),
-                )
-                await db.execute(
-                    f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
-                           SELECT request_id FROM billing_request_dedupe
-                           WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500
-                       )""",
-                    (now,),
-                )
-            if inserted.rowcount == 0:
+            if not await self._claim_billing_request(db, request_id, now, expires_at):
                 await db.commit()
                 return False
             async with db.execute(
@@ -5450,6 +5440,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 # 原子修改指定键，避免并发写不同模型时整量 JSON 覆盖。
                 if cooldown_until is None:
                     expression = "json_remove(COALESCE(model_cooldowns, '{}'), :path)"
+                elif self.main_mysql:
+                    expression = """JSON_SET(COALESCE(model_cooldowns,'{}'), :path,
+                        CAST(CASE WHEN JSON_TYPE(JSON_EXTRACT(model_cooldowns,:path)) IN ('INTEGER','DOUBLE','DECIMAL')
+                             AND JSON_EXTRACT(model_cooldowns,:path) > UNIX_TIMESTAMP()
+                             AND JSON_EXTRACT(model_cooldowns,:path) > :deadline
+                             THEN JSON_EXTRACT(model_cooldowns,:path) ELSE :deadline_json END AS JSON))"""
                 else:
                     # 仅有效的数值截止时间参与比较，短冷却不能缩短既有长冷却。
                     expression = """json_set(COALESCE(model_cooldowns, '{}'), :path,

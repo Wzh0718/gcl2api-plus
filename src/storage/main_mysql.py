@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, unquote
 
 import aiomysql
 import pymysql
+from pymysql.constants import CLIENT
 
 from src.storage.main_postgres import Statement
 
@@ -20,7 +21,7 @@ def connection_args():
     options = {"ssl": ssl.create_default_context(cafile=ca_file)} if ca_file else {}
     return dict(**options, host=url.hostname, port=url.port or 3306, user=unquote(url.username or ""),
                 password=unquote(url.password or ""), db=unquote(url.path[1:]), charset="utf8mb4",
-                autocommit=False, connect_timeout=5,
+                autocommit=False, connect_timeout=5, client_flag=CLIENT.FOUND_ROWS,
                 init_command="SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
 
 
@@ -43,8 +44,6 @@ def mysql_query(query):
     query = re.sub(r" AS (?:REAL|NUMERIC)\)", " AS DECIMAL(40,12))", query, flags=re.I)
     query = query.replace("MAX(level - 1, 0)", "GREATEST(level - 1, 0)").replace(
         "MAX(next_start_at, ?)", "GREATEST(next_start_at, ?)")
-    query = query.replace("json_type(model_cooldowns, :path) IN ('integer', 'real')",
-                          "JSON_TYPE(JSON_EXTRACT(model_cooldowns, :path)) IN ('INTEGER','DOUBLE','DECIMAL')")
     query = re.sub(r"ON CONFLICT\s*\((\w+)\)\s*DO NOTHING", r"ON DUPLICATE KEY UPDATE \1=\1", query, flags=re.I)
     query = re.sub(r"ON CONFLICT\s*\([\w,\s]+\)\s*DO UPDATE SET", "ON DUPLICATE KEY UPDATE", query, flags=re.I)
     query = re.sub(r"\bexcluded\.(\w+)", r"VALUES(\1)", query, flags=re.I)

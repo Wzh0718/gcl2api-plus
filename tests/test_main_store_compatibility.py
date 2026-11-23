@@ -96,3 +96,57 @@ asyncio.run(seed())
                 assert (await cur.fetchone())[0] == 9
     finally:
         await asyncio.gather(*(s.close() for s in stores))
+
+
+async def test_mysql_shared_repository_paths(tmp_path, monkeypatch):
+    """Catch MySQL dialect or driver differences on hot paths beyond the ledger."""
+    import time
+    from src.prompt_fusion import _cache, _lease
+
+    dsn = os.getenv("TEST_MAIN_MYSQL_DSN")
+    if not dsn:
+        pytest.skip("Requires TEST_MAIN_MYSQL_DSN")
+    monkeypatch.setenv("MAIN_MYSQL_DSN", dsn)
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("REDIS_URL", "")
+    storage = StorageAdapter()
+    await storage.initialize()
+    manager = storage._backend
+    name = uuid4().hex
+    try:
+        key = (await ApiKeyService(storage).create_key(name=name))["item"]["id"]
+        await manager.set_api_key_quota_tokens_used(key, 0)
+        await manager.set_api_key_quota_tokens_used(key, 0)
+        assert await manager.store_credential(name, {"project_id": "test"}, mode="antigravity")
+        deadline = time.time() + 600
+        for timestamp in (deadline, deadline - 30):
+            assert await manager.set_model_cooldown(name, "m.v1", timestamp, mode="antigravity")
+        state = await manager.get_credential_state(name, mode="antigravity")
+        assert state["model_cooldowns"]["m.v1"] == deadline
+        assert await manager.set_model_cooldown(name, "m.v1", None, mode="antigravity")
+        picked, _, _ = await manager._claim_next("m.v1", set(), name)
+        assert picked[0] == name
+        assert await manager.acquire_refresh_lease(name, "one", "antigravity") == "acquired"
+        assert await manager.acquire_refresh_lease(name, "two", "antigravity") == "busy"
+        group = await manager.create_proxy_group(name)
+        assert await manager.get_proxy_group(group["id"])
+        await manager.insert_call_record(request_id=name, created_at=time.time(), success=True,
+                                         credential_name=name, request_details={"body": "persisted"})
+        assert (await manager.get_call_record_content(request_id=name))["request_details"] == {"body": "persisted"}
+        _cache(None, name, "saved")
+        assert _cache(None, name) == "saved"
+        assert _lease(None, name, "one", True)
+        assert not _lease(None, name, "two", True)
+        assert _lease(None, name, "one", False)
+        assert not (tmp_path / "credentials.db").exists()
+    finally:
+        await storage.close()
+
+def test_compose_storage_selection_respects_service_environment(monkeypatch):
+    from src.storage.main_config import main_backend
+
+    monkeypatch.setenv("MAIN_MYSQL_DSN", "mysql://unused")
+    monkeypatch.setenv("GCLI_COMPOSE_STORAGE_BACKEND", "sqlite")
+    assert main_backend() == "sqlite"
+    monkeypatch.setenv("MAIN_STORAGE_BACKEND", "mysql")
+    assert main_backend() == "mysql"
