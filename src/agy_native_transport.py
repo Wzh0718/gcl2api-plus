@@ -96,6 +96,10 @@ class AgyNativeTransport:
             if parsed.hostname
         }
         hosts.add("play.googleapis.com")
+        # 官方客户端 bootstrap 的配置端点（GET /v1alpha:fetchConfig）。
+        # 固定 Google 主机，不随部署变化，写死比留一个容易漏配的环境变量可靠：
+        # 漏配时 sidecar 会直接拒连，而调用方只看到 best-effort 跳过。
+        hosts.add("aicode.googleapis.com")
         hosts.update(
             host.strip()
             for host in os.getenv(
