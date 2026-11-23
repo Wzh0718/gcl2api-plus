@@ -476,8 +476,8 @@ async def get_antigravity_stream2nostream() -> bool:
 # Antigravity hub 轨迹指纹（2.31.0 / CL 1017595969，官方二进制 --stamp 核验）
 # 这两个键刻意不走 ENV_MAPPINGS：优先级为 面板配置 > ENV > 默认值，
 # ENV 只作部署期兜底初始值，面板随时可改（hub 通道周更，需频繁维护）。
-_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.31.0"
-_ANTIGRAVITY_HUB_CL_DEFAULT = "1017595969"
+_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.34.0"
+_ANTIGRAVITY_HUB_CL_DEFAULT = "1026637980"
 
 
 async def get_antigravity_hub_version() -> str:
