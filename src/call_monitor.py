@@ -290,18 +290,25 @@ class CallMonitor:
     async def recent_page(
         self, *, page: int, page_size: int, failed_only: bool, api_key_id: Optional[str],
     ) -> Dict[str, Any]:
-        rows = await self.recent_snapshot()
-        filtered = [row for row in reversed(rows)
-                    if self._matches(row, failed_only=failed_only, api_key_id=api_key_id)]
+        cache = getattr(getattr(self.storage, "_backend", None), "recent_cache", None)
+        cached = await cache.selection(failed_only, api_key_id) if cache is not None else None
+        if cached is None:
+            rows = await self.recent_snapshot()
+            counters = self.snapshot_counters(rows)
+            matches = [row for row in reversed(rows)
+                       if self._matches(row, failed_only=failed_only, api_key_id=api_key_id)]
+        else:
+            matches, counters = cached
         page_size = min(max(int(page_size), 1), 200)
-        page = min(max(int(page), 1), max(1, -(-len(filtered) // page_size)))
-        records = filtered[(page - 1) * page_size:page * page_size]
+        page = min(max(int(page), 1), max(1, -(-len(matches) // page_size)))
+        records = matches[(page - 1) * page_size:page * page_size]
         details = self._backend_method("monitor_page_details")
         if details is not None:
-            records = await details([row["id"] for row in records])
+            ids = records if cached is not None else [row["id"] for row in records]
+            records = await details(ids)
         return {
-            "records": records, "total": len(filtered), "page": page, "page_size": page_size,
-            "counters": self.snapshot_counters(rows), "degraded": details is None,
+            "records": records, "total": len(matches), "page": page, "page_size": page_size,
+            "counters": counters, "degraded": details is None,
         }
 
     async def realtime_page(

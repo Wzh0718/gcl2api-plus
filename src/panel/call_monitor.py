@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import config
 from log import log
 from src.call_monitor import get_call_monitor
+from src.storage.monitor_history import HistoryPreparing
 from src.request_timing import get_inflight_requests
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
@@ -23,6 +24,11 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 _RANGES = {"recent", "today", "7d", "30d", "all"}
 _VIEWS = {"account", "key"}
+
+
+def _history_preparing():
+    return HTTPException(status_code=503, detail="正在构建历史汇总，完成后自动加载。",
+                         headers={"Retry-After": "3", "X-Monitor-History": "building"})
 
 
 def _range(value: str) -> str:
@@ -246,8 +252,6 @@ async def call_monitor_overview(
 
     storage = await get_storage_adapter()
     monitor = await get_call_monitor(storage)
-    if range_name != "recent":
-        await monitor.preload()
 
     backend = getattr(storage, "_backend", None)
     count_records = getattr(backend, "count_call_records", None)
@@ -266,7 +270,17 @@ async def call_monitor_overview(
 
     degraded = aggregator is None or count_records is None
     oldest_ts: Optional[float] = None
-    if degraded or range_name == "recent":
+    history = getattr(backend, "monitor_history", None)
+    if history is not None and not degraded and range_name != "recent":
+        try:
+            rows, counters, oldest_ts = await history.overview(
+                since_ts, view, failed_only, backend.monitor_visible_accounts()
+            )
+        except HistoryPreparing:
+            raise _history_preparing()
+    elif degraded or range_name == "recent":
+        if degraded:
+            await monitor.preload()
         if range_name == "recent":
             buffer_rows = await monitor.recent_snapshot()
         else:
@@ -334,6 +348,15 @@ async def call_monitor_realtime(
     filters = dict(page=page, page_size=page_size, failed_only=failed_only, api_key_id=api_key_id)
     if range_name == "recent":
         paged = await monitor.recent_page(**filters)
+    elif getattr(storage._backend, "monitor_history", None) is not None:
+        backend = storage._backend
+        try:
+            paged = await backend.monitor_history.page(
+                backend, since_ts, page, page_size, failed_only, api_key_id,
+                backend.monitor_visible_accounts(),
+            )
+        except HistoryPreparing:
+            raise _history_preparing()
     else:
         await monitor.preload()
         paged = await monitor.realtime_page(since_ts=since_ts, **filters)

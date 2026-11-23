@@ -3498,6 +3498,7 @@ const callMonitorState = {
     pageSize: 20,
     lastData: null,
     pendingRequest: null,
+    historyBuilding: false,
     expandedKeys: new Set(), // key 视图里已展开的密钥（API Key ID）
 };
 
@@ -3829,6 +3830,8 @@ async function loadCallMonitor(options = {}) {
     const previous = callMonitorState.pendingRequest;
     if (previous?.url === url) return;
     previous?.controller.abort();
+    const retryingHistory = callMonitorState.historyBuilding;
+    callMonitorState.historyBuilding = false;
     const request = { url, controller: new AbortController() };
     callMonitorState.pendingRequest = request;
     const timeout = setTimeout(() => request.controller.abort(), 30000);
@@ -3841,12 +3844,17 @@ async function loadCallMonitor(options = {}) {
         });
         const data = await response.json();
         if (callMonitorState.pendingRequest !== request) return;
+        if (response.status === 503 && response.headers.get('X-Monitor-History') === 'building') {
+            callMonitorState.historyBuilding = true;
+            content.innerHTML = '<div class="loading">正在构建历史汇总，完成后自动加载…</div>';
+            return;
+        }
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         callMonitorState.lastData = data;
         renderCallMonitor();
     } catch (error) {
         if (callMonitorState.pendingRequest !== request) return;
-        if (!silent || !callMonitorState.lastData) {
+        if (!silent || retryingHistory || !callMonitorState.lastData) {
             closeCallMonitorLatency();
             const message = error.name === 'AbortError'
                 ? '查询超时，请重试或缩短时间范围'
@@ -4496,7 +4504,7 @@ function startCallMonitorAutoRefresh() {
     AppState.callMonitorRefreshInterval = setInterval(() => {
         const tab = document.getElementById('call-monitorTab');
         if (document.visibilityState !== 'visible' || !tab?.classList.contains('active')) return;
-        if (!callMonitorState.autoRefresh || callMonitorState.range !== 'recent') return;
+        if (!callMonitorState.historyBuilding && (!callMonitorState.autoRefresh || callMonitorState.range !== 'recent')) return;
         loadCallMonitor({ silent: true });
     }, 10000);
 }

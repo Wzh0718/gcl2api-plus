@@ -40,6 +40,10 @@ async def transfer(source, conn, schema, full):
         SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'
         ORDER BY rowid
     """)]
+    # PostgreSQL rebuilds these derived totals from the copied detail records.
+    derived = {"monitor_history_5m", "monitor_history_daily", "monitor_history_rebuild", "monitor_history_rebuild_day"}
+    derived.add("monitor_tail_versions")
+    tables = [table for table in tables if table not in derived]
     # The rolling account window is created lazily in older SQLite installations.
     if set(tables) - set(pg_columns) or set(pg_columns) - set(tables) - {"account_usage"}:
         raise ValueError("Source and destination table sets differ")
