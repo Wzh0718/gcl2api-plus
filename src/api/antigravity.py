@@ -3141,6 +3141,20 @@ async def fetch_paid_tier_info(
         degraded = name == ANTIGRAVITY_STARTER_QUOTA_NAME
         if degraded:
             log.info(f"[ANTIGRAVITY TIER] 账号已被降档为 {ANTIGRAVITY_STARTER_QUOTA_NAME}")
+        # 客户端 bootstrap 序列（fetchAdminControls / aicode:fetchConfig）。
+        # 真实客户端启动时会先打这两类端点；按账号每天一次去重，best-effort。
+        try:
+            from src.antigravity_client_bootstrap import bootstrap_account_session
+
+            await bootstrap_account_session(
+                credential_name=credential_name or "",
+                access_token=access_token,
+                project_id=str((credential_data or {}).get("project_id") or ""),
+                proxy_url=proxy_url,
+                credential_data=dict(credential_data or {}),
+            )
+        except Exception as exc:  # noqa: BLE001 - bootstrap 不得影响档位查询
+            log.debug(f"[ANTIGRAVITY TIER] bootstrap 跳过: {type(exc).__name__}: {exc}")
         return {"id": tier_id, "name": name, "degraded": degraded}
     except Exception as e:
         log.warning(f"[ANTIGRAVITY TIER] loadCodeAssist error: {e}")
