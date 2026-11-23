@@ -116,32 +116,26 @@ class StorageAdapter:
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """初始化存储适配器。
-
-        生产只跑 PostgreSQL：``MAIN_POSTGRES_DSN`` 缺失时直接失败，不静默落到
-        SQLite，避免第二个主库分叉出另一套账目。单元测试需要用内存/临时库时，
-        显式设置 ``MAIN_STORAGE_BACKEND=sqlite``。
-        """
+        """按主库配置初始化 PostgreSQL 或本地 SQLite。"""
         async with self._lock:
             if self._initialized:
                 return
 
-            from .storage.main_postgres import main_dsn
+            from .storage.main_config import main_backend
 
-            if main_dsn():
+            backend = main_backend()
+            if backend == "mysql":
+                from .storage.mysql_manager import MySQLManager
+
+                self._backend = MySQLManager()
+            elif backend == "postgresql":
                 from .storage.postgres_manager import PostgresManager
 
                 self._backend = PostgresManager()
-            elif os.getenv("MAIN_STORAGE_BACKEND", "").strip().lower() == "sqlite":
-                # 仅测试夹具：显式声明才允许，生产路径不可达。
+            else:
                 from .storage.sqlite_manager import SQLiteManager
 
                 self._backend = SQLiteManager()
-            else:
-                raise RuntimeError(
-                    "MAIN_POSTGRES_DSN 未配置：主库只支持 PostgreSQL"
-                    "（测试请显式设置 MAIN_STORAGE_BACKEND=sqlite）"
-                )
             await self._backend.initialize()
             log.info(f"Main storage: {type(self._backend).__name__}")
 
@@ -577,6 +571,8 @@ class StorageAdapter:
 
         # 检查后端类型
         backend_class_name = self._backend.__class__.__name__
+        if backend_class_name == "MySQLManager":
+            return "mysql"
         if "SQLite" in backend_class_name or "sqlite" in backend_class_name.lower():
             return "sqlite"
         elif "MongoDB" in backend_class_name or "mongo" in backend_class_name.lower():

@@ -5,6 +5,8 @@ on:
     paths:
       - 'src/**'
       - 'scripts/postgres/**'
+      - 'scripts/mysql/**'
+      - 'requirements.txt'
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/main-postgres-tests.yml'
@@ -24,9 +26,27 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 2s --health-timeout 3s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+          MYSQL_DATABASE: gcli_test
+          MYSQL_USER: integration
+          MYSQL_PASSWORD: integration-test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost" --health-interval 3s --health-timeout 3s --health-retries 40
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 5d43a3d2b6fe7c52e24ce10f3e851261290041ea
+          path: .legacy-main-store
+          persist-credentials: false
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
-      - run: uv run --python 3.13 --extra dev python -m pytest -q tests/test_main_postgres.py
+      - run: uv run --python 3.13 --extra dev python -m pytest -q tests/test_main_postgres.py tests/test_main_store_compatibility.py
         env:
+          TEST_LEGACY_MAIN_SOURCE: .legacy-main-store
+          TEST_MAIN_MYSQL_DSN: mysql://integration:integration-test@127.0.0.1:3306/gcli_test
           TEST_MAIN_POSTGRES_DSN: postgresql://postgres:integration-test@127.0.0.1:5432/gcli_test

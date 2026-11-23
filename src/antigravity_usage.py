@@ -10,7 +10,7 @@ from pathlib import Path
 import sqlite3
 
 import psycopg
-from src.storage.main_postgres import main_dsn, sync_connection
+from src.storage.main_config import main_backend, external_connection
 from concurrent.futures import ThreadPoolExecutor
 
 from src.storage.sqlite_pragmas import apply_sync_pragmas
@@ -92,8 +92,8 @@ def _db_path() -> Path:
 
 @contextmanager
 def _connection(path, *, readonly=False):
-    if main_dsn():
-        with sync_connection() as db:
+    if main_backend() != "sqlite":
+        with external_connection() as db:
             yield db
     elif readonly:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
@@ -211,13 +211,16 @@ async def set_account_usage_policy(account: str, *, mode: str, limits: dict | No
 
 def _read_usage_state(path: Path, accounts: list[str], now: int, global_limits: dict):
     with _connection(path, readonly=True) as db:
-        if main_dsn():
+        if main_backend() == "postgresql":
             db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        elif main_backend() == "mysql":
+            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            db.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
         else:
             db.execute("BEGIN")
         policies = _account_policies(db, accounts)
         tracked = [account for account in accounts if _should_track(global_limits, policies.get(account, (False, {}))[1])]
-        table_exists = tracked and (main_dsn() or db.execute(
+        table_exists = tracked and (main_backend() != "sqlite" or db.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'account_usage'"
         ).fetchone())
         return policies, _usage_totals(db, tracked, now) if table_exists else {}
@@ -263,16 +266,18 @@ async def get_account_usage_snapshots(accounts: list[str], *, policy_details: bo
 
 def _admit(path: Path, account: str, global_limits: dict) -> int | None:
     global_tracking = _should_track(global_limits, {})
-    if not global_tracking and not main_dsn() and not path.is_file():
+    if not global_tracking and main_backend() == "sqlite" and not path.is_file():
         return None
     with _connection(path) as db:
         if not global_tracking:
             _, overrides = _account_policies(db, [account]).get(account, (False, {}))
             if not _should_track(global_limits, overrides):
                 return None
-        if main_dsn():
+        if main_backend() == "postgresql":
             db.execute("SELECT pg_advisory_xact_lock(72210441, hashtext(?))", (account,))
             db.execute("SELECT filename FROM antigravity_credentials WHERE filename=? FOR UPDATE", (account,))
+        elif main_backend() == "mysql":
+            db.execute("BEGIN IMMEDIATE")
         else:
             _initialize(path)
             db.execute("BEGIN IMMEDIATE")
@@ -313,7 +318,7 @@ def _admit(path: Path, account: str, global_limits: dict) -> int | None:
                        (now + retry_after, account))
             db.commit()  # Persist isolation before the exception exits the transaction.
             raise AccountUsageLimitReached(retry_after, rules=tuple(name for name, *_ in blocked))
-        if main_dsn():
+        if main_backend() == "postgresql":
             db.execute("""DELETE FROM account_usage WHERE (account, bucket) IN (
                 SELECT account, bucket FROM account_usage WHERE bucket <= ?
                 ORDER BY bucket, account LIMIT 512 FOR UPDATE SKIP LOCKED

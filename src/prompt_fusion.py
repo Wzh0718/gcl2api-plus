@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from src.storage.main_postgres import main_dsn, sync_connection
+from src.storage.main_config import main_backend, external_connection
 import sqlite3
 import time
 import uuid
@@ -73,14 +73,19 @@ async def enabled(account):
 
 
 def _cache(path, key, value=None):
-    if main_dsn():
-        with sync_connection() as db:
+    if main_backend() != "sqlite":
+        with external_connection() as db:
             now = time.time()
             if value is None:
                 row = db.execute("SELECT value FROM fusion WHERE key=? AND expires>?", (key, now)).fetchone()
                 return row[0] if row else None
             db.execute("INSERT INTO fusion VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET "
                        "value=excluded.value, expires=excluded.expires", (key, value, now + TTL))
+            if main_backend() == "mysql":
+                db.execute("DELETE FROM fusion WHERE expires <= ?", (now,))
+                db.execute("DELETE f FROM fusion f JOIN (SELECT key FROM fusion ORDER BY expires DESC "
+                           "LIMIT 18446744073709551615 OFFSET ?) old ON f.key=old.key", (MAX_ENTRIES,))
+                return
             db.execute("DELETE FROM fusion WHERE expires <= ? OR key IN "
                        "(SELECT key FROM fusion ORDER BY expires DESC OFFSET ?)", (now, MAX_ENTRIES))
             return
@@ -175,12 +180,19 @@ async def _generate(source, model, account, credential, api_key_id):
 
 
 def _lease(path, key, owner, claim):
-    if main_dsn():
-        with sync_connection() as db:
+    if main_backend() != "sqlite":
+        with external_connection() as db:
             if not claim:
                 db.execute("DELETE FROM leases WHERE key=? AND owner=?", (key, owner))
                 return True
             now = time.time()
+            if main_backend() == "mysql":
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM leases WHERE key=? AND expires<=?", (key, now))
+                if db.execute("SELECT owner FROM leases WHERE key=?", (key,)).fetchone():
+                    return False
+                db.execute("INSERT INTO leases VALUES (?,?,?)", (key, owner, now + 65))
+                return True
             return db.execute("INSERT INTO leases VALUES (?,?,?) ON CONFLICT(key) DO UPDATE "
                               "SET owner=excluded.owner, expires=excluded.expires WHERE leases.expires<=?",
                               (key, owner, now + 65, now)).rowcount == 1

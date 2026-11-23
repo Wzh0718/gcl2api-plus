@@ -204,7 +204,7 @@ class PostgresManager(SQLiteManager):
                 if is_dormant(row[0]):
                     return row, 0, True
                 cutoff = now - ROUTING_WINDOW_SECONDS
-                await db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
+                await db.execute(self._ADVANCE_TURN, (cutoff, cutoff, now, row[0]))
                 await db.commit()
                 return row, 0, False
 
