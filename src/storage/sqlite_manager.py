@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from src.request_timing import measured_db_lock
+from src.storage import recent_monitor_cache
 from src.storage.monitor_history import MonitorHistory, install as install_monitor_history
 from src.storage.sqlite_pragmas import BUSY_TIMEOUT_MS, apply_sync_pragmas, connect as sqlite_connect
 
@@ -169,6 +170,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._db_path = None
         self._credentials_dir = None
         self.monitor_history = None
+        self.recent_cache = None
         self._initialized = False
         self._lock = asyncio.Lock()
         self._selection_lock = asyncio.Lock()
@@ -258,6 +260,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     await db.commit()
                     await db.execute("BEGIN IMMEDIATE")
                     await install_monitor_history(db, postgres=False)
+                    cache_id = await recent_monitor_cache.install(db, False)
                     await db.commit()
 
                 # 加载配置到内存
@@ -274,6 +277,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         await self.close()
                         raise
                     log.info("Model statistics writes use PostgreSQL")
+                self.recent_cache = recent_monitor_cache.RecentMonitorCache(self._db_path, cache_id, self.monitor_excluded_accounts())
                 self.monitor_history = MonitorHistory(self._db_path)
                 self._initialized = True
                 log.info(f"SQLite storage initialized at {self._db_path}")
@@ -1178,6 +1182,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             await self.flush_call_records()
         except Exception as exc:
             log.warning(f"[CALL MONITOR] 关闭前写入剩余调用记录失败: {type(exc).__name__}")
+        if self.recent_cache is not None:
+            await self.recent_cache.close()
         if self._success_reader is not None:
             await self._success_reader.close()
             self._success_reader = None
@@ -3994,9 +4000,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             row["_flushed"] = True
         try:
             params = await asyncio.to_thread(self._call_record_params, batch)
-            async with sqlite_connect(self._db_path) as db:
-                await self._insert_monitor_batch(db, params)
-                await db.commit()
+            await self._commit_monitor_batch(params)
         except Exception as exc:
             # 没写成功：解除固化，让收尾路径仍有机会补写。
             for row, _ in batch:
@@ -4005,8 +4009,27 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 f"[CALL MONITOR] 批量写入 {len(batch)} 条调用记录失败: {type(exc).__name__}"
             )
 
-    async def _insert_monitor_batch(self, db, params):
+    async def _commit_monitor_batch(self, params):
+        cache = self.recent_cache
+        capture = cache is not None and cache.available
+        async with sqlite_connect(self._db_path) as db:
+            if capture and not cache.postgres:
+                # Keep generated IDs and the database revision in the same transaction.
+                await db.execute("BEGIN IMMEDIATE")
+            rows = await self._insert_monitor_batch(db, params, capture=capture)
+            if capture:
+                revision = await cache.revision(db)
+            await db.commit()
+        if capture:
+            cache.publish(revision, 1 if cache.postgres else len(params), rows)
+
+    async def _insert_monitor_batch(self, db, params, *, capture=False):
         await db.executemany(self._CALL_RECORD_INSERT_SQL, params)
+        if capture:
+            return await (await db.execute(
+                f"SELECT {recent_monitor_cache.FIELDS} FROM call_records ORDER BY id DESC LIMIT ?",
+                (min(len(params), recent_monitor_cache.LIMIT),),
+            )).fetchall()
 
     @staticmethod
     def _call_record_params(batch) -> List[Tuple[Any, ...]]:
@@ -4096,32 +4119,21 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         self._ensure_initialized()
         # Large conversation snapshots must not block the request event loop.
         packed_details = await asyncio.to_thread(encode_details, request_details or {})
-        async with sqlite_connect(self._db_path) as db:
-            await db.execute(
-                """INSERT INTO call_records(
-                        request_id, created_at, api_key_id, credential_name, channel,
-                        model_name, request_model, upstream_model, task_type, success, status_code, gateway_seconds,
-                        input_tokens, output_tokens, cache_tokens, thought_tokens,
-                        total_tokens, total_cost, currency, request_features, request_details,
-                        timing_id, upstream_first_byte_seconds, downstream_first_byte_seconds, response_total_seconds,
-                        upstream_response_seconds, downstream_send_seconds, timing_details
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    request_id, float(created_at), api_key_id or "env",
-                    os.path.basename(credential_name or ""), channel or "antigravity",
-                    model_name or "", request_model or "", upstream_model or "", task_type or "chat", 1 if success else 0,
-                    status_code, gateway_seconds,
-                    max(int(input_tokens), 0), max(int(output_tokens), 0),
-                    max(int(cache_tokens), 0), max(int(thought_tokens), 0),
-                    max(int(total_tokens), 0), total_cost, currency or "CNY",
-                    json.dumps(request_features or {}, ensure_ascii=False),
-                    packed_details, timing_id, upstream_first_byte_seconds,
-                    downstream_first_byte_seconds, response_total_seconds,
-                    upstream_response_seconds, downstream_send_seconds,
-                    await asyncio.to_thread(encode_details, timing_details or {}),
-                ),
-            )
-            await db.commit()
+        params = (
+            request_id, float(created_at), api_key_id or "env",
+            os.path.basename(credential_name or ""), channel or "antigravity",
+            model_name or "", request_model or "", upstream_model or "", task_type or "chat", 1 if success else 0,
+            status_code, gateway_seconds,
+            max(int(input_tokens), 0), max(int(output_tokens), 0),
+            max(int(cache_tokens), 0), max(int(thought_tokens), 0),
+            max(int(total_tokens), 0), total_cost, currency or "CNY",
+            json.dumps(request_features or {}, ensure_ascii=False),
+            packed_details, timing_id, upstream_first_byte_seconds,
+            downstream_first_byte_seconds, response_total_seconds,
+            upstream_response_seconds, downstream_send_seconds,
+            await asyncio.to_thread(encode_details, timing_details or {}),
+        )
+        await self._commit_monitor_batch([params])
 
     async def update_call_record_timing(
         self, timing_id: str, *, downstream_first_byte_seconds: Optional[float],
@@ -4189,8 +4201,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     @staticmethod
     def monitor_visible_accounts():
-        return """credential_name NOT IN (
-                SELECT a.filename
+        return f"credential_name NOT IN ({SQLiteManager.monitor_excluded_accounts()})"
+
+    @staticmethod
+    def monitor_excluded_accounts():
+        return """SELECT a.filename
                 FROM antigravity_credentials a
                 LEFT JOIN antigravity_account_health h
                        ON h.credential_name = a.filename
@@ -4199,7 +4214,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                    OR lower(COALESCE(h.eligibility_reason, '')) LIKE '%terms of service%'
                    OR lower(COALESCE(h.last_403_reason, '')) LIKE '%tos_violation%'
                    OR lower(COALESCE(h.eligibility_reason, '')) LIKE '%tos_violation%'
-            )"""
+            """
 
     async def _monitor_lookup(self, query: str, keys: List[str]) -> list:
         """Batch indexed lookups within SQLite's bind parameter limit."""

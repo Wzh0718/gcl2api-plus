@@ -23,6 +23,7 @@ from src.rate_limits import selection_retry_at
 from src.storage.account_cooldowns import AccountCooldowns, CachedRejection
 from src.storage.main_postgres import (PostgresDatabase, close_sync_pool, connection_options,
                                        main_dsn, open_sync_pool, pg_query, safe_database_errors)
+from src.storage import recent_monitor_cache
 from src.storage.monitor_history import MonitorHistory, install as install_monitor_history
 from src.storage.pg_model_stats import PostgresModelStats
 from src.storage.refresh_import_queue import RefreshImportQueue
@@ -86,6 +87,7 @@ class PostgresManager(SQLiteManager):
                         )
                     await conn.execute((DDL / "main_runtime.sql").read_text())
                     await install_monitor_history(conn, postgres=True)
+                    cache_id = await recent_monitor_cache.install(conn, True)
                     await conn.execute(
                         """
                         INSERT INTO api_keys(id,name,key_prefix,kind,status,currency,quota_period_start)
@@ -107,6 +109,7 @@ class PostgresManager(SQLiteManager):
                 self._sync_key = (main_dsn(), database.schema)
                 open_sync_pool(self._sync_key)
                 self._cooldowns = AccountCooldowns(main_dsn() + "|" + database.schema)
+                self.recent_cache = recent_monitor_cache.RecentMonitorCache(database, cache_id, self.monitor_excluded_accounts())
                 self.monitor_history = MonitorHistory(database)
                 self._initialized = True
                 log.info(f"PostgreSQL main pool ready: max_size={database.pool.max_size} per worker")
@@ -131,7 +134,7 @@ class PostgresManager(SQLiteManager):
             await self._claim_pool.close()
             await self._db_path.pool.close()
 
-    async def _insert_monitor_batch(self, db, params):
+    async def _insert_monitor_batch(self, db, params, *, capture=False):
         # A single INSERT lets the AFTER STATEMENT trigger fold a whole batch before
         # taking summary row locks. Arrays also avoid the bind-count limit of VALUES.
         types = (
@@ -146,7 +149,13 @@ class PostgresManager(SQLiteManager):
                 columns[index] = [v.encode() if isinstance(v, str) else v for v in columns[index]]
         target = self._CALL_RECORD_INSERT_SQL.split(" VALUES ", 1)[0]
         arrays = ", ".join(f"?::{kind}[]" for kind in types)
-        await db.execute(f"{target} SELECT * FROM unnest({arrays})", columns)
+        query = f"{target} SELECT * FROM unnest({arrays})"
+        if capture:
+            cursor = await db.execute(f"{query} RETURNING {recent_monitor_cache.FIELDS}", columns)
+            # RETURNING order need not match input or ID order.
+            rows = await cursor.fetchall()
+            return sorted(rows, key=lambda row: row[0])[-recent_monitor_cache.LIMIT:]
+        await db.execute(query, columns)
 
     async def get_api_key_by_prefix(self, key_prefix):
         fields = tuple(name for name in self.API_KEY_COLUMNS if name != "secret_ciphertext")
