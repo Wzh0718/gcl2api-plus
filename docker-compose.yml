@@ -79,6 +79,8 @@ services:
       # - MONGODB_URI=${MONGODB_URI}
       # - MONGODB_DATABASE=${MONGODB_DATABASE:-gcli2api}
 
+      # Empty selects SQLite unless the container has MAIN_POSTGRES_DSN.
+      - MAIN_STORAGE_BACKEND=${MAIN_STORAGE_BACKEND:-}
       # Optional main PostgreSQL store (also supported via service env_file).
       # - MAIN_POSTGRES_DSN=${MAIN_POSTGRES_DSN}
       # - MAIN_POSTGRES_POOL_MAX_SIZE=${MAIN_POSTGRES_POOL_MAX_SIZE:-100}

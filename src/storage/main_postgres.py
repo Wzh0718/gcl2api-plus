@@ -17,7 +17,16 @@ from src.request_timing import measure_pg
 
 
 def main_dsn():
-    return os.getenv("MAIN_POSTGRES_DSN", "").strip()
+    """Return the selected main-store DSN, or an empty string for SQLite."""
+    backend = os.getenv("MAIN_STORAGE_BACKEND", "").strip().lower()
+    if backend == "sqlite":
+        return ""
+    if backend not in ("", "postgres", "postgresql"):
+        raise RuntimeError("MAIN_STORAGE_BACKEND 仅支持 sqlite 或 postgresql")
+    dsn = os.getenv("MAIN_POSTGRES_DSN", "").strip()
+    if backend and not dsn:
+        raise RuntimeError("选择 PostgreSQL 主库时必须配置 MAIN_POSTGRES_DSN")
+    return dsn
 
 
 def schema_name():

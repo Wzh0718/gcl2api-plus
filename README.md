@@ -102,6 +102,8 @@ cp .env.example .env
 | `API_PASSWORD` | API 端点密码 | 生产环境单独设置 |
 | `PANEL_PASSWORD` | 控制面板密码 | 生产环境单独设置 |
 | `PASSWORD` | 兼容旧部署的通用密码 | 设置后优先级最高 |
+| `MAIN_STORAGE_BACKEND` | 显式选择 `sqlite` 或 `postgresql` | 未设置时按主库 DSN 选择 |
+| `MAIN_POSTGRES_DSN` | PostgreSQL 主库连接串 | 可选，Compose 用户可通过服务的 `env_file` 注入 |
 | `CREDENTIALS_DIR` | SQLite 数据库和凭证目录 | `./creds` |
 | `PROXY` | 全局代理 | 按需设置 `http` / `https` / `socks5` |
 | `REDIS_URL` | 计费镜像和看板加速 | 可选，故障时回退 SQLite |
@@ -110,7 +112,7 @@ cp .env.example .env
 | `MAX_NON_STREAM_BUFFER_BYTES` | 非流响应最大缓冲区 | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` | 单次账号候选上限 | `32` |
 
-配置优先级为：显式环境变量 > `.env` > SQLite 配置 > 代码默认值。SQLite 是唯一的持久化主账本，Redis 只作为计费和看板镜像，不替代 SQLite。
+配置优先级为：显式环境变量 > `.env` > 主库配置 > 代码默认值。未指定后端和主库 DSN 时，服务使用 `CREDENTIALS_DIR/credentials.db`。显式设置 `MAIN_STORAGE_BACKEND=sqlite` 优先于 DSN。选择 PostgreSQL 时，连接失败会报错，避免账目分散到两个数据库。
 
 上面只是常用项。全部环境变量（含本 fork 新增的 ★ 标记变量，如 403 复检、网络检查、计费看板等）按功能分组收录在 [环境变量参考](docs/CUSTOMIZATION.md#环境变量参考)；`.env.example` 中每个变量也带默认值注释。
 
