@@ -458,6 +458,10 @@ async def get_antigravity_stream2nostream() -> bool:
     控制antigravity非流式请求是否使用流式API并收集为完整响应。
     启用后，非流式请求将在后端使用流式API，然后收集所有块后再返回完整响应。
 
+    **保持不变式**：本开关必须保持 False。约定是「客户端流式→上游流式、
+    客户端非流式→上游非流式」端到端一致；开启后非流客户端会在上游表现为
+    流式请求，属于形态失真，排查封号时会干扰判断。
+
     Environment variable: ANTIGRAVITY_STREAM2NOSTREAM
     Database config key: antigravity_stream2nostream
     Default: False
