@@ -480,7 +480,22 @@ async def wrap_cli_request(
                     {"includeThoughts": True, "thinkingBudget": budget},
                 )
 
-    request_id = _generate_request_id(state.conversation_id, state.trajectory_id, state.step_index)
+    if is_image_request:
+        # 对齐 agy hub 原生图片信封：request 内不带 model / responseModalities，
+        # requestId 使用 image_gen/<ms>/<uuid>/<step>，而不是 agent/ 轨迹格式。
+        inner.pop("model", None)
+        gen_cfg = inner.get("generationConfig")
+        if isinstance(gen_cfg, dict):
+            gen_cfg = dict(gen_cfg)
+            gen_cfg.pop("responseModalities", None)
+            gen_cfg.pop("response_modalities", None)
+            inner["generationConfig"] = gen_cfg
+        request_id = (
+            f"image_gen/{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+            f"/{uuid.uuid4()}/{state.step_index}"
+        )
+    else:
+        request_id = _generate_request_id(state.conversation_id, state.trajectory_id, state.step_index)
 
     # 非 gmail 账号使用 jetski 指纹
     email = (user_email or "").strip().lower()
