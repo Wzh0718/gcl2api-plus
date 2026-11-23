@@ -121,9 +121,14 @@ class StorageAdapter:
             if self._initialized:
                 return
 
-            from .storage.main_postgres import main_dsn
+            from .storage.main_config import main_backend
 
-            if main_dsn():
+            backend = main_backend()
+            if backend == "mysql":
+                from .storage.mysql_manager import MySQLManager
+
+                self._backend = MySQLManager()
+            elif backend == "postgresql":
                 from .storage.postgres_manager import PostgresManager
 
                 self._backend = PostgresManager()
@@ -566,6 +571,8 @@ class StorageAdapter:
 
         # 检查后端类型
         backend_class_name = self._backend.__class__.__name__
+        if backend_class_name == "MySQLManager":
+            return "mysql"
         if "SQLite" in backend_class_name or "sqlite" in backend_class_name.lower():
             return "sqlite"
         elif "MongoDB" in backend_class_name or "mongo" in backend_class_name.lower():

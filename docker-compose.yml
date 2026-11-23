@@ -79,8 +79,11 @@ services:
       # - MONGODB_URI=${MONGODB_URI}
       # - MONGODB_DATABASE=${MONGODB_DATABASE:-gcli2api}
 
-      # Empty selects SQLite unless the container has MAIN_POSTGRES_DSN.
+      # Empty selects SQLite when the container has no external main-store DSN.
       - MAIN_STORAGE_BACKEND=${MAIN_STORAGE_BACKEND:-}
+      # Optional MySQL 8.4 store (may also be set in a service env_file).
+      # - MAIN_MYSQL_DSN=${MAIN_MYSQL_DSN}
+      # - MAIN_MYSQL_SSL_CA=/app/creds/mysql-ca.pem
       # Optional main PostgreSQL store (also supported via service env_file).
       # - MAIN_POSTGRES_DSN=${MAIN_POSTGRES_DSN}
       # - MAIN_POSTGRES_POOL_MAX_SIZE=${MAIN_POSTGRES_POOL_MAX_SIZE:-100}

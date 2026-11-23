@@ -165,6 +165,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     }
 
     main_postgres = False
+    main_mysql = False
 
     def __init__(self):
         self._db_path = None
@@ -1376,13 +1377,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                    SET call_count = COALESCE(call_count, 0) + 1,
                        routing_turn = (SELECT COALESCE(MAX(routing_turn), 0) + 1
                                        FROM antigravity_credentials),
-                       routing_window_started_at = CASE
-                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
-                           ELSE routing_window_started_at
-                       END,
                        routing_window_count = CASE
                            WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
                            ELSE COALESCE(routing_window_count, 0) + 1
+                       END,
+                       routing_window_started_at = CASE
+                           WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                           ELSE routing_window_started_at
                        END,
                        updated_at = unixepoch()
                    WHERE filename = {target}"""
@@ -1455,7 +1456,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 return None, resume or 0, False
             if is_dormant(row[0]):
                 return row, 0, True
-            db.execute(self._ADVANCE_TURN, (cutoff, now, cutoff, row[0]))
+            db.execute(self._ADVANCE_TURN, (cutoff, cutoff, now, row[0]))
             db.commit()
             return row, 0, False
 
@@ -1504,13 +1505,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             routing_sql = """ , routing_turn = (
                                     SELECT COALESCE(MAX(routing_turn), 0) + 1
                                     FROM antigravity_credentials
-                                ), routing_window_started_at = CASE
-                                    WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
-                                    ELSE routing_window_started_at
-                                END,
-                                routing_window_count = CASE
+                                ), routing_window_count = CASE
                                     WHEN COALESCE(routing_window_started_at, 0) <= ? THEN 1
                                     ELSE COALESCE(routing_window_count, 0) + 1
+                                END,
+                                routing_window_started_at = CASE
+                                    WHEN COALESCE(routing_window_started_at, 0) <= ? THEN ?
+                                    ELSE routing_window_started_at
                                 END"""
             routing_params.extend((routing_cutoff, current_time, routing_cutoff))
         params = [*routing_params, *params]
@@ -1518,6 +1519,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         try:
             async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
                 async with sqlite_connect(self._db_path) as db:
+                    if self.main_mysql:
+                        await db.execute("BEGIN IMMEDIATE")
                     if self.main_postgres:
                         await db.execute("SELECT pg_advisory_xact_lock(72210440)")
                     result = await db.execute(
@@ -1575,7 +1578,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                          (event["created_at"], json.dumps(event)))
         # Indexed, bounded history: 30 days and at most 100,000 small rows.
         await db.execute("DELETE FROM credential_audit_events WHERE created_at < ?", (time.time()-30*86400,))
-        await db.execute("DELETE FROM credential_audit_events WHERE id <= (SELECT MAX(id)-100000 FROM credential_audit_events)")
+        await db.execute("""DELETE FROM credential_audit_events WHERE id <= (
+            SELECT cutoff FROM (SELECT MAX(id)-100000 AS cutoff FROM credential_audit_events) AS audit_limit
+        )""")
 
     async def store_credential(
         self, filename: str, credential_data: Dict[str, Any], mode: str = "geminicli",
@@ -1699,13 +1704,24 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             if active is not None:
                 return "acquired" if active[0] == owner else "busy" if active[0] else "cooldown"
             await db.execute("BEGIN IMMEDIATE")
-            await db.execute("""
-                INSERT INTO credential_refresh_leases (mode, filename, owner, expires_at)
-                VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400 + ?)
-                ON CONFLICT(mode, filename) DO UPDATE SET
-                    owner=excluded.owner, expires_at=excluded.expires_at
-                WHERE credential_refresh_leases.expires_at <= (julianday('now') - 2440587.5) * 86400
-            """, (mode, filename, owner, ttl))
+            if self.main_mysql:
+                await db.execute(
+                    "DELETE FROM credential_refresh_leases WHERE mode=? AND filename=? AND expires_at<=UNIX_TIMESTAMP(NOW(6))",
+                    (mode, filename),
+                )
+                await db.execute(
+                    """INSERT INTO credential_refresh_leases(mode,filename,owner,expires_at)
+                       VALUES (?,?,?,UNIX_TIMESTAMP(NOW(6))+?) ON DUPLICATE KEY UPDATE owner=credential_refresh_leases.owner""",
+                    (mode, filename, owner, ttl),
+                )
+            else:
+                await db.execute("""
+                    INSERT INTO credential_refresh_leases (mode, filename, owner, expires_at)
+                    VALUES (?, ?, ?, (julianday('now') - 2440587.5) * 86400 + ?)
+                    ON CONFLICT(mode, filename) DO UPDATE SET
+                        owner=excluded.owner, expires_at=excluded.expires_at
+                    WHERE credential_refresh_leases.expires_at <= (julianday('now') - 2440587.5) * 86400
+                """, (mode, filename, owner, ttl))
             async with db.execute(
                 "SELECT owner FROM credential_refresh_leases WHERE mode=? AND filename=?",
                 (mode, filename),
@@ -2184,7 +2200,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 cursor = await db.execute(
                     """INSERT INTO proxy_groups(
                            name, description, strategy, enabled, exclusive_assignment
-                       ) VALUES (?, ?, ?, ?, ?) RETURNING id""",
+                       ) VALUES (?, ?, ?, ?, ?)""" + ("" if self.main_mysql else " RETURNING id"),
                     (
                         name,
                         str(description or "").strip(),
@@ -2194,10 +2210,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     ),
                 )
             except Exception as exc:
-                if "UNIQUE" in str(exc).upper():
+                if "UNIQUE" in str(exc).upper() or (self.main_mysql and exc.args[:1] == (1062,)):
                     raise ValueError("代理组名称已存在") from exc
                 raise
-            group_id = (await cursor.fetchone())[0]
+            group_id = cursor.lastrowid if self.main_mysql else (await cursor.fetchone())[0]
             await db.commit()
         return await self.get_proxy_group(int(group_id))
 
@@ -2391,7 +2407,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     f"UPDATE proxy_groups SET {assignments} WHERE id = ?", params
                 )
             except Exception as exc:
-                if "UNIQUE" in str(exc).upper():
+                if "UNIQUE" in str(exc).upper() or (self.main_mysql and exc.args[:1] == (1062,)):
                     raise ValueError("代理组名称已存在") from exc
                 raise
             if result.rowcount == 0:
@@ -2450,6 +2466,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     )
                 """
                 group_params = (int(group_id),)
+                if self.main_mysql:
+                    # Prevent MySQL from merging the source into the mutated target.
+                    removable_nodes = f"SELECT id FROM ({removable_nodes} LIMIT 18446744073709551615) AS removable"
+
                 await db.execute(
                     f"""UPDATE antigravity_account_health
                         SET egress_ip = NULL, egress_country = NULL,
@@ -3443,20 +3463,31 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             await db.execute("BEGIN IMMEDIATE")
             # Claim this request before sweeping other expired rows. Concurrent
             # sweepers skip locks held by live settlements on PostgreSQL.
-            inserted = await db.execute(
-                """INSERT INTO billing_request_dedupe(request_id, created_at, expires_at)
-                   VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
-                       created_at=excluded.created_at, expires_at=excluded.expires_at
-                   WHERE billing_request_dedupe.expires_at < excluded.created_at""",
-                (request_id, now, expires_at),
-            )
-            await db.execute(
-                f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
-                       SELECT request_id FROM billing_request_dedupe
-                       WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500
-                   )""",
-                (now,),
-            )
+            if self.main_mysql:
+                # The transaction already holds the main_write_lock row. Expire
+                # this ID even when the bounded maintenance sweep has a backlog.
+                await db.execute("DELETE FROM billing_request_dedupe WHERE request_id=? AND expires_at<?", (request_id, now))
+                inserted = await db.execute(
+                    """INSERT INTO billing_request_dedupe VALUES (?, ?, ?)
+                       ON DUPLICATE KEY UPDATE request_id=billing_request_dedupe.request_id""",
+                    (request_id, now, expires_at),
+                )
+                await db.execute("DELETE FROM billing_request_dedupe WHERE expires_at<? ORDER BY expires_at,request_id LIMIT 500", (now,))
+            else:
+                inserted = await db.execute(
+                    """INSERT INTO billing_request_dedupe(request_id, created_at, expires_at)
+                       VALUES (?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET
+                           created_at=excluded.created_at, expires_at=excluded.expires_at
+                       WHERE billing_request_dedupe.expires_at < excluded.created_at""",
+                    (request_id, now, expires_at),
+                )
+                await db.execute(
+                    f"""DELETE FROM billing_request_dedupe WHERE request_id IN (
+                           SELECT request_id FROM billing_request_dedupe
+                           WHERE expires_at < ? ORDER BY expires_at, request_id LIMIT 500
+                       )""",
+                    (now,),
+                )
             if inserted.rowcount == 0:
                 await db.commit()
                 return False
@@ -3769,7 +3800,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         total_cost_e8 = self._money_e8_sql("total_cost")
         async with sqlite_connect(self._db_path) as db:
             async with db.execute(
-                f"SELECT COUNT(*) FROM (SELECT {dimension}, currency FROM billing_daily WHERE billing_date BETWEEN ? AND ?{key_filter} GROUP BY {dimension}, currency)",
+                f"SELECT COUNT(*) FROM (SELECT {dimension}, currency FROM billing_daily WHERE billing_date BETWEEN ? AND ?{key_filter} GROUP BY {dimension}, currency) AS ranked_groups",
                 base_params,
             ) as cursor:
                 total = int((await cursor.fetchone())[0])
@@ -3805,7 +3836,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                        SELECT api_key_id, currency FROM billing_daily
                        WHERE billing_date BETWEEN ? AND ?
                        GROUP BY api_key_id, currency
-                   )""",
+                   ) AS key_groups""",
                 (start_date, end_date),
             ) as cursor:
                 total = int((await cursor.fetchone())[0])

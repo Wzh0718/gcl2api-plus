@@ -6775,6 +6775,7 @@ function populateConfigForm() {
     const webhookSource = document.getElementById('dingtalkWebhookSource');
     if (webhookSource) {
         const source = AppState.webhookSource === 'postgresql' ? 'PostgreSQL 保存值' :
+            AppState.webhookSource === 'mysql' ? 'MySQL 保存值' :
             AppState.webhookSource === 'sqlite' ? 'SQLite 保存值' :
             AppState.webhookSource === 'environment' ? 'Compose / 环境变量' : '未配置';
         webhookSource.textContent = `当前来源：${source}${!c.dingtalk_webhook_url ? '（空）' : ''}`;

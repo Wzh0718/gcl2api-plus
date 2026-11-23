@@ -19,5 +19,6 @@ def _disable_antigravity_pacing(monkeypatch):
 def _sqlite_test_backend(monkeypatch):
     """隔离宿主机的主库配置，使用默认 SQLite。"""
     monkeypatch.delenv("MAIN_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("MAIN_MYSQL_DSN", raising=False)
     monkeypatch.delenv("MAIN_POSTGRES_DSN", raising=False)
     yield
