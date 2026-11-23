@@ -1,4 +1,5 @@
 """Opt-in Antigravity baseline and caller guidance, after protocol conversion."""
+import os
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
@@ -77,12 +78,35 @@ def _baseline_for_version(version: str) -> str:
     return path.read_text(encoding='utf-8').strip()
 
 
+_CAPTURED_PROMPT_ENV = "ANTIGRAVITY_FULL_PROMPT_BASELINE"
+_CAPTURED_PROMPT_FILE = "antigravity-captured-2.25.0.txt"
+
+
+def captured_full_prompt() -> str | None:
+    """实抓全量基线（hub 2.25.0 真实 systemInstruction，19,871 字符 / 12 段）。
+
+    默认关闭。现有设计里基线只承担兼容层职责，用户 system 会走 GUIDANCE 通道
+    以 user 角色注入；直接换成真实全量文本会改变模型行为，需灰度后再开。
+    开关：ANTIGRAVITY_FULL_PROMPT_BASELINE=1
+    """
+    if os.getenv(_CAPTURED_PROMPT_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        text = (PROMPT_DIR / _CAPTURED_PROMPT_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def baseline_prompt(version: str | None = None) -> str:
     """取基线提示词；version 为空时用部署配置的 hub 版本。
 
     只支持已经随仓库分发基线的版本，缺失时回退到内置版本——宁可版本不符，
     也不要在线上生成一个内容不可控的 system。
     """
+    captured = captured_full_prompt()
+    if captured:
+        return captured
     return _baseline_for_version(version or _configured_prompt_version())
 
 
