@@ -30,8 +30,10 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 # 降级链（antigravity_model_fallback_chain）打到此类账号上可能触发
 # INVALID_ARGUMENT。确认其 fetchAvailableModels 覆盖当前模型后再提权重。
 VERIFIED_BUILDS: Tuple[Tuple[str, str, int], ...] = (
-    ("2.34.0", "1026637980", 65),  # Built on 2026-11-21（--stamp 实读，当前最新）
-    ("2.31.2", "1019359392", 35),  # 2026-11 中旬，滞后一档
+    ("2.34.0", "1026637980", 40),  # Built on 2026-11-21（--stamp 实读，最新）
+    ("2.33.1", "1026001617", 30),  # Built on 2026-11-20（--stamp 实读）
+    ("2.32.2", "1022991777", 20),  # Built on 2026-11-17（--stamp 实读）
+    ("2.31.2", "1019359392", 10),  # 2026-11 中旬，滞后两档
     ("2.31.0", "1017595969", 0),   # Built on 2026-11-10，保留实读记录
     ("2.28.2", "1009437749", 0),   # Built on 2026-10-29，待模型目录核验后启用
 )
