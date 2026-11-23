@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from src.request_timing import measured_db_lock
+from src.storage.monitor_history import MonitorHistory, install as install_monitor_history
 from src.storage.sqlite_pragmas import BUSY_TIMEOUT_MS, apply_sync_pragmas, connect as sqlite_connect
 
 from log import log
@@ -167,6 +168,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     def __init__(self):
         self._db_path = None
         self._credentials_dir = None
+        self.monitor_history = None
         self._initialized = False
         self._lock = asyncio.Lock()
         self._selection_lock = asyncio.Lock()
@@ -252,6 +254,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     # 初始化调度负载，让历史使用较少的账号有界地优先补齐。
                     await self._backfill_credential_call_counts(db)
 
+                    # Rollup tables, triggers and legacy work markers become visible atomically.
+                    await db.commit()
+                    await db.execute("BEGIN IMMEDIATE")
+                    await install_monitor_history(db, postgres=False)
                     await db.commit()
 
                 # 加载配置到内存
@@ -268,6 +274,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         await self.close()
                         raise
                     log.info("Model statistics writes use PostgreSQL")
+                self.monitor_history = MonitorHistory(self._db_path)
                 self._initialized = True
                 log.info(f"SQLite storage initialized at {self._db_path}")
 
@@ -1157,6 +1164,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     async def close(self) -> None:
         """关闭数据库连接"""
+        if self.monitor_history is not None:
+            await self.monitor_history.close()
         writer = self._call_writer
         if writer is not None:
             writer.cancel()
@@ -3986,7 +3995,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         try:
             params = await asyncio.to_thread(self._call_record_params, batch)
             async with sqlite_connect(self._db_path) as db:
-                await db.executemany(self._CALL_RECORD_INSERT_SQL, params)
+                await self._insert_monitor_batch(db, params)
                 await db.commit()
         except Exception as exc:
             # 没写成功：解除固化，让收尾路径仍有机会补写。
@@ -3995,6 +4004,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             log.warning(
                 f"[CALL MONITOR] 批量写入 {len(batch)} 条调用记录失败: {type(exc).__name__}"
             )
+
+    async def _insert_monitor_batch(self, db, params):
+        await db.executemany(self._CALL_RECORD_INSERT_SQL, params)
 
     @staticmethod
     def _call_record_params(batch) -> List[Tuple[Any, ...]]:
@@ -4172,8 +4184,12 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             params.append(api_key_id)
         # 条款封禁（TOS_VIOLATION）账号的调用记录不计入统计：
         # 这类账号已被永久停用，历史失败（曾达数十万次）会污染账号/密钥视图。
-        clauses.append(
-            """credential_name NOT IN (
+        clauses.append(SQLiteManager.monitor_visible_accounts())
+        return " AND ".join(clauses), params
+
+    @staticmethod
+    def monitor_visible_accounts():
+        return """credential_name NOT IN (
                 SELECT a.filename
                 FROM antigravity_credentials a
                 LEFT JOIN antigravity_account_health h
@@ -4184,8 +4200,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                    OR lower(COALESCE(h.last_403_reason, '')) LIKE '%tos_violation%'
                    OR lower(COALESCE(h.eligibility_reason, '')) LIKE '%tos_violation%'
             )"""
-        )
-        return " AND ".join(clauses), params
 
     async def _monitor_lookup(self, query: str, keys: List[str]) -> list:
         """Batch indexed lookups within SQLite's bind parameter limit."""

@@ -162,3 +162,52 @@ async def test_recent_views_share_a_bounded_filtered_window(tmp_path, monkeypatc
         assert page["counters"]["failed"] == 333
     finally:
         await adapter.close()
+
+
+async def test_history_repairs_changed_buckets_and_survives_restart(tmp_path, monkeypatch):
+    from src.storage.monitor_history import BUCKET, HistoryPreparing
+    from src.storage.sqlite_manager import SQLiteManager
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    backend = SQLiteManager()
+    await backend.initialize()
+    history = backend.monitor_history
+    visible = backend.monitor_visible_accounts()
+    day = 1_700_000_000 // BUCKET * BUCKET
+    try:
+        for i, offset in enumerate((1, BUCKET - 1, BUCKET + 1, BUCKET + 1)):
+            await backend.insert_call_record(
+                request_id=str(i), created_at=day + offset, api_key_id="k", credential_name="a",
+                model_name="m", success=i % 2 == 0, status_code=200 if i % 2 == 0 else 429,
+                total_cost="0.00000009", gateway_seconds=None if i == 2 else 2,
+            )
+        rows, counters, _ = await history.overview(day + 1.25, "account", False, visible)
+        assert counters["logs"] == 3
+        assert rows[0]["total_cost"] == "0.00000027"
+        assert rows[0]["avg_gateway_seconds"] == 2
+        assert rows[0]["last_status_code"] == 429
+
+        # Retention deletes part of the first bucket; a correction moves the newest
+        # failed request to another day. Interrupt maintenance between transactions.
+        await backend.delete_call_records_before(day + 2)
+        with sqlite3.connect(backend._db_path) as db:
+            db.execute("UPDATE call_records SET created_at=?, status_code=503 WHERE request_id='3'",
+                       (day + 86400,))
+        assert await history.repair_one()
+        await backend.close()
+        backend = SQLiteManager()
+        await backend.initialize()
+        history = backend.monitor_history
+        with pytest.raises(HistoryPreparing):
+            await history.overview(day, "account", False, visible)
+        await history.worker
+        rows, counters, _ = await history.overview(day, "key", False, visible)
+        assert (counters["logs"], counters["failed"]) == (3, 2)
+        assert rows[0]["total_cost"] == "0.00000027"
+        assert rows[0]["last_status_code"] == 503
+        page = await history.page(backend, day, 2, 1, True, "k", visible)
+        assert page["total"] == 2
+        assert [r["request_id"] for r in page["records"]] == ["1"]
+        assert not await history.repair_one()
+    finally:
+        await backend.close()

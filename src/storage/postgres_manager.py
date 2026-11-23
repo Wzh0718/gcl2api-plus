@@ -23,6 +23,7 @@ from src.rate_limits import selection_retry_at
 from src.storage.account_cooldowns import AccountCooldowns, CachedRejection
 from src.storage.main_postgres import (PostgresDatabase, close_sync_pool, connection_options,
                                        main_dsn, open_sync_pool, pg_query, safe_database_errors)
+from src.storage.monitor_history import MonitorHistory, install as install_monitor_history
 from src.storage.pg_model_stats import PostgresModelStats
 from src.storage.refresh_import_queue import RefreshImportQueue
 from src.request_timing import add_phase_ms, measure_pg, measure_phase
@@ -84,6 +85,7 @@ class PostgresManager(SQLiteManager):
                             "Incomplete PostgreSQL main schema: " + ", ".join(sorted(missing))
                         )
                     await conn.execute((DDL / "main_runtime.sql").read_text())
+                    await install_monitor_history(conn, postgres=True)
                     await conn.execute(
                         """
                         INSERT INTO api_keys(id,name,key_prefix,kind,status,currency,quota_period_start)
@@ -105,6 +107,7 @@ class PostgresManager(SQLiteManager):
                 self._sync_key = (main_dsn(), database.schema)
                 open_sync_pool(self._sync_key)
                 self._cooldowns = AccountCooldowns(main_dsn() + "|" + database.schema)
+                self.monitor_history = MonitorHistory(database)
                 self._initialized = True
                 log.info(f"PostgreSQL main pool ready: max_size={database.pool.max_size} per worker")
             except BaseException:
@@ -127,6 +130,23 @@ class PostgresManager(SQLiteManager):
             close_sync_pool(self._sync_key)
             await self._claim_pool.close()
             await self._db_path.pool.close()
+
+    async def _insert_monitor_batch(self, db, params):
+        # A single INSERT lets the AFTER STATEMENT trigger fold a whole batch before
+        # taking summary row locks. Arrays also avoid the bind-count limit of VALUES.
+        types = (
+            "text", "float8", "text", "text", "text", "text", "text", "text", "text",
+            "bigint", "bigint", "float8", "bigint", "bigint", "bigint", "bigint",
+            "bigint", "text", "text", "text", "bytea", "text",
+            "float8", "float8", "float8", "float8", "float8", "bytea",
+        )
+        columns = [list(values) for values in zip(*params, strict=True)]
+        for index, kind in enumerate(types):
+            if kind == "bytea":
+                columns[index] = [v.encode() if isinstance(v, str) else v for v in columns[index]]
+        target = self._CALL_RECORD_INSERT_SQL.split(" VALUES ", 1)[0]
+        arrays = ", ".join(f"?::{kind}[]" for kind in types)
+        await db.execute(f"{target} SELECT * FROM unnest({arrays})", columns)
 
     async def get_api_key_by_prefix(self, key_prefix):
         fields = tuple(name for name in self.API_KEY_COLUMNS if name != "secret_ciphertext")

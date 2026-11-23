@@ -282,6 +282,11 @@ async def test_pg_full_import_preserves_auth_monitor_and_cache(tmp_path, monkeyp
         assert (await ApiKeyService(adapter).authenticate(key)).name == "Historical"
         rows = await adapter._backend.list_call_records()
         assert rows[0]["timing_details"]["stages"]["upstream"] == 12
+        await adapter._backend.monitor_history.rebuild()
+        _, counts, _ = await adapter._backend.monitor_history.overview(
+            0, "key", False, adapter._backend.monitor_visible_accounts()
+        )
+        assert counts["logs"] == 1
         assert _cache(cache, "historical") == "cached"
     finally:
         await adapter.close()
@@ -849,3 +854,85 @@ async def test_chain_uses_earliest_recovery_with_cold_and_warm_roster(pg_store, 
     chosen, result = await api._select_text_credential(models[0])
     assert chosen == models[1] and result[0] == "shared.json"
     claim.assert_awaited_once()
+
+
+async def test_monitor_history_concurrent_batches_and_repair(pg_store):
+    from src.storage.monitor_history import HistoryPreparing
+
+    backend = pg_store._backend
+    history = backend.monitor_history
+    visible = backend.monitor_visible_accounts()
+    stamp = 1_700_000_000
+    async def batch(worker):
+        # Same daily groups, opposite input order, including binary timing details.
+        rows = [({"request_id": f"{worker}-{i}", "created_at": stamp + i,
+                  "credential_name": f"a{i % 2}", "success": i % 3 != 0,
+                  "status_code": 200 if i % 3 else 429, "total_cost": "0.00000007",
+                  "timing_details": {"worker": worker}, "gateway_seconds": 0.25}, {})
+                for i in range(30)]
+        await backend._write_call_records(rows if worker % 2 else list(reversed(rows)))
+
+    await asyncio.gather(*(batch(w) for w in range(6)))
+    rows, counters, _ = await history.overview(0, "account", False, visible)
+    assert (counters["logs"], counters["failed"]) == (180, 60)
+    assert all(r["avg_gateway_seconds"] == 0.25 and r["total_cost"] == "0.00000630" for r in rows)
+    await backend.delete_call_records_before(stamp + 10)
+    with pytest.raises(HistoryPreparing):
+        await history.overview(0, "account", False, visible)
+    await asyncio.gather(history.worker, batch(6))
+    rows, counters, _ = await history.overview(0, "account", False, visible)
+    assert counters["logs"] == 150
+    assert sum(r["total"] for r in rows) == 150
+    assert counters == await backend.count_call_records(since_ts=0)
+
+
+@pytest.mark.skipif(os.getenv("TEST_MONITOR_SCALE") != "1", reason="opt-in 1.2M-row monitor benchmark")
+async def test_monitor_history_million_rows(pg_store, monkeypatch):
+    """TEST_MONITOR_SCALE=1 TEST_MAIN_POSTGRES_DSN=... pytest -s -k monitor_history_million."""
+    from decimal import Decimal
+    from statistics import median
+    from time import perf_counter
+    from src.panel import call_monitor as panel
+
+    anchor = datetime(2026, 11, 23, 16, 27, 43, 250000, tzinfo=ZoneInfo("Asia/Shanghai"))
+    now = anchor.timestamp()
+    cutoffs = {"today": anchor.replace(hour=0, minute=0, second=0, microsecond=0).timestamp(),
+               "7d": now - 7 * 86400, "30d": now - 30 * 86400, "all": 0}
+    monkeypatch.setattr(panel, "_since_ts", cutoffs.__getitem__)
+    backend = pg_store._backend
+    async with backend._db_path.connect() as db:
+        await db.execute("""INSERT INTO call_records
+            (request_id, created_at, api_key_id, credential_name, model_name, success, total_cost)
+            SELECT 'r'||i, ?::float8 - CASE WHEN i<=500000 THEN (i%20000)*2
+                        ELSE (i*7919::bigint)%3024000 END,
+                   'k'||(i%9), 'a'||(i%48), 'm'||(i%4),
+                   CASE WHEN i%13=0 THEN 0 ELSE 1 END, ((i%23)::numeric/100000000)::text
+            FROM generate_series(1,1200000) i""", (now,))
+        await db.execute("ANALYZE call_records")
+        await db.commit()
+
+    for window, since in cutoffs.items():
+        for view in ("account", "key"):
+            dims = ("credential_name", "model_name") if view == "account" else ("api_key_id", "credential_name")
+            columns = ", ".join(dims)
+            async with backend._db_path.connect() as db:
+                async with db.execute(f"""SELECT {columns}, count(*), sum(success), sum(total_cost::numeric)
+                    FROM call_records WHERE created_at >= ? GROUP BY {columns}""", (since,)) as cursor:
+                    expected = {tuple(r[:2]): tuple(r[2:]) for r in await cursor.fetchall()}
+            times = []
+            for _ in range(5):
+                started = perf_counter()
+                result = await panel.call_monitor_overview(view=view, range=window)
+                times.append(1000 * (perf_counter() - started))
+                assert {tuple(row[k] for k in dims): (row["total"], row["success_count"], Decimal(row["total_cost"]))
+                        for row in result["rows"]} == expected
+            print(f"{window} {view}: median {median(times):.1f} ms")
+        n = sum(row[0] for row in expected.values())
+        page = max(1, n // 40)
+        async with backend._db_path.connect() as db:
+            async with db.execute("""SELECT id FROM call_records WHERE created_at >= ?
+                ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET ?""", (since, (page-1)*20)) as cursor:
+                expected_ids = [row[0] for row in await cursor.fetchall()]
+        data = await panel.call_monitor_realtime(range=window, page=page)
+        assert data["total"] == n
+        assert [row["id"] for row in data["records"]] == expected_ids
