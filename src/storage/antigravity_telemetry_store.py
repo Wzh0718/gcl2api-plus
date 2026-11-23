@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 
+import pymysql
 import psycopg
 import aiosqlite
 
@@ -68,7 +69,7 @@ class AntigravityTelemetryStore:
                  event.get("_delivery", {}).get("enqueued_at", now), now, snapshot.account_id, snapshot.filename))
             await db.execute("DELETE FROM antigravity_telemetry_events WHERE created_at < ?", (now - 7 * 86400,))
             await db.execute("""DELETE FROM antigravity_telemetry_events WHERE event_id IN
-                (SELECT event_id FROM antigravity_telemetry_events ORDER BY created_at DESC LIMIT -1 OFFSET 10000)""")
+                (SELECT event_id FROM (SELECT event_id FROM antigravity_telemetry_events ORDER BY created_at DESC LIMIT -1 OFFSET 10000) AS expired_events)""")
             await db.commit()
 
     async def list_telemetry_events(self, timing_ids):
@@ -158,16 +159,17 @@ class AntigravityTelemetryStore:
             same = old and old[0] == subject and json.loads(old[2]) == environment
             installation = old[1] if same else str(uuid.uuid4())
             try:
-                await db.execute("""INSERT INTO antigravity_telemetry_profiles
-                    (account_id,subject_ref,installation_id,mode,policy_revision,environment_json,updated_at)
-                    VALUES (?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET
-                    subject_ref=excluded.subject_ref,installation_id=excluded.installation_id,
-                    mode=excluded.mode,policy_revision=excluded.policy_revision,
-                    environment_json=excluded.environment_json,last_outcome='',last_http_status=NULL,
-                    updated_at=excluded.updated_at""",
-                    (row[0], subject or old[0], installation, mode, uuid.uuid4().hex,
-                     json.dumps(environment, sort_keys=True), time.time()))
-            except (aiosqlite.IntegrityError, psycopg.IntegrityError):
+                values = (subject or old[0], installation, mode, uuid.uuid4().hex,
+                          json.dumps(environment, sort_keys=True), time.time())
+                if old:
+                    await db.execute("""UPDATE antigravity_telemetry_profiles SET subject_ref=?,
+                        installation_id=?,mode=?,policy_revision=?,environment_json=?,updated_at=?,
+                        last_outcome='',last_http_status=NULL WHERE account_id=?""", (*values, row[0]))
+                else:
+                    await db.execute("""INSERT INTO antigravity_telemetry_profiles
+                        (account_id,subject_ref,installation_id,mode,policy_revision,environment_json,updated_at)
+                        VALUES (?,?,?,?,?,?,?)""", (row[0], *values))
+            except (aiosqlite.IntegrityError, psycopg.IntegrityError, pymysql.IntegrityError):
                 raise ValueError("同一 Google 账号已绑定另一份遥测环境，请先处理重复凭证") from None
             await db.commit()
 

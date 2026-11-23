@@ -56,6 +56,9 @@ def connect(path: str, *, row_factory=None, isolation_level=None, single_select=
     ``async with ... as db`` call sites; only the pragmas are added.
     """
     from src.storage.main_postgres import PostgresDatabase
+    from src.storage.main_mysql import MySQLDatabase
+    if isinstance(path, MySQLDatabase):
+        return path.connect(row_factory=row_factory)
     if isinstance(path, PostgresDatabase):
         # Only the static repository function name is recorded, never query data.
         return path.connect(sys._getframe(1).f_code.co_name, row_factory=row_factory, single_select=single_select)

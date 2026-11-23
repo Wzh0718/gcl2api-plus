@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from config import get_proxy_config
 from log import log
-from src.storage.main_postgres import main_dsn
+from src.storage.main_config import main_backend
 from src.api.antigravity import build_antigravity_headers
 from src.httpx_client import post_async
 from src.proxy_groups import (
@@ -167,7 +167,7 @@ async def _main_dashboard(
         storage.get_billing_keys(range_name, 1, page_size),
     )
     return {
-        "source": "postgresql" if main_dsn() else "sqlite",
+        "source": main_backend(),
         "degraded": degraded,
         "scanned_keys": 0,
         "summary": summary,

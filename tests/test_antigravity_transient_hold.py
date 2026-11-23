@@ -172,12 +172,41 @@ async def test_403_still_uses_auto_ban_when_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_storage_adapter_requires_postgres(monkeypatch):
-    """生产主库只跑 PostgreSQL：缺 DSN 时必须显式失败，不能静默落到 SQLite。"""
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_sqlite_main_store_survives_restart(monkeypatch, tmp_path, explicit):
+    from src.storage_adapter import StorageAdapter
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    if explicit:
+        monkeypatch.setenv("MAIN_STORAGE_BACKEND", "SQLite")
+        monkeypatch.setenv("MAIN_POSTGRES_DSN", "postgresql://unused.invalid/main")
+
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    try:
+        assert await adapter.store_credential("existing.json", {"project_id": "existing"})
+    finally:
+        await adapter.close()
+
+    from src.px6_refresh import sync_once
+
+    reopened = StorageAdapter()
+    monkeypatch.setattr("src.storage_adapter._storage_adapter", reopened)
+    assert await sync_once() == {"skipped": "no_key"}
+    try:
+        credential = await reopened.get_credential("existing.json")
+        assert credential["project_id"] == "existing"
+        assert (tmp_path / "credentials.db").is_file()
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_explicit_postgres_requires_dsn(monkeypatch):
     from src.storage_adapter import StorageAdapter
 
     monkeypatch.delenv("MAIN_POSTGRES_DSN", raising=False)
-    monkeypatch.delenv("MAIN_STORAGE_BACKEND", raising=False)
+    monkeypatch.setenv("MAIN_STORAGE_BACKEND", "postgresql")
 
     adapter = StorageAdapter()
     with pytest.raises(RuntimeError, match="MAIN_POSTGRES_DSN"):

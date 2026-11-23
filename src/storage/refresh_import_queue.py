@@ -162,6 +162,20 @@ class RefreshImportQueue:
         async with sqlite_connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             db.row_factory = aiosqlite.Row
+            from src.storage.main_mysql import MySQLDatabase
+            if isinstance(self.db_path, MySQLDatabase):
+                row = await (await db.execute("""
+                    SELECT id,payload_ciphertext,token_digest,proxy_group_id,retry_count FROM refresh_import_items
+                    WHERE (status='queued' OR (status='running' AND lease_until<=unixepoch()))
+                      AND (retry_after IS NULL OR retry_after<=unixepoch())
+                      AND NOT EXISTS (SELECT 1 FROM refresh_import_items WHERE status='running' AND lease_until>unixepoch())
+                    ORDER BY id LIMIT 1 FOR UPDATE""")).fetchone()
+                if row:
+                    row["lease_id"] = uuid4().hex
+                    await db.execute("UPDATE refresh_import_items SET status='running',message=NULL,lease_id=?,"
+                                     "lease_until=unixepoch()+240 WHERE id=?", (row["lease_id"], row["id"]))
+                await db.commit()
+                return row
             async with db.execute(
                 """UPDATE refresh_import_items
                    SET status = 'running', message = NULL, lease_id = ?, lease_until = unixepoch() + 240

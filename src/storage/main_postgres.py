@@ -17,7 +17,9 @@ from src.request_timing import measure_pg
 
 
 def main_dsn():
-    return os.getenv("MAIN_POSTGRES_DSN", "").strip()
+    from src.storage.main_config import main_backend
+
+    return os.getenv("MAIN_POSTGRES_DSN", "").strip() if main_backend() == "postgresql" else ""
 
 
 def schema_name():
