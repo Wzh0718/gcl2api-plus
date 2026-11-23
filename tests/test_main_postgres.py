@@ -282,6 +282,11 @@ async def test_pg_full_import_preserves_auth_monitor_and_cache(tmp_path, monkeyp
         assert (await ApiKeyService(adapter).authenticate(key)).name == "Historical"
         rows = await adapter._backend.list_call_records()
         assert rows[0]["timing_details"]["stages"]["upstream"] == 12
+        await adapter._backend.monitor_history.rebuild()
+        _, counts, _ = await adapter._backend.monitor_history.overview(
+            0, "key", False, adapter._backend.monitor_visible_accounts()
+        )
+        assert counts["logs"] == 1
         assert _cache(cache, "historical") == "cached"
     finally:
         await adapter.close()
@@ -849,3 +854,222 @@ async def test_chain_uses_earliest_recovery_with_cold_and_warm_roster(pg_store, 
     chosen, result = await api._select_text_credential(models[0])
     assert chosen == models[1] and result[0] == "shared.json"
     claim.assert_awaited_once()
+
+
+async def test_monitor_history_concurrent_batches_and_repair(pg_store):
+    from src.storage.monitor_history import HistoryPreparing
+
+    backend = pg_store._backend
+    history = backend.monitor_history
+    visible = backend.monitor_visible_accounts()
+    stamp = 1_700_000_000
+    async def batch(worker):
+        # Same daily groups, opposite input order, including binary timing details.
+        rows = [({"request_id": f"{worker}-{i}", "created_at": stamp + i,
+                  "credential_name": f"a{i % 2}", "success": i % 3 != 0,
+                  "status_code": 200 if i % 3 else 429, "total_cost": "0.00000007",
+                  "timing_details": {"worker": worker}, "gateway_seconds": 0.25}, {})
+                for i in range(30)]
+        await backend._write_call_records(rows if worker % 2 else list(reversed(rows)))
+
+    await asyncio.gather(*(batch(w) for w in range(6)))
+    rows, counters, _ = await history.overview(0, "account", False, visible)
+    assert (counters["logs"], counters["failed"]) == (180, 60)
+    assert all(r["avg_gateway_seconds"] == 0.25 and r["total_cost"] == "0.00000630" for r in rows)
+    await backend.delete_call_records_before(stamp + 10)
+    with pytest.raises(HistoryPreparing):
+        await history.overview(0, "account", False, visible)
+    await asyncio.gather(history.worker, batch(6))
+    rows, counters, _ = await history.overview(0, "account", False, visible)
+    assert counters["logs"] == 150
+    assert sum(r["total"] for r in rows) == 150
+    assert counters == await backend.count_call_records(since_ts=0)
+
+
+@pytest.mark.skipif(os.getenv("TEST_MONITOR_SCALE") != "1", reason="opt-in 1.2M-row monitor benchmark")
+async def test_monitor_history_million_rows(pg_store, monkeypatch):
+    """TEST_MONITOR_SCALE=1 TEST_MAIN_POSTGRES_DSN=... pytest -s -k monitor_history_million."""
+    from decimal import Decimal
+    from statistics import median
+    from time import perf_counter
+    from src.panel import call_monitor as panel
+
+    anchor = datetime(2026, 11, 23, 16, 27, 43, 250000, tzinfo=ZoneInfo("Asia/Shanghai"))
+    now = anchor.timestamp()
+    cutoffs = {"today": anchor.replace(hour=0, minute=0, second=0, microsecond=0).timestamp(),
+               "7d": now - 7 * 86400, "30d": now - 30 * 86400, "all": 0}
+    monkeypatch.setattr(panel, "_since_ts", cutoffs.__getitem__)
+    backend = pg_store._backend
+    async with backend._db_path.connect() as db:
+        await db.execute("""INSERT INTO call_records
+            (request_id, created_at, api_key_id, credential_name, model_name, success, total_cost)
+            SELECT 'r'||i, ?::float8 - CASE WHEN i<=500000 THEN (i%20000)*2
+                        ELSE (i*7919::bigint)%3024000 END,
+                   'k'||(i%9), 'a'||(i%48), 'm'||(i%4),
+                   CASE WHEN i%13=0 THEN 0 ELSE 1 END, ((i%23)::numeric/100000000)::text
+            FROM generate_series(1,1200000) i""", (now,))
+        await db.execute("ANALYZE call_records")
+        await db.commit()
+
+    for window, since in cutoffs.items():
+        for view in ("account", "key"):
+            dims = ("credential_name", "model_name") if view == "account" else ("api_key_id", "credential_name")
+            columns = ", ".join(dims)
+            async with backend._db_path.connect() as db:
+                async with db.execute(f"""SELECT {columns}, count(*), sum(success), sum(total_cost::numeric)
+                    FROM call_records WHERE created_at >= ? GROUP BY {columns}""", (since,)) as cursor:
+                    expected = {tuple(r[:2]): tuple(r[2:]) for r in await cursor.fetchall()}
+            times = []
+            for _ in range(5):
+                started = perf_counter()
+                result = await panel.call_monitor_overview(view=view, range=window)
+                times.append(1000 * (perf_counter() - started))
+                assert {tuple(row[k] for k in dims): (row["total"], row["success_count"], Decimal(row["total_cost"]))
+                        for row in result["rows"]} == expected
+            print(f"{window} {view}: median {median(times):.1f} ms")
+        n = sum(row[0] for row in expected.values())
+        page = max(1, n // 40)
+        async with backend._db_path.connect() as db:
+            async with db.execute("""SELECT id FROM call_records WHERE created_at >= ?
+                ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET ?""", (since, (page-1)*20)) as cursor:
+                expected_ids = [row[0] for row in await cursor.fetchall()]
+        data = await panel.call_monitor_realtime(range=window, page=page)
+        assert data["total"] == n
+        assert [row["id"] for row in data["records"]] == expected_ids
+
+
+async def test_recent_redis_post_commit_batches_and_missing_publications(pg_store, monkeypatch):
+    from src.call_monitor import get_call_monitor
+    from src.storage.main_postgres import Session
+
+    backend = pg_store._backend
+    cache = backend.recent_cache
+    if not cache.available:
+        pytest.skip("requires disposable Redis")
+    monitor = await get_call_monitor(pg_store)
+    filters = dict(page=1, page_size=20, failed_only=False, api_key_id=None)
+
+    async def compare(**changes):
+        args = {**filters, **changes}
+        actual = await monitor.recent_page(**args)
+        with monkeypatch.context() as patch:
+            patch.setattr(backend, "recent_cache", None)
+            assert actual == await monitor.recent_page(**args)
+        return actual
+
+    await compare()
+    # Mix late timestamps, ties, empty accounts, and absent status/telemetry data.
+    batch = [({"request_id": f"row-{i}", "created_at": 100 + (i % 21),
+               "api_key_id": f"k{i % 5}", "credential_name": "a" if i % 4 else "",
+               "success": bool(i % 2)}, {}) for i in range(1125)]
+    await backend._write_call_records(batch)
+    await cache.queue.join()
+    assert await cache.client.zcard(cache.key) == 1001  # 1000 records + generation marker
+    original = Session._execute
+    queries = []
+
+    async def trace(db, query, params):
+        queries.append(query)
+        return await original(db, query, params)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "_execute", trace)
+        page = await monitor.recent_page(**filters)
+        assert page["total"] == 1000
+    assert not any("ORDER BY id DESC LIMIT" in q for q in queries)
+    assert any("FROM call_records WHERE id IN" in q for q in queries)
+
+    for changes in ({}, {"page": 80}, {"failed_only": True, "api_key_id": "k3", "page": 2},
+                    {"api_key_id": "unknown"}, {"page_size": 200}):
+        await compare(**changes)
+
+    # Same IDs and counts, different filters/order. Neither MAX(id) nor row
+    # count would notice this database-only change.
+    async with backend._db_path.connect() as db:
+        await db.execute("UPDATE call_records SET success=0, created_at=300 WHERE request_id='row-1111'")
+        await db.commit()
+    page = await compare(failed_only=True)
+    assert page["records"][0]["request_id"] == "row-1111"
+
+    # A rolled-back transaction must leave the validated marker unchanged.
+    marker = await cache.client.zrange(cache.key, 0, 0)
+    async with backend._db_path.connect() as db:
+        await db.execute("DELETE FROM call_records WHERE request_id='row-1111'")
+        await db.rollback()
+    await compare(failed_only=True)
+    assert await cache.client.zrange(cache.key, 0, 0) == marker
+
+    emissions = []
+    with monkeypatch.context() as patch:
+        patch.setattr(cache, "publish", lambda *args: emissions.append(args))
+        await backend.insert_call_record(request_id="gap-one", created_at=400, success=True)
+        await backend.insert_call_record(request_id="gap-two", created_at=401, success=True)
+    # Deliver the two committed deltas backwards, as can happen across workers.
+    for args in reversed(emissions):
+        cache.publish(*args)
+    await cache.queue.join()
+    assert (await compare())["records"][0]["request_id"] == "gap-two"
+    await cache.client.delete(cache.key)
+    await compare(page=50)
+
+
+async def test_recent_redis_detects_commit_below_observed_max_id(pg_store):
+    from contextlib import AsyncExitStack
+    from src.call_monitor import get_call_monitor
+
+    backend = pg_store._backend
+    cache = backend.recent_cache
+    if not cache.available:
+        pytest.skip("requires disposable Redis")
+    monitor = await get_call_monitor(pg_store)
+    args = dict(page=1, page_size=20, failed_only=False, api_key_id=None)
+    async with AsyncExitStack() as sessions:
+        early = await sessions.enter_async_context(backend._db_path.connect())
+        early_slot, _ = await cache.revision(early)
+        for _ in range(8):
+            late = await sessions.enter_async_context(backend._db_path.connect())
+            late_slot, _ = await cache.revision(late)
+            if early_slot != late_slot:
+                break
+        else:
+            pytest.fail("Could not allocate independent writer shards for out-of-order commit test")
+        await early.execute("""INSERT INTO call_records(request_id,created_at,credential_name)
+                               VALUES ('lower-id',1,'a')""")
+        await late.execute("""INSERT INTO call_records(request_id,created_at,credential_name)
+                              VALUES ('higher-id',86401,'b')""")
+        await late.commit()
+        first = await monitor.recent_page(**args)
+        assert [row["request_id"] for row in first["records"]] == ["higher-id"]
+        await early.commit()
+    second = await monitor.recent_page(**args)
+    assert [row["request_id"] for row in second["records"]] == ["higher-id", "lower-id"]
+
+
+async def test_recent_redis_sqlite_batch_and_live_bans(tmp_path, monkeypatch):
+    from src.call_monitor import get_call_monitor
+
+    url = os.getenv("TEST_ACCOUNT_COOLDOWN_REDIS_URL")
+    if not url:
+        pytest.skip("requires disposable Redis")
+    monkeypatch.setenv("REDIS_URL", url)
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    adapter = StorageAdapter()
+    await adapter.initialize()
+    backend = adapter._backend
+    cache = backend.recent_cache
+    try:
+        monitor = await get_call_monitor(adapter)
+        args = dict(page=1, page_size=20, failed_only=False, api_key_id=None)
+        await backend.store_credential("a", {"project_id": "fixture"}, mode="antigravity")
+        await backend._write_call_records([({"request_id": str(i), "created_at": 20,
+            "success": False, "credential_name": "a"}, {}) for i in range(45)])
+        await cache.queue.join()
+        assert (await monitor.recent_page(**args))["total"] == 45
+        await backend.update_antigravity_account_health("a", last_403_reason="tos_violation")
+        assert (await monitor.recent_page(**args))["total"] == 0
+        await backend.update_antigravity_account_health("a", last_403_reason="")
+        assert (await monitor.recent_page(**args))["total"] == 45
+        await backend.delete_call_records_before(21)
+        assert (await monitor.recent_page(**args))["total"] == 0
+    finally:
+        await adapter.close()

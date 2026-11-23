@@ -129,4 +129,26 @@ test('automatic refresh only queries the bounded recent window', () => {
         tick();
     }
     assert.deepEqual(requests, ['recent']);
+    context.callMonitorState.range = 'all';
+    context.callMonitorState.historyBuilding = true;
+    tick();
+    context.callMonitorState.historyBuilding = false;
+    tick();
+    assert.deepEqual(requests, ['recent', 'all']);
+});
+
+test('a backfill response keeps historical polling enabled until exact data arrives', async () => {
+    const {context, requests, content} = setup();
+    context.fetch = async () => ({
+        status: 503, headers: {get: () => 'building'},
+        json: async () => ({detail: 'backfill'}),
+    });
+    await context.loadCallMonitor();
+    assert.equal(context.callMonitorState.historyBuilding, true);
+    assert.match(content.innerHTML, /构建历史汇总/);
+    context.fetch = async () => ({ok: true, json: async () => ({marker: 'complete'})});
+    await context.loadCallMonitor({silent: true});
+    assert.equal(context.callMonitorState.historyBuilding, false);
+    assert.equal(context.callMonitorState.lastData.marker, 'complete');
+    assert.equal(requests.length, 0);
 });
