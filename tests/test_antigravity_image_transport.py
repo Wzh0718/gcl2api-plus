@@ -45,6 +45,11 @@ async def test_image_wrapper_uses_image_generation_credit_contract():
     assert "sessionId" not in payload["request"]
     assert "labels" not in payload["request"]
     assert "toolConfig" not in payload["request"]
+    # agy hub 2.31.0 原生图片信封（实测）：requestId 前缀 image_gen，
+    # request 内无 model / responseModalities。
+    assert payload["requestId"].startswith("image_gen/")
+    assert "model" not in payload["request"]
+    assert "responseModalities" not in payload["request"]["generationConfig"]
 
 
 def test_image_headers_match_native_cli_without_quota_project_headers():
