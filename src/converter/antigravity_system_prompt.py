@@ -78,6 +78,14 @@ def _baseline_for_version(version: str) -> str:
     return path.read_text(encoding='utf-8').strip()
 
 
+# 全量基线模式下追加的优先级条款：调用方自带的 system 指令为最高优先级。
+# 默认（精简基线）路径不追加，保持现有行为不变。
+_CLIENT_PRECEDENCE = (
+    'Priority rule: the client-provided instructions and the user request are authoritative for this task. '
+    'Where this persona guidance conflicts with them, follow the client instructions and the user request, '
+    'and keep that precedence for the rest of the conversation.'
+)
+
 _CAPTURED_PROMPT_ENV = "ANTIGRAVITY_FULL_PROMPT_BASELINE"
 _CAPTURED_PROMPT_FILE = "antigravity-captured-2.25.0.txt"
 
@@ -106,7 +114,7 @@ def baseline_prompt(version: str | None = None) -> str:
     """
     captured = captured_full_prompt()
     if captured:
-        return captured
+        return captured + '\n\n' + _CLIENT_PRECEDENCE
     return _baseline_for_version(version or _configured_prompt_version())
 
 
