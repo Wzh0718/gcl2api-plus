@@ -4,6 +4,29 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 
+# 上游 503 里的模型级容量标记：cloudcode-pa 返回
+#   status=UNAVAILABLE, reason=MODEL_CAPACITY_EXHAUSTED,
+#   details=[ErrorInfo{model,...}, RetryInfo{retryDelay:"40s"}]
+# 这是「该模型此刻全局没有容量」，与具体凭证无关，几十秒后自愈。
+MODEL_CAPACITY_MARKER = "MODEL_CAPACITY_EXHAUSTED"
+
+
+def is_model_capacity_exhausted(status_code: int, error_text: Optional[str]) -> bool:
+    """503 + MODEL_CAPACITY_EXHAUSTED 判定为模型级容量耗尽（不归咎账号）。
+
+    生产实测响应体（2026-11-24 gemini-2.5-flash-lite）：
+    ``{"error":{"code":503,"status":"UNAVAILABLE","message":"No capacity available
+    for model ...","details":[{"reason":"MODEL_CAPACITY_EXHAUSTED",...},
+    {"@type":"...RetryInfo","retryDelay":"38s"}]}}``
+    同一分钟内多个不同账号会收到完全相同的 503，说明这是上游窗口而非账号问题。
+    """
+    try:
+        code = int(status_code or 0)
+    except (TypeError, ValueError):
+        return False
+    return code == 503 and MODEL_CAPACITY_MARKER in (error_text or "")
+
+
 @dataclass(frozen=True)
 class Antigravity403Decision:
     """Actionable result of a 403 classification."""
