@@ -29,6 +29,9 @@ load_project_dotenv()
 _config_cache: dict[str, Any] = {}
 _config_initialized = False
 
+# 一次性迁移标记：历史版本面板保存的 false 只是旧默认值，不是用户选择。
+AGY_BASE_PROMPT_DEFAULT_MARKER = 'agy_base_prompt_default_migrated_v1'
+
 # Client Configuration
 
 # 需要自动封禁的错误码 (默认值，可通过环境变量或配置覆盖)
@@ -94,6 +97,39 @@ ENV_MAPPINGS["CALL_CONTENT_CAPTURE_ENABLED"] = "call_content_capture_enabled"
 
 # ====================== 配置系统 ======================
 
+async def _migrate_agy_base_prompt_default(storage_adapter) -> None:
+    """一次性把历史面板写入的 false 纠正为 true。
+
+    旧版本面板默认不勾选「AGY 基础提示」，只要保存过任意配置就会把
+    ``antigravity_system_prompt_enabled=false`` 写进主库；这不代表部署方
+    主动关闭。本迁移只做一次并写入标记：
+
+    - 显式设置了 ``ANTIGRAVITY_SYSTEM_PROMPT_ENABLED`` 时不动存储，环境变量
+      本身就是部署方的选择，读取时仍然优先；
+    - 标记存在后，面板取消勾选保存的 false 会原样保留，不再被覆盖。
+    """
+    if _config_cache.get(AGY_BASE_PROMPT_DEFAULT_MARKER):
+        return
+    if os.getenv('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED'):
+        return
+    current = _config_cache.get('antigravity_system_prompt_enabled')
+    if isinstance(current, str):
+        current = current.strip().lower() in ('true', '1', 'yes', 'on')
+    try:
+        if current is False:
+            if not await storage_adapter.set_config('antigravity_system_prompt_enabled', True):
+                return
+            _config_cache['antigravity_system_prompt_enabled'] = True
+        if not await storage_adapter.set_config(AGY_BASE_PROMPT_DEFAULT_MARKER, True):
+            return
+        _config_cache[AGY_BASE_PROMPT_DEFAULT_MARKER] = True
+    except Exception as exc:
+        # 迁移失败不阻断启动；下次启动再试。
+        from log import log
+
+        log.warning(f'AGY 基础提示默认值迁移失败: {exc}')
+
+
 async def init_config():
     """初始化配置缓存（启动时调用一次）"""
     global _config_cache, _config_initialized
@@ -106,6 +142,7 @@ async def init_config():
         storage_adapter = await get_storage_adapter()
         _config_cache = await storage_adapter.get_all_config()
         _config_initialized = True
+        await _migrate_agy_base_prompt_default(storage_adapter)
     except Exception:
         # 初始化失败时使用空缓存
         _config_cache = {}
@@ -1427,7 +1464,14 @@ async def get_call_records_retention_days() -> int:
 
 
 async def get_antigravity_system_prompt_enabled() -> bool:
-    value = await get_config_value('antigravity_system_prompt_enabled', False, env_var='ANTIGRAVITY_SYSTEM_PROMPT_ENABLED')
+    """AGY 基础提示注入开关，默认开启。
+
+    注入内容固定为仓库内置的官方 Antigravity 基础模块
+    （src/prompts/antigravity-<hub 版本>.txt，缺失版本回退 2.31.2），
+    与自定义前置文本、提示词融合结果是三件不同的事。
+    只有显式环境变量或面板保存的 false 才表示关闭。
+    """
+    value = await get_config_value('antigravity_system_prompt_enabled', True, env_var='ANTIGRAVITY_SYSTEM_PROMPT_ENABLED')
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
 
 

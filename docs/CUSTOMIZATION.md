@@ -216,6 +216,9 @@ Redis 侧状态自愈，没有额外清理任务：
 | `ANTIGRAVITY_NATIVE_TRANSPORT_CA_FILE` ★ | 自定义 CA bundle；仅私有证书或本地 TLS 捕获需要 | 空 |
 | `ANTIGRAVITY_OAUTH_USER_AGENT` ★ | 兼容探测用 UA 覆盖；正式原生刷新省略自定义 UA，使用官方 `Go-http-client/2.0` | `Go-http-client/2.0` |
 | `ANTIGRAVITY_STREAM2NOSTREAM` ★ | 非流式请求改走流式 API 并收集为完整响应 | `false` |
+| `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED` ★ | 注入官方 AGY 基础提示（`src/prompts/antigravity-2.31.2.txt`，随账号 hub 版本）；升级时历史面板保存的 `false` 会一次性纠正为 `true`，之后用户选择保留。内容约束见 [AGY 基础提示强制说明](../README.md#agy-基础提示强制说明) | `true` |
+| `ANTIGRAVITY_SYSTEM_AS_USER_ENABLED` ★ | 将客户端 system 转为会话开头一条 user 指导 | `false` |
+| `ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE` ★ | 客户端 system 混淆：`off` / `full` / `protected` | `protected` |
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |

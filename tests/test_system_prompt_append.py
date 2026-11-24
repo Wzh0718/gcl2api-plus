@@ -9,7 +9,8 @@ from src.converter.gemini_fix import normalize_gemini_request
 @pytest.fixture(autouse=True)
 def settings(monkeypatch):
     monkeypatch.setattr(config, "_config_initialized", True)
-    monkeypatch.setattr(config, "_config_cache", {"sensitive_word_replace_enabled": False})
+    monkeypatch.setattr(config, "_config_cache", {"sensitive_word_replace_enabled": False,
+                                                 "antigravity_system_prompt_enabled": False})
     monkeypatch.delenv("SYSTEM_PROMPT_APPEND", raising=False)
 
 
