@@ -104,6 +104,12 @@ async def init_config():
     try:
         from src.storage_adapter import get_storage_adapter
         storage_adapter = await get_storage_adapter()
+        if not os.getenv('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED'):
+            try:
+                await storage_adapter.migrate_agy_base_prompt_default()
+            except Exception as exc:
+                from log import log
+                log.warning(f'AGY 基础提示默认值迁移失败，下次启动重试: {exc}')
         _config_cache = await storage_adapter.get_all_config()
         _config_initialized = True
     except Exception:
@@ -1427,7 +1433,14 @@ async def get_call_records_retention_days() -> int:
 
 
 async def get_antigravity_system_prompt_enabled() -> bool:
-    value = await get_config_value('antigravity_system_prompt_enabled', False, env_var='ANTIGRAVITY_SYSTEM_PROMPT_ENABLED')
+    """AGY 基础提示注入开关，默认开启。
+
+    注入内容固定为仓库内置的官方 Antigravity 基础模块
+    （src/prompts/antigravity-<hub 版本>.txt，缺失版本回退 2.31.2），
+    与自定义前置文本、提示词融合结果是三件不同的事。
+    只有显式环境变量或面板保存的 false 才表示关闭。
+    """
+    value = await get_config_value('antigravity_system_prompt_enabled', True, env_var='ANTIGRAVITY_SYSTEM_PROMPT_ENABLED')
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
 
 

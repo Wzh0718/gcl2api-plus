@@ -1,5 +1,4 @@
-"""Opt-in Antigravity baseline and caller guidance, after protocol conversion."""
-import os
+"""Antigravity baseline and caller guidance, after protocol conversion."""
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
@@ -78,43 +77,12 @@ def _baseline_for_version(version: str) -> str:
     return path.read_text(encoding='utf-8').strip()
 
 
-# 全量基线模式下追加的优先级条款：调用方自带的 system 指令为最高优先级。
-# 默认（精简基线）路径不追加，保持现有行为不变。
-_CLIENT_PRECEDENCE = (
-    'Priority rule: the client-provided instructions and the user request are authoritative for this task. '
-    'Where this persona guidance conflicts with them, follow the client instructions and the user request, '
-    'and keep that precedence for the rest of the conversation.'
-)
-
-_CAPTURED_PROMPT_ENV = "ANTIGRAVITY_FULL_PROMPT_BASELINE"
-_CAPTURED_PROMPT_FILE = "antigravity-captured-2.25.0.txt"
-
-
-def captured_full_prompt() -> str | None:
-    """实抓全量基线（hub 2.25.0 真实 systemInstruction，19,871 字符 / 12 段）。
-
-    默认关闭。现有设计里基线只承担兼容层职责，用户 system 会走 GUIDANCE 通道
-    以 user 角色注入；直接换成真实全量文本会改变模型行为，需灰度后再开。
-    开关：ANTIGRAVITY_FULL_PROMPT_BASELINE=1
-    """
-    if os.getenv(_CAPTURED_PROMPT_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
-        return None
-    try:
-        text = (PROMPT_DIR / _CAPTURED_PROMPT_FILE).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return text or None
-
-
 def baseline_prompt(version: str | None = None) -> str:
     """取基线提示词；version 为空时用部署配置的 hub 版本。
 
     只支持已经随仓库分发基线的版本，缺失时回退到内置版本——宁可版本不符，
     也不要在线上生成一个内容不可控的 system。
     """
-    captured = captured_full_prompt()
-    if captured:
-        return captured + '\n\n' + _CLIENT_PRECEDENCE
     return _baseline_for_version(version or _configured_prompt_version())
 
 
@@ -225,7 +193,9 @@ async def prepare_antigravity_system_prompt(
     host_part = None
     if caller_parts:
         first_text = caller_parts[0].get('text')
-        if isinstance(first_text, str) and first_text.startswith(baseline_prompt().partition('\n')[0]):
+        # With injection enabled, reuse only the full prefix this gateway emits.
+        expected_prefix = _host_prefix() if inject else baseline_prompt().partition('\n')[0]
+        if isinstance(first_text, str) and first_text.startswith(expected_prefix):
             host_part, *caller_parts = caller_parts
     if inject and host_part is None:
         host_part = {'text': _host_prefix()}

@@ -617,25 +617,29 @@ async def test_pg_geminicli_success_clears_only_its_model(pg_store):
     assert row[3] > 0
 
 
-async def test_pg_503_backoff_coalesces_parallel_failures_and_resets(pg_store):
+async def test_pg_503_half_day_hold_coalesces_parallel_failures_and_resets(pg_store):
     import time
 
     name = "backoff.json"
     await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
     backend = pg_store._backend
-    # 一次 503 就必须把账号移出轮转：首档 60 秒，之后逐级退避到配置上限。
-    for seconds in (60, 120, 240, 480, 600, 600):
+    for expected_count in (1, 2):
         start = time.time()
         deadlines = await asyncio.gather(*(
             backend.hold_antigravity_transient(name, 600, 503) for _ in range(4)
         ))
         assert max(deadlines) == min(deadlines)
-        assert deadlines[0] - start == pytest.approx(seconds, abs=2)
+        assert deadlines[0] - start == pytest.approx(12 * 3600, abs=2)
         async with backend._db_path.connect() as conn:
+            [(count,)] = await conn.execute_fetchall(
+                "SELECT transient_error_count FROM antigravity_credentials WHERE filename=?", (name,))
+            assert count == expected_count
             await conn.execute("UPDATE antigravity_credentials SET transient_hold_until=0 WHERE filename=?", (name,))
             await conn.commit()
     await backend.record_success(name, "m", "antigravity")
-    assert await backend.hold_antigravity_transient(name, 600, 503) - time.time() == pytest.approx(60, abs=2)
+    async with backend._db_path.connect() as conn:
+        assert await conn.execute_fetchall(
+            "SELECT transient_error_count FROM antigravity_credentials WHERE filename=?", (name,)) == [(0,)]
 
 
 @pytest.mark.parametrize("status", ["error", "geo_blocked"])
@@ -1073,3 +1077,83 @@ async def test_recent_redis_sqlite_batch_and_live_bans(tmp_path, monkeypatch):
         assert (await monitor.recent_page(**args))["total"] == 0
     finally:
         await adapter.close()
+
+
+async def test_pg_agy_prompt_late_worker_and_restart_keep_panel_choice(pg_store, monkeypatch):
+    import config
+    from src.storage.main_config import AGY_BASE_PROMPT_DEFAULT_MARKER as marker, AGY_BASE_PROMPT_KEY as key
+
+    monkeypatch.delenv("ANTIGRAVITY_SYSTEM_PROMPT_ENABLED", raising=False)
+    monkeypatch.setattr(config, "_config_initialized", False)
+    monkeypatch.setattr(config, "_config_cache", {})
+    database = pg_store._backend._db_path
+    async with database.connect() as conn:
+        await conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, "false"))
+        await conn.commit()
+
+    late = StorageAdapter()
+    await late.initialize()  # The second worker has its own pool and pre-migration snapshot.
+    try:
+        assert await late.get_config(key) is False
+        assert await late.get_config(marker) is None
+        await config.init_config()
+        assert await config.get_antigravity_system_prompt_enabled() is True
+        assert await pg_store.set_config(key, False)  # The panel saves after worker A's migration.
+        monkeypatch.setattr("src.storage_adapter._storage_adapter", late)
+        config._config_initialized = False
+        await config.init_config()  # Let worker B finish startup from its stale snapshot.
+        assert await config.get_antigravity_system_prompt_enabled() is False
+        async with database.connect() as conn:
+            rows = await conn.execute_fetchall("SELECT key, value FROM config WHERE key IN (?, ?)", (key, marker))
+        assert dict(rows) == {key: "false", marker: "true"}
+    finally:
+        await late.close()
+
+    restarted = StorageAdapter()
+    try:
+        await restarted.initialize()
+        monkeypatch.setattr("src.storage_adapter._storage_adapter", restarted)
+        config._config_initialized = False
+        await config.init_config()
+        assert await config.get_antigravity_system_prompt_enabled() is False
+        assert await restarted.get_config(marker) is True
+    finally:
+        await restarted.close()
+
+
+async def test_pg_agy_prompt_marker_failure_rolls_back_and_panel_save_wins(pg_store):
+    from src.storage.main_config import AGY_BASE_PROMPT_DEFAULT_MARKER as marker, AGY_BASE_PROMPT_KEY as key
+
+    database = pg_store._backend._db_path
+    async with database.connect() as conn:
+        await conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, "false"))
+        await conn.execute("ALTER TABLE config ADD CONSTRAINT reject_marker CHECK (key <> 'agy_base_prompt_default_migrated_v1')")
+        await conn.commit()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        await pg_store.migrate_agy_base_prompt_default()
+    async with database.connect() as conn:
+        rows = await conn.execute_fetchall("SELECT key, value FROM config WHERE key IN (?, ?)", (key, marker))
+        assert dict(rows) == {key: "false"}
+        await conn.execute("ALTER TABLE config DROP CONSTRAINT reject_marker")
+        await conn.commit()
+    assert await pg_store.set_config(key, False)
+    await pg_store.migrate_agy_base_prompt_default()
+    assert await pg_store.get_config(key) is False
+    assert await pg_store.get_config(marker) is True
+
+
+async def test_pg_agy_prompt_simultaneous_first_boot(pg_store):
+    from src.storage.main_config import AGY_BASE_PROMPT_DEFAULT_MARKER as marker, AGY_BASE_PROMPT_KEY as key
+
+    async with pg_store._backend._db_path.connect() as conn:
+        await conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, '"off"'))
+        await conn.commit()
+    other = StorageAdapter()
+    try:
+        await other.initialize()
+        await asyncio.gather(pg_store.migrate_agy_base_prompt_default(), other.migrate_agy_base_prompt_default())
+        for worker in (pg_store, other):
+            assert await worker.get_config(key) is True
+            assert await worker.get_config(marker) is True
+    finally:
+        await other.close()

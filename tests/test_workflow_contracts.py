@@ -24,7 +24,7 @@ _REGULATION_TEXT = (_REGULATION_MARKDOWN + '\n\nFINAL_JSON_START\n'
 @pytest.fixture
 def workflow_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
-    monkeypatch.setattr(config, '_config_cache', {})
+    monkeypatch.setattr(config, '_config_cache', {'antigravity_system_prompt_enabled': False})
     for key in ('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED',
                 'ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED',
                 'SYSTEM_PROMPT_APPEND'):

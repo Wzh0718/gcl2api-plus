@@ -71,6 +71,9 @@ class StorageBackend(Protocol):
         ...
 
     # 配置管理
+    async def migrate_agy_base_prompt_default(self) -> None:
+        ...
+
     async def set_config(self, key: str, value: Any) -> bool:
         """设置配置项"""
         ...
@@ -505,6 +508,10 @@ class StorageAdapter:
         return await self._backend.rebuild_api_key_quotas()
 
     # ============ 配置管理 ============
+
+    async def migrate_agy_base_prompt_default(self) -> None:
+        self._ensure_initialized()
+        await self._backend.migrate_agy_base_prompt_default()
 
     async def set_config(self, key: str, value: Any) -> bool:
         """设置配置项"""
