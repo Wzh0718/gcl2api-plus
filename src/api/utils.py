@@ -21,6 +21,7 @@ from config import (
     get_max_non_stream_buffer_bytes,
 )
 from log import log
+from src.antigravity_error_classifier import is_model_capacity_exhausted
 from src.credential_manager import CredentialManager
 from src.stream_guard import aclose_quietly
 
@@ -97,7 +98,8 @@ async def handle_error_with_retry(
     attempt: int,
     max_retries: int,
     retry_interval: float,
-    mode: str = "geminicli"
+    mode: str = "geminicli",
+    error_text: str = "",
 ) -> bool:
     """
     统一处理错误和重试逻辑
@@ -117,6 +119,7 @@ async def handle_error_with_retry(
         max_retries: 最大重试次数
         retry_interval: 重试间隔
         mode: 模式（geminicli 或 antigravity）
+        error_text: 上游响应体，用于区分账号级 5xx 与模型级容量耗尽
         
     Returns:
         bool: True表示需要继续重试，False表示不需要重试
@@ -131,7 +134,10 @@ async def handle_error_with_retry(
     if mode == "antigravity" and status_code in (500, 502, 503):
         # The caller independently persists any explicit upstream cooldown.
         can_retry = retry_enabled and attempt < max_retries
-        await hold_transient_account(credential_manager, status_code, credential_name)
+        # 模型级容量耗尽（503 + MODEL_CAPACITY_EXHAUSTED）是上游全局窗口，
+        # 与凭证无关：只按上游 retryDelay 做模型冷却，不冷藏账号。
+        if not is_model_capacity_exhausted(status_code, error_text):
+            await hold_transient_account(credential_manager, status_code, credential_name)
         if can_retry:
             log.info(
                 f"[{mode.upper()} RETRY] {status_code} transient; "

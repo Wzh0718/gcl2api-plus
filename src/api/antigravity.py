@@ -43,8 +43,10 @@ from src.stream_guard import aclose_quietly
 from src.models import Model, model_to_dict
 from src.redis_config import create_redis_client_from_env, redis_socket_timeouts
 from src.antigravity_error_classifier import (
+    MODEL_CAPACITY_MARKER,
     Antigravity403Decision,
     classify_antigravity_403,
+    is_model_capacity_exhausted,
 )
 from src.antigravity_model_catalog import UnknownAntigravityModelError
 from src.antigravity_dynamic_warmup import (
@@ -87,7 +89,7 @@ SESSION_MAX_STEPS = 30
 _MAX_SESSION_LOCKS = 4096
 IMAGE_MODEL_CACHE_TTL_SECONDS = 5 * 60
 MAX_IMAGE_MODEL_CACHE_ENTRIES = 128
-IMAGE_MODEL_CAPACITY_MARKER = "MODEL_CAPACITY_EXHAUSTED"
+IMAGE_MODEL_CAPACITY_MARKER = MODEL_CAPACITY_MARKER
 IMAGE_CAPACITY_MAX_RETRIES = 2
 IMAGE_CAPACITY_DEFAULT_RETRY_DELAY_SECONDS = 1.0
 IMAGE_CAPACITY_MAX_RETRY_DELAY_SECONDS = 60.0
@@ -745,8 +747,12 @@ async def resolve_dynamic_image_model_for_credential(
 
 
 def is_image_model_capacity_exhausted(status_code: int, error_text: str) -> bool:
-    """Identify model-global capacity exhaustion without blaming one account."""
-    return status_code == 503 and IMAGE_MODEL_CAPACITY_MARKER in (error_text or "")
+    """Identify model-global capacity exhaustion without blaming one account.
+
+    文本与图片共用同一个上游语义（MODEL_CAPACITY_EXHAUSTED），这里保留旧名，
+    实际判定统一走 ``is_model_capacity_exhausted``。
+    """
+    return is_model_capacity_exhausted(status_code, error_text)
 
 
 def _image_capacity_retry_delay_seconds(response: Any) -> float:
@@ -1486,9 +1492,12 @@ async def _stream_request_inner(
                         error_body = ""
                     _mark_upstream_429(chunk, error_body, request_id=request_id, credential_name=current_file,
                                        model=model_name, upstream_request=final_payload)
-                    if status_code == 503:
-                        # 503 必须在观测到响应时就冷藏账号：不依赖重试开关、
-                        # 重试次数或后续分支，避免「503 了但账号还在轮转」。
+                    if status_code == 503 and not is_model_capacity_exhausted(
+                        status_code, error_body
+                    ):
+                        # 只有账号级 503 才冷藏账号；模型级容量耗尽
+                        # （MODEL_CAPACITY_EXHAUSTED）由模型冷却与 retryDelay 处理。
+                        # 不依赖重试开关、重试次数或后续分支，避免「503 了但账号还在轮转」。
                         await hold_transient_account(
                             credential_manager, status_code, current_file
                         )
@@ -1562,6 +1571,7 @@ async def _stream_request_inner(
                             credential_manager, status_code, current_file,
                             retry_config["retry_enabled"], attempt, max_retries, retry_interval,
                             mode="antigravity",
+                            error_text=error_body or "",
                         )
 
                         if should_retry and attempt < max_retries and lease_tracker is not None:
@@ -2091,7 +2101,7 @@ async def _non_stream_image_request_inner(
         last_was_capacity = is_image_model_capacity_exhausted(
             status_code, error_text
         )
-        if status_code == 503:
+        if status_code == 503 and not last_was_capacity:
             await hold_transient_account(credential_manager, status_code, current_file)
         if last_was_capacity and status_code != 429:
             await _record_image_account_outcome(
@@ -2540,8 +2550,10 @@ async def non_stream_request(
                     pass
                 _mark_upstream_429(last_error_response, error_text, request_id=request_id,
                                    credential_name=current_file, model=model_name, upstream_request=final_payload)
-                if status_code == 503:
-                    # 与流式路径一致：503 先冷藏账号，再决定是否换号重试。
+                if status_code == 503 and not is_model_capacity_exhausted(
+                    status_code, error_text
+                ):
+                    # 与流式路径一致：账号级 503 先冷藏，模型级容量耗尽不归咎账号。
                     await hold_transient_account(
                         credential_manager, status_code, current_file
                     )
@@ -2616,6 +2628,7 @@ async def non_stream_request(
                         credential_manager, status_code, current_file,
                         retry_config["retry_enabled"], attempt, max_retries, retry_interval,
                         mode="antigravity",
+                        error_text=error_text or "",
                     )
 
                     if should_retry and next_cred_task is None and attempt < max_retries:
