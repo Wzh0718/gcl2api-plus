@@ -617,25 +617,29 @@ async def test_pg_geminicli_success_clears_only_its_model(pg_store):
     assert row[3] > 0
 
 
-async def test_pg_503_backoff_coalesces_parallel_failures_and_resets(pg_store):
+async def test_pg_503_half_day_hold_coalesces_parallel_failures_and_resets(pg_store):
     import time
 
     name = "backoff.json"
     await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
     backend = pg_store._backend
-    # 一次 503 就必须把账号移出轮转：首档 60 秒，之后逐级退避到配置上限。
-    for seconds in (60, 120, 240, 480, 600, 600):
+    for expected_count in (1, 2):
         start = time.time()
         deadlines = await asyncio.gather(*(
             backend.hold_antigravity_transient(name, 600, 503) for _ in range(4)
         ))
         assert max(deadlines) == min(deadlines)
-        assert deadlines[0] - start == pytest.approx(seconds, abs=2)
+        assert deadlines[0] - start == pytest.approx(12 * 3600, abs=2)
         async with backend._db_path.connect() as conn:
+            [(count,)] = await conn.execute_fetchall(
+                "SELECT transient_error_count FROM antigravity_credentials WHERE filename=?", (name,))
+            assert count == expected_count
             await conn.execute("UPDATE antigravity_credentials SET transient_hold_until=0 WHERE filename=?", (name,))
             await conn.commit()
     await backend.record_success(name, "m", "antigravity")
-    assert await backend.hold_antigravity_transient(name, 600, 503) - time.time() == pytest.approx(60, abs=2)
+    async with backend._db_path.connect() as conn:
+        assert await conn.execute_fetchall(
+            "SELECT transient_error_count FROM antigravity_credentials WHERE filename=?", (name,)) == [(0,)]
 
 
 @pytest.mark.parametrize("status", ["error", "geo_blocked"])
