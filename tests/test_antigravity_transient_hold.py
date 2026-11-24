@@ -50,7 +50,7 @@ async def test_transient_hold_does_not_disable_account(tmp_path, monkeypatch):
         "a.json", seconds=600, status_code=500
     )
 
-    assert hold_until == pytest.approx(before + 600, abs=5)
+    assert hold_until == pytest.approx(before + 43200, abs=5)
     stored_until, count, disabled = await read_hold(manager, "a.json")
     assert stored_until == pytest.approx(hold_until)
     assert count == 1
@@ -224,7 +224,7 @@ async def test_first_503_cools_the_account_immediately(tmp_path, monkeypatch):
         "a.json", seconds=600, status_code=503
     )
 
-    assert hold_until == pytest.approx(before + 60, abs=5)
+    assert hold_until == pytest.approx(before + 43200, abs=5)
     _, count, disabled = await read_hold(manager, "a.json")
     assert count == 1
     assert disabled == 0
@@ -246,8 +246,8 @@ async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, mon
             )
             await db.commit()
 
-    # 阶梯已扩到小时级：60s → 5m → 15m → 30m → 1h → 2h → 4h → 12h
-    for expected in (60, 300, 900, 1800, 3600, 7200):
+    # 5xx 直接冷却半天：任何 5xx 都取定值 43200s
+    for expected in (43200, 43200, 43200):
         hold_until = await manager.hold_antigravity_transient(
             "a.json", seconds=600, status_code=503
         )
@@ -260,16 +260,9 @@ async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, mon
     hold_until = await manager.hold_antigravity_transient(
         "a.json", seconds=600, status_code=503
     )
-    assert hold_until - time.time() == pytest.approx(7200, abs=5), "一次成功不应清零阶梯"
+    assert hold_until - time.time() == pytest.approx(43200, abs=5), "冷却为定值"
 
-    # 连续成功把阶梯降到 0 之后，才回到最短一档
-    for _ in range(8):
-        await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
-    await expire("a.json")
-    hold_until = await manager.hold_antigravity_transient(
-        "a.json", seconds=600, status_code=503
-    )
-    assert hold_until - time.time() == pytest.approx(60, abs=5)
+    await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
 
 
 @pytest.mark.asyncio
@@ -284,6 +277,6 @@ async def test_parallel_503_failures_share_one_window(tmp_path, monkeypatch):
     ))
 
     assert max(deadlines) == min(deadlines)
-    assert deadlines[0] - time.time() == pytest.approx(60, abs=5)
+    assert deadlines[0] - time.time() == pytest.approx(43200, abs=5)
     _, count, _ = await read_hold(manager, "a.json")
     assert count == 1, "同一窗口内的并发 503 不得叠加阶梯"
