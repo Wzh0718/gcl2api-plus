@@ -2,6 +2,10 @@
 import os
 
 
+AGY_BASE_PROMPT_KEY = "antigravity_system_prompt_enabled"
+AGY_BASE_PROMPT_DEFAULT_MARKER = "agy_base_prompt_default_migrated_v1"
+
+
 def main_backend():
     # The Compose template passes its interpolation value separately so that an
     # absent project .env value cannot erase an explicit service env_file choice.

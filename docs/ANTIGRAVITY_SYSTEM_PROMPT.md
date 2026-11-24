@@ -5,9 +5,9 @@
 > **强制约束（默认值与内容来源）**
 >
 > 1. `antigravity_system_prompt_enabled` 的代码默认值必须是 `true`。除显式保存 `false`（面板取消勾选并保存）或设置 `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED=false` 外，不得把默认值改回关闭。
-    旧版本面板写入的历史 `false` 由 `_migrate_agy_base_prompt_default()` 在首次启动时一次性纠正为 `true`，并写入标记 `agy_base_prompt_default_migrated_v1`；标记存在后不再覆盖面板保存的 `false`。显式环境变量存在时不动存储。
+    旧版本面板写入的历史 `false` 在首次启动时由主库事务一次性纠正为 `true`，同一事务写入标记 `agy_base_prompt_default_migrated_v1`；标记存在后不再覆盖面板保存的 `false`。显式环境变量存在时不动存储。
 > 2. 注入的文本必须是官方 AGY（Antigravity）基础模块，来源限定为 `src/prompts/antigravity-<hub 版本>.txt`，当前为 `2.31.2`。禁止用自定义前置文本、其他项目的提示词或模型生成的融合结果替换这段基础提示。
-> 3. 版本跟随账号：选号后按该账号 hub 版本替换基线前缀；仓库没有对应版本文件时回退 `2.31.2`，不即时生成未核验内容。
+> 3. 版本跟随账号：选号后按该账号 hub 版本替换基线前缀；仓库没有对应版本文件时回退 `2.31.2`，不即时生成未核验内容。旧的 `ANTIGRAVITY_FULL_PROMPT_BASELINE` 环境变量不再替换基础模块。
 > 4. “AGY 基础提示”“AGY 提示词融合”“自定义系统提示 / 前置文本”是三个独立功能，不能互相替代。
 
 | 配置键 | 环境变量 | 默认 | 行为 |
@@ -44,7 +44,7 @@
 
 - 在协议转换后执行；OpenAI Chat/Responses、Anthropic Messages、Gemini 的生成请求共享规范化入口，流式与非流式使用相同转换。
 - 原有敏感词过滤先处理客户端 system，再执行本功能。角色转换后的指导内容因此继承现有过滤结果。
-- 原有全局 `system_prompt_append` 在本功能后执行：仍前置到最终 system 第一个文本 part；不随客户端 system 转移。仅角色转换、最终无 system 时，旧前置功能仍不主动创建 system。
+- 原有全局 `system_prompt_append` 在本功能后执行：仅当原始客户端 system 含非空文本时，前置到最终 system 第一个文本 part；不随客户端 system 转移。仅角色转换、最终无 system 时，旧前置功能仍不主动创建 system。
 - 原有全局兼容模式可能在协议转换阶段已将 system 改为 user；本功能不会再将这些 user 消息挪动或重复包装。需要本功能的明确指导包装时，关闭全局兼容模式。
 - 角色转换不改工具名称、参数和调用结果顺序；原有协议规范化仍执行。
 - 基础提示注入默认开启（用户方要求）；它仍是提示词兼容选项，不构成对 429 或账号停用的解决方案，也不能替代出口、负载和凭证层面的治理。

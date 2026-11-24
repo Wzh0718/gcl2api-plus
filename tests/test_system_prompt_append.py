@@ -68,3 +68,17 @@ async def test_b_beginning_with_a_is_still_prefixed():
     result = await normalize_gemini_request({"model": "gemini-2.5-flash", "contents": [],
                                            "systemInstruction": {"parts": [{"text": "AB"}]}})
     assert json.loads(json.dumps(result))["systemInstruction"]["parts"] == [{"text": "AAB"}]
+
+
+@pytest.mark.parametrize("instruction", [None, "  ", {"parts": []}, {"parts": [{"text": " "}]}])
+async def test_default_agy_baseline_without_client_guidance_skips_custom_prefix(instruction):
+    from src.converter.antigravity_system_prompt import BRIDGE, baseline_prompt
+
+    config._config_cache.pop("antigravity_system_prompt_enabled")
+    config._config_cache["system_prompt_append"] = "Custom policy"
+    request = {"model": "gemini-2.5-flash", "contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
+    if instruction is not None:
+        request["systemInstruction"] = instruction
+    for _ in range(2):
+        request = await normalize_gemini_request(request, mode="antigravity")
+        assert request["systemInstruction"]["parts"] == [{"text": baseline_prompt() + "\n\n" + BRIDGE}]

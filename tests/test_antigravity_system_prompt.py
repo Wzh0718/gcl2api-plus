@@ -253,7 +253,9 @@ async def test_legacy_text_obfuscation_keeps_gateway_prefix(key):
     assert 'system_instructions' not in result
 
 
-async def test_default_switches_on_official_agy_baseline():
+@pytest.mark.parametrize('legacy_full_prompt', ['0', '1'])
+async def test_default_switches_on_official_agy_baseline(monkeypatch, legacy_full_prompt):
+    monkeypatch.setenv('ANTIGRAVITY_FULL_PROMPT_BASELINE', legacy_full_prompt)
     from src.converter.antigravity_system_prompt import (
         BRIDGE,
         DEFAULT_PROMPT_VERSION,
@@ -289,3 +291,14 @@ async def test_default_switches_on_official_agy_baseline():
     head = result['systemInstruction']['parts'][0]['text']
     assert head == expected + '\n\n' + BRIDGE
     assert head.startswith('You are Antigravity')
+
+
+async def test_default_injection_keeps_the_complete_official_prefix_for_older_client_guidance():
+    from src.converter.antigravity_system_prompt import BRIDGE, baseline_prompt
+
+    config._config_cache.pop('antigravity_system_prompt_enabled')
+    guidance = baseline_prompt().splitlines()[0]
+    payload = {'model': 'gemini-2.5-flash', 'contents': [],
+               'systemInstruction': {'parts': [{'text': guidance}]}}
+    result = await normalize_gemini_request(payload, mode='antigravity')
+    assert result['systemInstruction']['parts'][0]['text'] == baseline_prompt() + '\n\n' + BRIDGE

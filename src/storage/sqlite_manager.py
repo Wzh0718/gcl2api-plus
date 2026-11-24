@@ -19,6 +19,7 @@ import aiosqlite
 
 from src.request_timing import measured_db_lock
 from src.storage import recent_monitor_cache
+from src.storage.main_config import AGY_BASE_PROMPT_DEFAULT_MARKER, AGY_BASE_PROMPT_KEY
 from src.storage.monitor_history import MonitorHistory, install as install_monitor_history
 from src.storage.sqlite_pragmas import BUSY_TIMEOUT_MS, apply_sync_pragmas, connect as sqlite_connect
 
@@ -32,6 +33,13 @@ from src.storage.antigravity_warmup_store import AntigravityWarmupStore
 from src.storage.antigravity_telemetry_store import AntigravityTelemetryStore
 from src.storage.call_record_content import decode_details, encode_details
 from src.storage.refresh_import_queue import RefreshImportQueue
+
+
+def _decode_config_value(raw):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
 
 
 FAIR_ROUTING_CATCHUP_WINDOW = 32
@@ -1169,10 +1177,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     rows = await cursor.fetchall()
 
                 for key, value in rows:
-                    try:
-                        self._config_cache[key] = json.loads(value)
-                    except json.JSONDecodeError:
-                        self._config_cache[key] = value
+                    self._config_cache[key] = _decode_config_value(value)
 
             self._config_loaded = True
             log.debug(f"Loaded {len(self._config_cache)} config items into cache")
@@ -5308,14 +5313,45 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
     # ============ 配置管理（内存缓存）============
 
+    async def migrate_agy_base_prompt_default(self) -> None:
+        """Serialize the one-time upgrade with other workers and explicit panel saves."""
+        self._ensure_initialized()
+        async with sqlite_connect(self._db_path) as db:
+            # The shared adapters translate this into a transaction lock on PG and MySQL.
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("SELECT key, value FROM config WHERE key IN (?, ?)",
+                                  (AGY_BASE_PROMPT_KEY, AGY_BASE_PROMPT_DEFAULT_MARKER)) as cursor:
+                values = {key: _decode_config_value(raw) for key, raw in await cursor.fetchall()}
+            if AGY_BASE_PROMPT_DEFAULT_MARKER not in values:
+                current = values.get(AGY_BASE_PROMPT_KEY)
+                if isinstance(current, str):
+                    current = current.strip().lower() in ("true", "1", "yes", "on")
+                if isinstance(current, (bool, int)) and not current:
+                    await db.execute("UPDATE config SET value = ?, updated_at = unixepoch() WHERE key = ?",
+                                     ("true", AGY_BASE_PROMPT_KEY))
+                    values[AGY_BASE_PROMPT_KEY] = True
+                await db.execute("INSERT INTO config (key, value, updated_at) VALUES (?, ?, unixepoch())",
+                                 (AGY_BASE_PROMPT_DEFAULT_MARKER, "true"))
+                values[AGY_BASE_PROMPT_DEFAULT_MARKER] = True
+            await db.commit()
+        # Publish the locked snapshot even when another worker already migrated.
+        if AGY_BASE_PROMPT_KEY not in values:
+            self._config_cache.pop(AGY_BASE_PROMPT_KEY, None)
+        self._config_cache.update(values)
+
     async def set_config(self, key: str, value: Any) -> bool:
         """设置配置（写入数据库 + 更新内存缓存）"""
         self._ensure_initialized()
 
         try:
             async with sqlite_connect(self._db_path) as db:
-                if key == "antigravity_account_usage":
+                if key in (AGY_BASE_PROMPT_KEY, "antigravity_account_usage"):
                     await db.execute("BEGIN IMMEDIATE")
+                if key == AGY_BASE_PROMPT_KEY:
+                    # An explicit choice also wins if startup migration failed or was deferred.
+                    await db.execute("""INSERT INTO config (key, value, updated_at) VALUES (?, ?, unixepoch())
+                                        ON CONFLICT(key) DO NOTHING""", (AGY_BASE_PROMPT_DEFAULT_MARKER, "true"))
+                if key == "antigravity_account_usage":
                     async with db.execute("SELECT value FROM config WHERE key = ?", (key,)) as cursor:
                         previous = await cursor.fetchone()
                     if previous is None or json.loads(previous[0]) != value:
@@ -5330,6 +5366,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 await db.commit()
 
             # 更新内存缓存
+            if key == AGY_BASE_PROMPT_KEY:
+                self._config_cache[AGY_BASE_PROMPT_DEFAULT_MARKER] = True
             self._config_cache[key] = value
             return True
 
