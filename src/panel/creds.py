@@ -1471,13 +1471,22 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
 
         if quota_info.get("success"):
             # 顺带用 loadCodeAssist 的 paidTier 校准实时档位：凭证库里的 tier 是
-            # 导入时快照，账号被 Google 降档（Starter Quota）后仍显示旧档位会误导排查。
+            # 导入时快照（存储层对未判定的 tier 还会默认落 "pro"），只有把快照
+            # 一起交给上游判定，才能区分「付费权益失效」和「本来就是免费档」。
             # best-effort，失败时为 None，不影响额度返回。
+            stored_tier = None
+            try:
+                state = await storage_adapter.get_credential_state(filename, mode=mode)
+                if isinstance(state, dict):
+                    stored_tier = state.get("tier")
+            except Exception as exc:  # noqa: BLE001 - 快照读取失败只影响降档判定
+                log.debug(f"读取凭证档位快照失败 {filename}: {type(exc).__name__}: {exc}")
             paid_tier = await fetch_paid_tier_info(
                 access_token,
                 proxy_url=creds.proxy_url,
                 credential_data=credential_data,
                 credential_name=filename,
+                stored_tier=stored_tier,
             )
             return {
                 "success": True,

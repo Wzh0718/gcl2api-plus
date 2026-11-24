@@ -1203,15 +1203,24 @@ function buildCredStatusBadges(credInfo, manager) {
     const tierLabel = tier.toUpperCase();
     const tierColor = tier === 'ultra' ? '#ff9800' : (tier === 'free' ? '#607d8b' : (tier === 'pro' ? '#2e7d32' : '#9e9e9e'));
     // 实时档位校准（antigravity）：额度查询顺带 loadCodeAssist 拿到的 paidTier。
-    // 检出降档（Starter Quota）时以实时档位为准标红，避免 DB 导入快照误导排查。
+    // paidTier 是「订阅商品」层字段：free-tier / "Antigravity Starter Quota" 是
+    // 免费基础档的正式档位名，不是降档事件标记。库内 tier 是 DEFAULT 'pro' 的
+    // 快照，也不能证明账号曾付费，所以这里只展示实时档位；两边不一致时按信息
+    // 提示处理（灰色），不再报「已被 Google 降档」。
     const livePaidTier = managerType === 'antigravity'
         ? (AppState.antigravityQuotaOverview.data[filename] || {}).paid_tier
         : null;
-    if (livePaidTier && livePaidTier.degraded) {
+    if (livePaidTier && livePaidTier.kind === 'free') {
         const liveName = escapeHtml(livePaidTier.name || 'Antigravity Starter Quota');
-        statusBadges += `<span class="status-badge" style="background-color: #c62828; color: white;" title="实时档位: ${liveName}（数据库导入时记录: ${tierLabel}）。Google 已将该账号降为 Starter 配额：仅周限额、无 5 小时窗口，以实时档位为准">已降档: STARTER</span>`;
+        const conflictHint = livePaidTier.snapshot_conflict
+            ? `；库内快照 tier=${tierLabel} 与实时档位不一致（快照为导入默认值或旧判定，不能作为付费证据）`
+            : '';
+        statusBadges += `<span class="status-badge" style="background-color: #546e7a; color: white;" title="实时 paidTier=${liveName}（免费基础配额：仅周限额、无 5 小时窗口）${conflictHint}">实时: STARTER</span>`;
+    } else if (livePaidTier && livePaidTier.kind === 'paid') {
+        const liveName = escapeHtml(livePaidTier.name || livePaidTier.id || 'Google AI Pro');
+        statusBadges += `<span class="status-badge" style="background-color: #2e7d32; color: white;" title="实时 paidTier=${liveName}（付费订阅有效）；库内快照 tier=${tierLabel}">实时: ${liveName}</span>`;
     } else {
-        statusBadges += `<span class="status-badge" style="background-color: ${tierColor}; color: white;" title="凭证等级: ${tierLabel}">Tier: ${tierLabel}</span>`;
+        statusBadges += `<span class="status-badge" style="background-color: ${tierColor}; color: white;" title="凭证等级: ${tierLabel}（库内快照，未取到实时 paidTier）">Tier: ${tierLabel}</span>`;
     }
 
     // Credit 状态显示（仅 antigravity）
@@ -5338,15 +5347,23 @@ async function toggleAntigravityQuotaDetails(pathId) {
                     const models = data.models || {};
                     const groups = data.groups || null;
 
-                    // 实时付费档位（loadCodeAssist paidTier）：检出降档时红色警示
+                    // 实时付费档位（loadCodeAssist paidTier）：只陈述实时档位。
+                    // paidTier 是订阅商品层字段，Starter Quota 是免费基础档的
+                    // 正式名称；库内快照（DEFAULT 'pro'）不能作为「曾被降档」证据。
                     const paidTier = data.paid_tier || null;
                     let paidTierHTML = '';
                     if (paidTier && (paidTier.name || paidTier.id)) {
                         const ptName = escapeHtml(paidTier.name || paidTier.id);
-                        if (paidTier.degraded) {
-                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #fff5f5; border: 1px solid #f5c6cb; border-left: 4px solid #c62828; border-radius: 6px; font-size: 12px; color: #c62828;">⚠️ 实时档位：<b>${ptName}</b> —— 该账号已被 Google 降档（仅周限额、无 5 小时窗口；凭证库内导入时的档位快照可能仍为旧值）</div>`;
+                        const storedLabel = escapeHtml((paidTier.stored_tier || '').toUpperCase() || '未记录');
+                        if (paidTier.kind === 'free') {
+                            const conflictLine = paidTier.snapshot_conflict
+                                ? `<br>库内快照为 ${storedLabel}，与实时档位不一致；该快照为导入默认值或旧判定结果，不能据此判断账号是否曾被降档。`
+                                : '';
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #eceff1; border: 1px solid #cfd8dc; border-left: 4px solid #546e7a; border-radius: 6px; font-size: 12px; color: #455a64;">实时档位：<b>${ptName}</b>（id=${escapeHtml(paidTier.id || 'free-tier')}）—— 免费基础配额：仅周限额、无 5 小时窗口。${conflictLine}</div>`;
+                        } else if (paidTier.kind === 'paid') {
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #f0f7f0; border: 1px solid #c8e6c9; border-left: 4px solid #2e7d32; border-radius: 6px; font-size: 12px; color: #2e7d32;">实时档位：<b>${ptName}</b>（付费订阅有效）</div>`;
                         } else {
-                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #f0f7f0; border: 1px solid #c8e6c9; border-left: 4px solid #2e7d32; border-radius: 6px; font-size: 12px; color: #2e7d32;">实时档位：<b>${ptName}</b></div>`;
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #f8f9fa; border: 1px solid #e9ecef; border-left: 4px solid #9e9e9e; border-radius: 6px; font-size: 12px; color: #616161;">实时档位：<b>${ptName}</b>（未能归类，仅作记录）</div>`;
                         }
                     }
 
@@ -5737,9 +5754,13 @@ function renderAntigravityQuotaSummary() {
 function buildAntigravityTierDegradedNotice(filename) {
     const entry = AppState.antigravityQuotaOverview.data[filename];
     const paidTier = entry && entry.paid_tier;
-    if (!paidTier || !paidTier.degraded) return '';
+    if (!paidTier || paidTier.kind !== 'free') return '';
     const liveName = escapeHtml(paidTier.name || 'Antigravity Starter Quota');
-    return `<div class="quota-inline-bar" style="margin-top:6px;padding:4px 10px;background:#fff5f5;border:1px solid #f5c6cb;border-radius:4px;font-size:11px;color:#c62828;" title="loadCodeAssist 实时返回 paidTier = ${liveName}">⚠️ 该账号已被 Google 降档为 ${liveName}（仅周限额、无 5 小时窗口）</div>`;
+    if (paidTier.snapshot_conflict) {
+        const storedLabel = escapeHtml((paidTier.stored_tier || '').toUpperCase() || '未记录');
+        return `<div class="quota-inline-bar" style="margin-top:6px;padding:4px 10px;background:#eceff1;border:1px solid #cfd8dc;border-radius:4px;font-size:11px;color:#455a64;" title="库内快照 tier=${storedLabel}（导入默认值或旧判定），loadCodeAssist 实时返回 paidTier = ${liveName}">ℹ️ 实时档位 ${liveName}（仅周限额、无 5h）；库内快照 ${storedLabel} 与实时不一致，快照不能作为降档依据</div>`;
+    }
+    return '';
 }
 
 function buildAntigravityQuotaOverviewInline(filename) {

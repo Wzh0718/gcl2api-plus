@@ -3117,9 +3117,41 @@ async def fetch_quota_info(
         }
 
 
-# loadCodeAssist paidTier 的「降档」档位名：付费资格被 Google 回收的账号，
-# paidTier 会显示为该名称（实测表现：仅剩周限额、没有 5h 窗口、Argon 被禁用）。
+# loadCodeAssist paidTier 的「免费基础档」档位名。
+# 2026-11-21 之后 Google 才开始给免费账号回填 paidTier（id="free-tier"，
+# name="Antigravity Starter Quota"）；其 upgradeSubscriptionText 明确写着
+# "Free users and Google AI Plus users receive the minimum base limits"。
+# 也就是说这是免费档的正式档位名，不是「刚刚被降档」的事件标记——任何没有
+# Google AI Pro 订阅的账号都会返回它，把它直接当降档会让所有免费号集体告警。
 ANTIGRAVITY_STARTER_QUOTA_NAME = "Antigravity Starter Quota"
+# paidTier.id 属于免费基础档的取值（仅周限额、无 5h 窗口）。
+ANTIGRAVITY_FREE_PAID_TIER_IDS = frozenset({"free-tier"})
+# 库内 tier 快照属于付费档的取值。
+# 注意：tier 列在 sqlite/psql/mongo 三套存储里都是 DEFAULT 'pro'，导入期未能
+# 判定档位时也会落 pro。因此它不能当作「该账号曾经有付费订阅」的证据，只能
+# 用来提示「库内快照与实时档位不一致」。
+ANTIGRAVITY_PAID_TIER_VALUES = frozenset({"pro", "ultra"})
+
+
+def classify_paid_tier(tier_id: Any, tier_name: Any) -> str:
+    """把 loadCodeAssist 的 paidTier 归类为 free / paid / unknown。
+
+    paidTier 反映账号的订阅商品，与 currentTier（Antigravity 生效档）不是
+    同一层字段：实测付费账号返回 paidTier=g1-pro-tier 时 currentTier 仍可能
+    是 free-tier。因此判据以 id 优先、name 兜底，且先判免费档再判付费档。
+    """
+    candidates = [str(c).strip().lower() for c in (tier_id, tier_name) if c]
+    if not candidates:
+        return "unknown"
+    if any(c in ANTIGRAVITY_FREE_PAID_TIER_IDS for c in candidates):
+        return "free"
+    if any("starter quota" in c for c in candidates):
+        return "free"
+    if any("ultra" in c for c in candidates):
+        return "paid"
+    if any(c in ("g1-pro-tier", "helium-tier") or "pro" in c for c in candidates):
+        return "paid"
+    return "unknown"
 
 
 async def fetch_paid_tier_info(
@@ -3128,17 +3160,23 @@ async def fetch_paid_tier_info(
     *,
     credential_data: Optional[Mapping[str, Any]] = None,
     credential_name: Optional[str] = None,
+    stored_tier: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     调用 v1internal:loadCodeAssist 获取账号实时付费档位（paidTier）。
 
-    背景：凭证导入时持久化的 tier 是快照；账号被 Google 降档后（paidTier 变成
-    "Antigravity Starter Quota"）面板仍显示旧档位，会误导排查。额度查询时
-    顺带用本函数校准。
+    背景：凭证库持久化的 tier 是导入时快照，且存储层对未判定的 tier 默认
+    落 "pro"；实时 paidTier 才能说明账号当前有没有付费订阅。额度查询时顺带
+    校准。
+
+    stored_tier 为库内快照，只用于提示两边不一致；它不能作为「曾被降档」的
+    证据（tier 列 DEFAULT 'pro'，未判定的账号同样落 pro），所以本函数不输出
+    「已降档」结论，只给出实时档位分类与 snapshot_conflict 标记。
 
     Returns:
-        {"id": paidTier.id, "name": paidTier.name, "degraded": bool}；
-        请求失败或响应中没有 paidTier 时返回 None（best-effort，不影响额度查询）。
+        {"id", "name", "kind", "snapshot_conflict", "stored_tier"}；kind 为
+        free/paid/unknown。请求失败或响应中没有 paidTier 时返回 None
+        （best-effort，不影响额度查询）。
     """
     try:
         headers = build_antigravity_headers(
@@ -3168,9 +3206,15 @@ async def fetch_paid_tier_info(
         if not tier_id and not name:
             return None
 
-        degraded = name == ANTIGRAVITY_STARTER_QUOTA_NAME
-        if degraded:
-            log.info(f"[ANTIGRAVITY TIER] 账号已被降档为 {ANTIGRAVITY_STARTER_QUOTA_NAME}")
+        kind = classify_paid_tier(tier_id, name)
+        stored = str(stored_tier or "").strip().lower() or None
+        # 快照付费档 vs 实时免费档：只提示不一致，不断言降档（见 docstring）。
+        snapshot_conflict = kind == "free" and stored in ANTIGRAVITY_PAID_TIER_VALUES
+        if kind == "free":
+            log.debug(
+                f"[ANTIGRAVITY TIER] 实时档位 free-tier（{name or tier_id}，库内 tier={stored}，"
+                f"快照冲突={snapshot_conflict}）"
+            )
         # 客户端 bootstrap 序列（fetchAdminControls / aicode:fetchConfig）。
         # 真实客户端启动时会先打这两类端点；按账号每天一次去重，best-effort。
         try:
@@ -3185,7 +3229,13 @@ async def fetch_paid_tier_info(
             )
         except Exception as exc:  # noqa: BLE001 - bootstrap 不得影响档位查询
             log.debug(f"[ANTIGRAVITY TIER] bootstrap 跳过: {type(exc).__name__}: {exc}")
-        return {"id": tier_id, "name": name, "degraded": degraded}
+        return {
+            "id": tier_id,
+            "name": name,
+            "kind": kind,
+            "snapshot_conflict": snapshot_conflict,
+            "stored_tier": stored,
+        }
     except Exception as e:
         log.warning(f"[ANTIGRAVITY TIER] loadCodeAssist error: {e}")
         return None
