@@ -1160,6 +1160,37 @@ function getVisibleCredentialErrorCodes(status, modelCooldowns, managerType, now
 // =====================================================================
 // 凭证卡片状态徽章（创建卡片与冷却到期精准更新共用）
 // =====================================================================
+function quotaWindowSummary(groups) {
+    const windows = new Set((groups || []).flatMap(group => (group.buckets || []).map(bucket => bucket.window)));
+    const labels = [];
+    if (windows.has('weekly')) labels.push('每周');
+    if (windows.has('5h')) labels.push('5 小时');
+    return labels.length ? '已返回额度窗口：' + labels.join('、') : '';
+}
+
+function buildCredentialTierBadge(storedTier, quota) {
+    const tier = String(storedTier || 'unknown').toUpperCase();
+    const badge = document.createElement('span');
+    badge.className = 'status-badge cred-tier-badge';
+    badge.style.color = 'white';
+    const live = quota?.paid_tier;
+    if (live && (live.name || live.id)) {
+        const name = live.name || live.id;
+        const isFree = live.kind === 'free';
+        const isPaid = live.kind === 'paid';
+        badge.style.backgroundColor = isFree ? '#546e7a' : isPaid ? '#2e7d32' : '#616161';
+        badge.textContent = '实时: ' + (isFree ? 'STARTER' : name) + (isPaid ? '（付费）' : '');
+        const kind = isFree ? '基础配额' : isPaid ? '付费订阅' : '未能归类';
+        badge.title = [`实时档位：${name}（${kind}）`, live.id, quotaWindowSummary(quota.groups),
+            live.snapshot_conflict ? `库内快照 ${tier} 与实时档位不一致` : ''].filter(Boolean).join('；');
+    } else {
+        badge.style.backgroundColor = {ULTRA: '#ff9800', FREE: '#607d8b', PRO: '#2e7d32'}[tier] || '#9e9e9e';
+        badge.textContent = 'Tier: ' + tier;
+        badge.title = '凭证等级（库内快照）：' + tier;
+    }
+    return badge.outerHTML;
+}
+
 function buildCredStatusBadges(credInfo, manager) {
     const { status, filename } = credInfo;
     const managerType = manager.type;
@@ -1198,30 +1229,8 @@ function buildCredStatusBadges(credInfo, manager) {
         }
     }
 
-    // tier 状态显示 (geminicli 和 antigravity 都显示)；未知 tier 不谎报为 PRO
-    const tier = credInfo.tier ? credInfo.tier.toString().toLowerCase() : 'unknown';
-    const tierLabel = tier.toUpperCase();
-    const tierColor = tier === 'ultra' ? '#ff9800' : (tier === 'free' ? '#607d8b' : (tier === 'pro' ? '#2e7d32' : '#9e9e9e'));
-    // 实时档位校准（antigravity）：额度查询顺带 loadCodeAssist 拿到的 paidTier。
-    // paidTier 是「订阅商品」层字段：free-tier / "Antigravity Starter Quota" 是
-    // 免费基础档的正式档位名，不是降档事件标记。库内 tier 是 DEFAULT 'pro' 的
-    // 快照，也不能证明账号曾付费，所以这里只展示实时档位；两边不一致时按信息
-    // 提示处理（灰色），不再报「已被 Google 降档」。
-    const livePaidTier = managerType === 'antigravity'
-        ? (AppState.antigravityQuotaOverview.data[filename] || {}).paid_tier
-        : null;
-    if (livePaidTier && livePaidTier.kind === 'free') {
-        const liveName = escapeHtml(livePaidTier.name || 'Antigravity Starter Quota');
-        const conflictHint = livePaidTier.snapshot_conflict
-            ? `；库内快照 tier=${tierLabel} 与实时档位不一致（快照为导入默认值或旧判定，不能作为付费证据）`
-            : '';
-        statusBadges += `<span class="status-badge" style="background-color: #546e7a; color: white;" title="实时 paidTier=${liveName}（免费基础配额：仅周限额、无 5 小时窗口）${conflictHint}">实时: STARTER</span>`;
-    } else if (livePaidTier && livePaidTier.kind === 'paid') {
-        const liveName = escapeHtml(livePaidTier.name || livePaidTier.id || 'Google AI Pro');
-        statusBadges += `<span class="status-badge" style="background-color: #2e7d32; color: white;" title="实时 paidTier=${liveName}（付费订阅有效）；库内快照 tier=${tierLabel}">实时: ${liveName}</span>`;
-    } else {
-        statusBadges += `<span class="status-badge" style="background-color: ${tierColor}; color: white;" title="凭证等级: ${tierLabel}（库内快照，未取到实时 paidTier）">Tier: ${tierLabel}</span>`;
-    }
+    const quota = managerType === 'antigravity' ? AppState.antigravityQuotaOverview.data[filename] : null;
+    statusBadges += buildCredentialTierBadge(credInfo.tier, quota);
 
     // Credit 状态显示（仅 antigravity）
     if (managerType === 'antigravity') {
@@ -1352,6 +1361,7 @@ function createCredCard(credInfo, manager) {
     div.className = status.disabled ? 'cred-card disabled' : 'cred-card';
 
     // 状态徽章
+    div.dataset.storedTier = credInfo.tier || '';
     const statusBadges = buildCredStatusBadges(credInfo, manager);
     const warmupBadge = managerType === 'antigravity'
         ? buildAntigravityWarmupBadge(AppState.antigravityWarmup.accounts[filename])
@@ -1409,7 +1419,7 @@ function createCredCard(credInfo, manager) {
         </div>
         ${managerType === 'antigravity' ? renderAntigravityAccountUsage(credInfo.account_usage) : ''}
         <div class="cred-actions">${actionButtons}</div>
-        ${managerType === 'antigravity' ? buildAntigravityTierDegradedNotice(filename) + buildAntigravityQuotaOverviewInline(filename) : ''}
+        ${managerType === 'antigravity' ? `<div class="cred-tier-notice">${buildAntigravityTierSnapshotNotice(filename)}</div>` + buildAntigravityQuotaOverviewInline(filename) : ''}
         <div class="cred-details" id="details-${pathId}">
             <div class="cred-content" data-filename="${filename}" data-loaded="false">点击"查看内容"按钮加载文件详情...</div>
         </div>
@@ -5359,7 +5369,7 @@ async function toggleAntigravityQuotaDetails(pathId) {
                             const conflictLine = paidTier.snapshot_conflict
                                 ? `<br>库内快照为 ${storedLabel}，与实时档位不一致；该快照为导入默认值或旧判定结果，不能据此判断账号是否曾被降档。`
                                 : '';
-                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #eceff1; border: 1px solid #cfd8dc; border-left: 4px solid #546e7a; border-radius: 6px; font-size: 12px; color: #455a64;">实时档位：<b>${ptName}</b>（id=${escapeHtml(paidTier.id || 'free-tier')}）—— 免费基础配额：仅周限额、无 5 小时窗口。${conflictLine}</div>`;
+                            paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #eceff1; border: 1px solid #cfd8dc; border-left: 4px solid #546e7a; border-radius: 6px; font-size: 12px; color: #455a64;">实时档位：<b>${ptName}</b>（id=${escapeHtml(paidTier.id || '未记录')}）${conflictLine}</div>`;
                         } else if (paidTier.kind === 'paid') {
                             paidTierHTML = `<div style="margin-bottom: 15px; padding: 10px 12px; background: #f0f7f0; border: 1px solid #c8e6c9; border-left: 4px solid #2e7d32; border-radius: 6px; font-size: 12px; color: #2e7d32;">实时档位：<b>${ptName}</b>（付费订阅有效）</div>`;
                         } else {
@@ -5416,6 +5426,7 @@ async function toggleAntigravityQuotaDetails(pathId) {
 
                     if (Object.keys(models).length === 0 && !groupsHTML) {
                         contentDiv.innerHTML = `
+                            ${paidTierHTML}
                             <div style="text-align: center; padding: 20px; color: #999;">
                                 <div style="font-size: 48px; margin-bottom: 10px;">📊</div>
                                 <div>暂无额度信息</div>
@@ -5432,7 +5443,7 @@ async function toggleAntigravityQuotaDetails(pathId) {
                             </div>
                             ${paidTierHTML}
                             ${groupsHTML}
-                            <div style="font-size: 12px; color: #888; margin-bottom: 6px;">以下为各模型 5 小时窗口剩余（同组模型共享，来自 fetchAvailableModels）：</div>
+                            <div style="font-size: 12px; color: #888; margin-bottom: 6px;">各模型剩余额度（来自 fetchAvailableModels）：</div>
                             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;">
                         `;
 
@@ -5482,8 +5493,12 @@ async function toggleAntigravityQuotaDetails(pathId) {
                     const overviewState = AppState.antigravityQuotaOverview;
                     if (overviewState) {
                         overviewState.data[filename] = data;
+                        const credCard = quotaDetails.closest('.cred-card');
+                        const tierBadge = credCard?.querySelector('.cred-tier-badge');
+                        if (tierBadge) tierBadge.outerHTML = buildCredentialTierBadge(credCard.dataset.storedTier, data);
+                        const notice = credCard?.querySelector('.cred-tier-notice');
+                        if (notice) notice.innerHTML = buildAntigravityTierSnapshotNotice(filename);
                         if (overviewState.selectedModel) {
-                            const credCard = quotaDetails.closest('.cred-card');
                             const inlineBar = credCard ? credCard.querySelector('.quota-inline-bar') : null;
                             if (inlineBar) {
                                 inlineBar.outerHTML = buildAntigravityQuotaOverviewInline(filename);
@@ -5751,16 +5766,14 @@ function renderAntigravityQuotaSummary() {
         </div>`;
 }
 
-function buildAntigravityTierDegradedNotice(filename) {
+function buildAntigravityTierSnapshotNotice(filename) {
     const entry = AppState.antigravityQuotaOverview.data[filename];
     const paidTier = entry && entry.paid_tier;
-    if (!paidTier || paidTier.kind !== 'free') return '';
-    const liveName = escapeHtml(paidTier.name || 'Antigravity Starter Quota');
-    if (paidTier.snapshot_conflict) {
-        const storedLabel = escapeHtml((paidTier.stored_tier || '').toUpperCase() || '未记录');
-        return `<div class="quota-inline-bar" style="margin-top:6px;padding:4px 10px;background:#eceff1;border:1px solid #cfd8dc;border-radius:4px;font-size:11px;color:#455a64;" title="库内快照 tier=${storedLabel}（导入默认值或旧判定），loadCodeAssist 实时返回 paidTier = ${liveName}">ℹ️ 实时档位 ${liveName}（仅周限额、无 5h）；库内快照 ${storedLabel} 与实时不一致，快照不能作为降档依据</div>`;
-    }
-    return '';
+    if (!paidTier?.snapshot_conflict) return '';
+    const name = escapeHtml(paidTier.name || paidTier.id);
+    const stored = escapeHtml((paidTier.stored_tier || '').toUpperCase() || '未记录');
+    const windows = quotaWindowSummary(entry.groups);
+    return `<div class="quota-tier-notice" style="margin-top:6px;padding:4px 10px;background:#eceff1;border:1px solid #cfd8dc;border-radius:4px;font-size:11px;color:#455a64;">实时档位 ${name}；库内快照 ${stored} 与实时不一致。${windows}</div>`;
 }
 
 function buildAntigravityQuotaOverviewInline(filename) {
@@ -5793,7 +5806,7 @@ function buildAntigravityQuotaOverviewInline(filename) {
     const exhausted = remainingPct <= 0;
 
     return `
-        <div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;" title="${modelLabel} 5小时窗口剩余 ${remainingLabel}${resetLabel}">
+        <div class="quota-inline-bar" style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 10px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;" title="${modelLabel} 剩余额度 ${remainingLabel}${resetLabel}">
             <span style="font-size:11px;color:#555;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${modelLabel}</span>
             <span style="flex:1;height:6px;background:#e9ecef;border-radius:3px;overflow:hidden;">
                 <span style="display:block;height:100%;width:${usedPct}%;background-color:${color};transition:width 0.3s ease;"></span>

@@ -3123,9 +3123,14 @@ async def fetch_quota_info(
 # "Free users and Google AI Plus users receive the minimum base limits"。
 # 也就是说这是免费档的正式档位名，不是「刚刚被降档」的事件标记——任何没有
 # Google AI Pro 订阅的账号都会返回它，把它直接当降档会让所有免费号集体告警。
-ANTIGRAVITY_STARTER_QUOTA_NAME = "Antigravity Starter Quota"
-# paidTier.id 属于免费基础档的取值（仅周限额、无 5h 窗口）。
-ANTIGRAVITY_FREE_PAID_TIER_IDS = frozenset({"free-tier"})
+# IDs from loadCodeAssist.paidTier. standard-tier has a different meaning in currentTier.
+ANTIGRAVITY_PAID_TIER_KINDS = {
+    "free-tier": "free",
+    "g1-pro-tier": "paid",
+    "helium-tier": "paid",
+    "standard-tier": "paid",
+    "g1-ultra-tier": "paid",
+}
 # 库内 tier 快照属于付费档的取值。
 # 注意：tier 列在 sqlite/psql/mongo 三套存储里都是 DEFAULT 'pro'，导入期未能
 # 判定档位时也会落 pro。因此它不能当作「该账号曾经有付费订阅」的证据，只能
@@ -3140,17 +3145,15 @@ def classify_paid_tier(tier_id: Any, tier_name: Any) -> str:
     同一层字段：实测付费账号返回 paidTier=g1-pro-tier 时 currentTier 仍可能
     是 free-tier。因此判据以 id 优先、name 兜底，且先判免费档再判付费档。
     """
-    candidates = [str(c).strip().lower() for c in (tier_id, tier_name) if c]
-    if not candidates:
-        return "unknown"
-    if any(c in ANTIGRAVITY_FREE_PAID_TIER_IDS for c in candidates):
-        return "free"
-    if any("starter quota" in c for c in candidates):
-        return "free"
-    if any("ultra" in c for c in candidates):
-        return "paid"
-    if any(c in ("g1-pro-tier", "helium-tier") or "pro" in c for c in candidates):
-        return "paid"
+    product_id = str(tier_id or "").strip().lower()
+    if product_id in ANTIGRAVITY_PAID_TIER_KINDS:
+        return ANTIGRAVITY_PAID_TIER_KINDS[product_id]
+    for label in (tier_name, product_id):
+        words = str(label or "").lower().replace("-", " ").split()
+        if "starter quota" in " ".join(words) or words == ["free", "tier"]:
+            return "free"
+        if "pro" in words or "ultra" in words:
+            return "paid"
     return "unknown"
 
 
