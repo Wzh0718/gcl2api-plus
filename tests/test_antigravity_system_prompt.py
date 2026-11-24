@@ -1,3 +1,4 @@
+import hashlib
 from copy import deepcopy
 
 import config
@@ -9,7 +10,9 @@ from src.converter.gemini_fix import normalize_gemini_request
 @pytest.fixture(autouse=True)
 def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
-    monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False})
+    # 基础提示默认开启；本文件逐项显式开关，避免默认值掩盖被测分支。
+    monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False,
+                                                  'antigravity_system_prompt_enabled': False})
     monkeypatch.setenv('SENSITIVE_WORD_REPLACE_ENABLED', 'false')
     for key in ('ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED',
                 'ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED',
@@ -248,3 +251,54 @@ async def test_legacy_text_obfuscation_keeps_gateway_prefix(key):
     assert 'a/e/i/o/u -> 4/3/1/0/v' in decoder['text']
     assert guidance['text'] == 'Cl13nt gv1d4nc3'
     assert 'system_instructions' not in result
+
+
+@pytest.mark.parametrize('legacy_full_prompt', ['0', '1'])
+async def test_default_switches_on_official_agy_baseline(monkeypatch, legacy_full_prompt):
+    monkeypatch.setenv('ANTIGRAVITY_FULL_PROMPT_BASELINE', legacy_full_prompt)
+    from src.converter.antigravity_system_prompt import (
+        BRIDGE,
+        DEFAULT_PROMPT_VERSION,
+        PROMPT_PATH,
+        baseline_prompt,
+    )
+
+    assert config._config_cache.get('antigravity_system_prompt_enabled') is False  # 夹具隔离
+    config._config_cache.pop('antigravity_system_prompt_enabled', None)
+    assert await config.get_antigravity_system_prompt_enabled() is True
+
+    # 注入内容必须是官方 AGY 基础模块，而不是自定义前置文本或融合产物。
+    expected = PROMPT_PATH.read_text(encoding='utf-8').strip()
+    assert DEFAULT_PROMPT_VERSION == '2.31.2'
+    assert expected.startswith('You are Antigravity')
+    assert baseline_prompt() == expected
+
+    # 基线来源完整性：官方 2.31.2 三个模板与渲染产物都不得被替换。
+    from src.converter.antigravity_system_prompt import PROMPT_DIR
+
+    digests = {
+        'antigravity-2.31.2.txt': '85a8a9070376c8b0a90c0c97b6001991e490a919351cf827e36a446ddacbdd9f',
+        'antigravity-2.31.2/identity.tmpl': 'bd8957e589c97f9fa5d5fe3077b01c49b0329f0987bd58cf73bab123ea0a199b',
+        'antigravity-2.31.2/communication_style.tmpl': '96e2f45838771003bbfb05206623bb6be4b64187eaa97a4e4d1f2d9e9de86c8f',
+        'antigravity-2.31.2/guidelines.tmpl': 'f4ede326caaa79f7454af6dac251cf0436ab8375c1b06eade975bcaf85a7c439',
+    }
+    for relative, digest in digests.items():
+        assert hashlib.sha256((PROMPT_DIR / relative).read_bytes()).hexdigest() == digest
+
+    req = {'model': 'gemini-2.5-flash',
+           'contents': [{'role': 'user', 'parts': [{'text': 'Task'}]}]}
+    result = await normalize_gemini_request(req, mode='antigravity')
+    head = result['systemInstruction']['parts'][0]['text']
+    assert head == expected + '\n\n' + BRIDGE
+    assert head.startswith('You are Antigravity')
+
+
+async def test_default_injection_keeps_the_complete_official_prefix_for_older_client_guidance():
+    from src.converter.antigravity_system_prompt import BRIDGE, baseline_prompt
+
+    config._config_cache.pop('antigravity_system_prompt_enabled')
+    guidance = baseline_prompt().splitlines()[0]
+    payload = {'model': 'gemini-2.5-flash', 'contents': [],
+               'systemInstruction': {'parts': [{'text': guidance}]}}
+    result = await normalize_gemini_request(payload, mode='antigravity')
+    assert result['systemInstruction']['parts'][0]['text'] == baseline_prompt() + '\n\n' + BRIDGE

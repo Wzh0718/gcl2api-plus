@@ -24,6 +24,10 @@ def isolate_filter_settings(monkeypatch):
     monkeypatch.setattr(config, "get_sensitive_word_filter_mode", rewrite)
     monkeypatch.setattr(config, "get_sensitive_word_use_default_keywords", no_defaults)
 
+    async def prompt_injection_off():
+        return False
+    monkeypatch.setattr(config, "get_antigravity_system_prompt_enabled", prompt_injection_off)
+
 from src.converter.gemini_fix import normalize_gemini_request
 from src.converter.sensitive_words import (
     apply_sensitive_word_rules,

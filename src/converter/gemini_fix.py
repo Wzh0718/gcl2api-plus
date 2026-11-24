@@ -834,11 +834,16 @@ async def normalize_gemini_request(
     if mode in ("geminicli", "antigravity"):
         from src.converter.sensitive_words import filter_request_system_instruction
         await filter_request_system_instruction(result, mode=mode)
+    from src.converter.system_prompt import append_configured_system_prompt
     if mode == "antigravity":
         from src.converter.antigravity_system_prompt import prepare_antigravity_system_prompt
+        from src.converter.protected_leet import instruction_text
         result = await prepare_antigravity_system_prompt(result, client_profile=client_profile, api_key_id=api_key_id)
-    from src.converter.system_prompt import append_configured_system_prompt
-    await append_configured_system_prompt(result)
+        # Use caller guidance captured before insertion, also on repeated normalization.
+        if instruction_text(result.fusion_instruction).strip():
+            await append_configured_system_prompt(result)
+    else:
+        await append_configured_system_prompt(result)
     from src.converter.remote_images import inline_remote_gemini_images
     await inline_remote_gemini_images(result)
     generation_config = (result.get("generationConfig") or {}).copy()  # 创建副本避免修改原对象

@@ -1,11 +1,20 @@
 # AGY system 注入与客户端指导
 
-两个独立开关默认关闭，仅作用于 Antigravity 通道。面板“AGY 系统提示与客户端指导”可保存，下一请求生效；非空环境变量优先于 SQLite 并锁定面板控件。
+仅作用于 Antigravity 通道。AGY 基础提示注入**默认开启**；客户端 System 转 User **默认关闭**。面板“AGY 系统提示与客户端指导”可保存，下一请求生效；非空环境变量优先于 SQLite 并锁定面板控件。
 
-| 配置键 | 环境变量 | 行为 |
-| --- | --- | --- |
-| `antigravity_system_prompt_enabled` | `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED` | 将内置 AGY 基础提示词作为 system 注入；客户端无 system 时也注入 |
-| `antigravity_system_as_user_enabled` | `ANTIGRAVITY_SYSTEM_AS_USER_ENABLED` | 将转换后的客户端 system 各 part 放入会话开头的一条 user 指导消息，删除原 system |
+> **强制约束（默认值与内容来源）**
+>
+> 1. `antigravity_system_prompt_enabled` 的代码默认值必须是 `true`。除显式保存 `false`（面板取消勾选并保存）或设置 `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED=false` 外，不得把默认值改回关闭。
+    旧版本面板写入的历史 `false` 在首次启动时由主库事务一次性纠正为 `true`，同一事务写入标记 `agy_base_prompt_default_migrated_v1`；标记存在后不再覆盖面板保存的 `false`。显式环境变量存在时不动存储。
+> 2. 注入的文本必须是官方 AGY（Antigravity）基础模块，来源限定为 `src/prompts/antigravity-<hub 版本>.txt`，当前为 `2.31.2`。禁止用自定义前置文本、其他项目的提示词或模型生成的融合结果替换这段基础提示。
+> 3. 版本跟随账号：选号后按该账号 hub 版本替换基线前缀；仓库没有对应版本文件时回退 `2.31.2`，不即时生成未核验内容。旧的 `ANTIGRAVITY_FULL_PROMPT_BASELINE` 环境变量不再替换基础模块。
+> 4. “AGY 基础提示”“AGY 提示词融合”“自定义系统提示 / 前置文本”是三个独立功能，不能互相替代。
+
+| 配置键 | 环境变量 | 默认 | 行为 |
+| --- | --- | --- | --- |
+| `antigravity_system_prompt_enabled` | `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED` | `true` | 将内置 AGY 基础提示词作为 system 注入；客户端无 system 时也注入 |
+| `antigravity_system_as_user_enabled` | `ANTIGRAVITY_SYSTEM_AS_USER_ENABLED` | `false` | 将转换后的客户端 system 各 part 放入会话开头的一条 user 指导消息，删除原 system |
+
 
 两者同时开启时，system 是 AGY 基础提示词和网关环境适配说明；客户端 system 成为 user 层指导，随后是原对话。只注入时，AGY 基础提示词位于 system 前部，客户端 system 保留在后续 parts；只转换角色时不注入 AGY system。
 
@@ -29,13 +38,13 @@
 | communication_style.tmpl | 96e2f45838771003bbfb05206623bb6be4b64187eaa97a4e4d1f2d9e9de86c8f |
 | guidelines.tmpl | f4ede326caaa79f7454af6dac251cf0436ab8375c1b06eade975bcaf85a7c439 |
 
-以 Go text/template 渲染：`generic-system-prompt=false`、`IsAutonomous=false`、`SupportsLatexRendering=false`；产物为 `src/prompts/antigravity-2.31.2.txt`。这三个固定基础模块**不是完整运行时 system**。完整内容还依赖模型、实验、会话、技能、工作区、工具和其他代码生成模块，未冒充或重建这些客户端状态。不在线自动拉取更新，升级时重新核查并随代码发布。
+以 Go text/template 渲染：`generic-system-prompt=false`、`IsAutonomous=false`、`SupportsLatexRendering=false`；产物为 `src/prompts/antigravity-2.31.2.txt`，SHA256 `85a8a9070376c8b0a90c0c97b6001991e490a919351cf827e36a446ddacbdd9f`。`tests/test_antigravity_system_prompt.py::test_default_switches_on_official_agy_baseline` 锁定上述四个文件哈希；替换基线必须同时更新该用例与本文档。这三个固定基础模块**不是完整运行时 system**。完整内容还依赖模型、实验、会话、技能、工作区、工具和其他代码生成模块，未冒充或重建这些客户端状态。不在线自动拉取更新，升级时重新核查并随代码发布。
 
 ## 与其他配置的关系
 
 - 在协议转换后执行；OpenAI Chat/Responses、Anthropic Messages、Gemini 的生成请求共享规范化入口，流式与非流式使用相同转换。
 - 原有敏感词过滤先处理客户端 system，再执行本功能。角色转换后的指导内容因此继承现有过滤结果。
-- 原有全局 `system_prompt_append` 在本功能后执行：仍前置到最终 system 第一个文本 part；不随客户端 system 转移。仅角色转换、最终无 system 时，旧前置功能仍不主动创建 system。
+- 原有全局 `system_prompt_append` 在本功能后执行：仅当原始客户端 system 含非空文本时，前置到最终 system 第一个文本 part；不随客户端 system 转移。仅角色转换、最终无 system 时，旧前置功能仍不主动创建 system。
 - 原有全局兼容模式可能在协议转换阶段已将 system 改为 user；本功能不会再将这些 user 消息挪动或重复包装。需要本功能的明确指导包装时，关闭全局兼容模式。
 - 角色转换不改工具名称、参数和调用结果顺序；原有协议规范化仍执行。
-- 这是提示词兼容选项，没有证据表明能解决 429 或账号停用。默认关闭，也未在生产上开启或部署。
+- 基础提示注入默认开启（用户方要求）；它仍是提示词兼容选项，不构成对 429 或账号停用的解决方案，也不能替代出口、负载和凭证层面的治理。

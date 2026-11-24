@@ -7,7 +7,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
-    monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False})
+    # 本文件只测混淆/编码；基础提示注入显式关闭，默认开启的行为由专门用例覆盖。
+    monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False,
+                                                 'antigravity_system_prompt_enabled': False})
     for key in ('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED',
                 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'SYSTEM_PROMPT_APPEND',
                 'ANTIGRAVITY_WORKFLOW_CONTRACTS_FILE'):

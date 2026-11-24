@@ -155,8 +155,14 @@ async def test_gateway_chat_route_with_simulated_upstream(channel, stream, monke
     assert len(seen) == 1
     system = seen[0]['request']['systemInstruction']['parts']
     if channel == 'antigravity':
-        assert system[0]['text'].startswith('Leet encoding adapter.')
-        assert system[1:] == [{'text': f'K33p 4ctv4l t00l sch3m4s.\n{contract}'}]
+        from src.converter.antigravity_system_prompt import (
+            BRIDGE, STRUCTURED_OUTPUT_PRIORITY, baseline_prompt,
+        )
+        # 基础提示默认开启：parts[0] 必须是官方 AGY 基线 + 网关适配说明。
+        assert system[0]['text'] == baseline_prompt() + '\n\n' + BRIDGE
+        assert system[1]['text'] == STRUCTURED_OUTPUT_PRIORITY
+        assert system[2]['text'].startswith('Leet encoding adapter.')
+        assert system[3:] == [{'text': f'K33p 4ctv4l t00l sch3m4s.\n{contract}'}]
     else:
         assert system == [{'text': guidance}]
     assert all(c['role'] in ('user', 'model') for c in seen[0]['request']['contents'])
