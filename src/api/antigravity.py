@@ -387,7 +387,9 @@ def _build_labels(model: str, state: AntigravitySessionState) -> Dict[str, str]:
     return {
         "cascade_id": state.conversation_id,
         "root_cascade_id": state.conversation_id,
-        "request_id": f"{state.trajectory_id}-{label_step}",
+        # 官方同一轨迹内恒定为 <trajectory_id>-0（实抓 2.25.0/1.5.9 两步都是 -0），
+        # 递增属于官方不存在的形态；步进由 last_step_index 与信封 requestId 表达。
+        "request_id": f"{state.trajectory_id}-0",
         "trajectory_id": state.trajectory_id,
         "last_step_index": str(label_step),
         "model_enum": get_model_enum(model),

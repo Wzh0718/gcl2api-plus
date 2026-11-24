@@ -1231,18 +1231,22 @@ async def get_antigravity_session_reuse_ratio() -> float:
 
 
 async def get_antigravity_session_max_steps() -> int:
-    """单条 trajectory 的最大步数；超过后强制开启新会话。"""
+    """单条 trajectory 的最大步数；超过后强制开启新会话。
+
+    与 labels.request_id 恒定配套：恒定时单条轨迹只挂一个 request_id，
+    步数上限直接决定该 id 下的调用密度，官方实抓为 1–3 步，故取 10。
+    """
     env_value = os.getenv("ANTIGRAVITY_SESSION_MAX_STEPS")
     if env_value:
         try:
             return max(int(env_value), 1)
         except ValueError:
             pass
-    value = await get_config_value("antigravity_session_max_steps", 30)
+    value = await get_config_value("antigravity_session_max_steps", 10)
     try:
         return max(int(value), 1)
     except (TypeError, ValueError):
-        return 30
+        return 10
 
 
 async def get_antigravity_session_bucket_seconds() -> int:
@@ -1419,7 +1423,7 @@ async def get_call_records_retention_days() -> int:
     try:
         return min(max(int(value), 1), 365)
     except (TypeError, ValueError):
-        return 30
+        return 10
 
 
 async def get_antigravity_system_prompt_enabled() -> bool:
