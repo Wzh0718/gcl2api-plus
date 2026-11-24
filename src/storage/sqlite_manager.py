@@ -47,8 +47,18 @@ _EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
 # 5xx 就地冷却阶梯：60s → 5m → 15m → 30m → 1h → 2h → 4h → 12h。
 # 上游 5xx 往往先于账号级处置出现（503 连击 → 短恢复 → 403/TOS），
 # 只在 10 分钟内反复放回轮转会持续制造同样的失败模式，因此阶梯必须能到半天。
-_TRANSIENT_BACKOFF_STEPS = (60, 300, 900, 1800, 3600, 7200, 14400, 43200)
-_TRANSIENT_BACKOFF_CAP = 43200
+# 5xx 直接冷却半天：5xx 往往是账号级处置的前兆（503 连击 → 短恢复 → 403/TOS），
+# 不再做阶梯试探；到期后由 warmup 组件以低并发缓慢放量。
+_TRANSIENT_HOLD_SECONDS = 43200
+# 5xx 冷却到期后的养号参数：并发 1、间隔 5s、每 5 次成功升一级
+POST_5XX_WARMUP_CONFIG = {
+    "account_initial_concurrency": 1,
+    "account_initial_interval_ms": 5000,
+    "success_threshold": 5,
+    "max_level": 3,
+}
+_TRANSIENT_BACKOFF_STEPS = (_TRANSIENT_HOLD_SECONDS,)
+_TRANSIENT_BACKOFF_CAP = _TRANSIENT_HOLD_SECONDS
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -5613,32 +5623,69 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                               )
                         """, (filename,))
 
-                        # 恢复期渐进放量：一次 200 不把退避阶梯清零，而是
-                        # 递减一档并插入 30s×档位 的短间隔，让账号按阶梯慢慢
-                        # 回到正常并发；连击 5xx 之后立刻满速是我们要避免的。
-                        # 阶梯降到 0 才彻底放开。
+                        # 一次成功只清计数，不动冷却窗口；放量由 warmup 组件负责
                         await db.execute("""
                             UPDATE antigravity_credentials
-                            SET transient_error_count = MAX(COALESCE(transient_error_count, 0) - 1, 0),
-                                transient_hold_until = CASE
-                                    WHEN COALESCE(transient_error_count, 0) <= 1
-                                        THEN COALESCE(transient_hold_until, 0)
-                                    ELSE MAX(COALESCE(transient_hold_until, 0),
-                                             ? + MIN(30 * (COALESCE(transient_error_count, 0) - 1), 600))
-                                END,
-                                transient_error_at = CASE
-                                    WHEN COALESCE(transient_error_count, 0) <= 1 THEN 0
-                                    ELSE ?
-                                END,
+                            SET transient_error_count = 0,
+                                transient_error_at = 0,
                                 updated_at = unixepoch()
                             WHERE filename = ?
                               AND COALESCE(transient_error_count, 0) > 0
-                        """, (time.time(), time.time(), filename))
+                        """, (filename,))
 
                     await db.commit()
 
         except Exception as e:
             log.error(f"Error recording success for {filename}: {e}")
+
+    async def recover_expired_transient_holds(self) -> list[str]:
+        """冷却到期的账号转入养号（低并发）状态，返回本次转入的账号。
+
+        5xx 冷却半天的目的不是「歇够了就满速」，而是给账号一次重新起步的
+        机会：到期后进入 warmup level 0（初始并发 1、初始间隔 5s），
+        按 success_threshold 次成功逐级放量；过程中再出 5xx 会重新进冷却。
+        """
+        self._ensure_initialized()
+        now = time.time()
+        try:
+            async with sqlite_connect(self._db_path) as db:
+                if not self.main_postgres:
+                    await db.execute("BEGIN IMMEDIATE")
+                async with db.execute(
+                    """SELECT filename FROM antigravity_credentials
+                       WHERE COALESCE(disabled, 0) = 0
+                         AND COALESCE(transient_error_count, 0) > 0
+                         AND COALESCE(transient_hold_until, 0) > 0
+                         AND COALESCE(transient_hold_until, 0) <= ?""",
+                    (now,),
+                ) as cursor:
+                    names = [row[0] for row in await cursor.fetchall()]
+                if not names:
+                    await db.rollback()
+                    return []
+                placeholders = ",".join("?" for _ in names)
+                await db.execute(
+                    f"""UPDATE antigravity_credentials
+                        SET transient_hold_until = 0,
+                            transient_error_count = 0,
+                            transient_error_at = 0,
+                            updated_at = ?
+                        WHERE filename IN ({placeholders})""",
+                    [now, *names],
+                )
+                await db.commit()
+        except Exception as exc:  # noqa: BLE001 - 恢复流程不得影响选号
+            log.warning(f"[ANTIGRAVITY TRANSIENT] 冷却到期迁移失败: {type(exc).__name__}: {exc}")
+            return []
+        try:
+            await self.set_antigravity_warmup(names, "start", config=POST_5XX_WARMUP_CONFIG)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"[ANTIGRAVITY TRANSIENT] 转入养号失败: {type(exc).__name__}: {exc}")
+        else:
+            log.warning(
+                f"[ANTIGRAVITY TRANSIENT] {len(names)} 个账号冷却到期，转入养号 level 0（并发 1 / 间隔 5s）"
+            )
+        return names
 
     async def hold_antigravity_transient(
         self,
@@ -5690,15 +5737,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         await db.rollback()
                         return current_hold
                     delay = cap  # 500/502 may lengthen its own hold
-                elif status_code == 503:
-                    delay = min(
-                        _TRANSIENT_BACKOFF_STEPS[
-                            min(count, len(_TRANSIENT_BACKOFF_STEPS) - 1)
-                        ],
-                        max(cap, _TRANSIENT_BACKOFF_CAP),
-                    )
+                elif status_code is not None and 500 <= int(status_code) < 600:
+                    delay = _TRANSIENT_HOLD_SECONDS
                 else:
-                    delay = cap
+                    delay = max(cap, _TRANSIENT_HOLD_SECONDS)
                 hold_until = now + delay
                 await db.execute(
                     """UPDATE antigravity_credentials
