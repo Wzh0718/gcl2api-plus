@@ -214,6 +214,17 @@ class CredentialManager:
             self._image_account_leases.clear()
             self._image_lease_condition.notify_all()
 
+    async def _maybe_recover_transient_holds(self) -> None:
+        """最多每 60 秒扫一次：冷却到期的账号转入养号低并发状态。"""
+        now = time.time()
+        if now - getattr(self, "_last_transient_recovery_at", 0.0) < 60.0:
+            return
+        self._last_transient_recovery_at = now
+        try:
+            await self._storage_adapter.recover_expired_transient_holds()
+        except Exception as exc:  # noqa: BLE001 - 恢复流程不得影响选号
+            log.debug(f"[ANTIGRAVITY TRANSIENT] 到期恢复跳过: {type(exc).__name__}: {exc}")
+
     async def get_valid_credential(
         self,
         mode: str = "geminicli",
@@ -231,6 +242,7 @@ class CredentialManager:
             model_name: 完整模型名，用于模型级冷却检查
         """
         await self._ensure_initialized()
+        await self._maybe_recover_transient_holds()
 
         from src.claude_routing import bound_claude_credential
         selection_retry_at.set(0)
