@@ -1167,15 +1167,20 @@ async def test_image_non_stream_recovers_from_503(
     )
 
     assert billing_records[0]['request_model'] == 'client-image-alias'
-    manager.hold_transient.assert_awaited_once_with("ultra.json", status_code=503, mode="antigravity")
     assert response.status_code == (503 if single_account else 200)
     assert len(billing_records) == 1
     if single_account:
+        # 单账号 + 无容量标记：账号级 503，换成没号可换，只能冷藏该账号
+        manager.hold_transient.assert_awaited_once_with(
+            "ultra.json", status_code=503, mode="antigravity"
+        )
         assert manager.selections == [set(), {"ultra.json"}]
         assert [call["json_body"]["project"] for call in upstream_calls] == ["ultra-project"]
         assert manager.releases == [("ultra.json", "lease-ultra")]
         persistent_error.assert_awaited_once()
         return
+    # 模型级容量耗尽（MODEL_CAPACITY_EXHAUSTED）：换号恢复，不能冷藏健康账号
+    manager.hold_transient.assert_not_awaited()
     assert manager.selections == [set(), {"ultra.json"}]
     assert [call["json_body"]["model"] for call in upstream_calls] == [
         "gemini-3-flash-image",
