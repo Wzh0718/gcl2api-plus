@@ -38,10 +38,19 @@ VERIFIED_BUILDS: Tuple[Tuple[str, str, int], ...] = (
     ("2.28.2", "1009437749", 0),   # Built on 2026-10-29，待模型目录核验后启用
 )
 
-# 已实抓的 (os_type, arch) 组合。未经实抓的平台不进入画像。
-VERIFIED_PLATFORMS: Tuple[Tuple[str, str], ...] = (("linux", "amd64"),)
+# 可用平台与权重。hub 的公开产物只有 linux/amd64 与 linux/arm64
+# （antigravity-public 桶里 darwin/win32 命名均为 404），但上游对平台字段是
+# 无条件接受的：2026-11-24 用生产号实测，linux/amd64、darwin/arm64、
+# darwin/x64、win32/x64 四种 UA 全部 200 且响应一致，因此按真实终端分布配权。
+VERIFIED_PLATFORMS: Tuple[Tuple[str, str, int], ...] = (
+    ("linux", "amd64", 55),
+    ("linux", "arm64", 15),
+    ("darwin", "arm64", 15),
+    ("win32", "x64", 10),
+    ("darwin", "x64", 5),
+)
 
-DEFAULT_OS_TYPE, DEFAULT_ARCH = VERIFIED_PLATFORMS[0]
+DEFAULT_OS_TYPE, DEFAULT_ARCH, _ = VERIFIED_PLATFORMS[0]
 
 _PROFILE_KEY = "device_profile"
 _DERIVE_PREFIX = "agy-device-profile:v1:"
@@ -53,7 +62,7 @@ def verified_build(version: str, cl: str) -> bool:
 
 
 def _verified_platform(os_type: str, arch: str) -> bool:
-    return (os_type, arch) in VERIFIED_PLATFORMS
+    return any(os_type == o and arch == a for o, a, _ in VERIFIED_PLATFORMS)
 
 
 def cl_for_version(version: str) -> Optional[str]:
@@ -86,11 +95,21 @@ def derive_device_profile(credential_name: str) -> Dict[str, str]:
                 chosen = build
                 break
     version, cl, _ = chosen
+    platform_bucket = (_digest_int(credential_name or "") >> 32) % 100
+    platform_enabled = [p for p in VERIFIED_PLATFORMS if p[2] > 0]
+    platform_total = sum(p[2] for p in platform_enabled) or 1
+    os_type, arch, _ = platform_enabled[0]
+    cursor = 0
+    for os_name, arch_name, weight in platform_enabled:
+        cursor += weight
+        if platform_bucket < cursor * 100 // platform_total:
+            os_type, arch = os_name, arch_name
+            break
     return {
         "hub_version": version,
         "cl": cl,
-        "os_type": DEFAULT_OS_TYPE,
-        "arch": DEFAULT_ARCH,
+        "os_type": os_type,
+        "arch": arch,
         "source": "derived",
     }
 

@@ -21,7 +21,7 @@ from src.utils import build_antigravity_user_agent, get_antigravity_user_agent_f
 
 HUB_UA_RE = re.compile(
     r"^antigravity/hub/(?P<version>\d+\.\d+\.\d+) "
-    r"\(aidev_client; os_type=(?P<os>[a-z]+); arch=(?P<arch>[a-z0-9]+); cl=(?P<cl>\d+)\)$"
+    r"\(aidev_client; os_type=(?P<os>[a-z0-9]+); arch=(?P<arch>[a-z0-9]+); cl=(?P<cl>\d+)\)$"
 )
 
 CREDENTIALS = [
@@ -86,15 +86,29 @@ def test_version_and_cl_must_come_from_the_same_row():
 
 
 def test_unverified_platform_is_rejected():
-    mac = {
+    odd = {
         "device_profile": {
             "hub_version": "2.31.2",
             "cl": "1019359392",
-            "os_type": "darwin",
-            "arch": "arm64",
+            "os_type": "freebsd",
+            "arch": "riscv64",
         }
     }
-    assert normalize_profile(mac["device_profile"]) is None
+    assert normalize_profile(odd["device_profile"]) is None
+
+
+def test_mac_and_windows_platforms_are_accepted():
+    # 2026-11-24 生产号实测：darwin/arm64、darwin/x64、win32/x64 三种 UA 均返回 200，
+    # 响应与 linux/amd64 一致，因此这三组进入 VERIFIED_PLATFORMS。
+    for os_type, arch in (("darwin", "arm64"), ("darwin", "x64"), ("win32", "x64")):
+        profile = normalize_profile({
+            "hub_version": "2.34.0",
+            "cl": "1026637980",
+            "os_type": os_type,
+            "arch": arch,
+        })
+        assert profile is not None
+        assert (profile["os_type"], profile["arch"]) == (os_type, arch)
 
 
 def test_per_account_user_agent_is_well_formed_and_self_consistent():
