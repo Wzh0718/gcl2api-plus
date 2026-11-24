@@ -104,10 +104,11 @@ async def test_expired_5xx_holds_rejoin_even_rotation(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_success_clears_counter_but_keeps_hold_window(tmp_path, monkeypatch):
-    """成功的请求只清降权计数。
+    """成功的请求只递减降权计数，不提前解除冷却窗口。
 
     5xx 之后紧跟的 200 通常来自冷却前发出的在飞请求，不能证明上游已恢复；
     窗口必须走完，否则 503 这类高频错误上的降温会瞬间失效。
+    递减到 0 才彻底放开（恢复期由 record_success 插入短间隔实现渐进放量）。
     """
     manager = await make_manager(tmp_path, monkeypatch)
     hold_until = await manager.hold_antigravity_transient(
@@ -245,14 +246,25 @@ async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, mon
             )
             await db.commit()
 
-    for expected in (60, 120, 240, 480, 600, 600):
+    # 阶梯已扩到小时级：60s → 5m → 15m → 30m → 1h → 2h → 4h → 12h
+    for expected in (60, 300, 900, 1800, 3600, 7200):
         hold_until = await manager.hold_antigravity_transient(
             "a.json", seconds=600, status_code=503
         )
         assert hold_until - time.time() == pytest.approx(expected, abs=5)
         await expire("a.json")
 
+    # 恢复期渐进放量：一次成功只降一档，不把阶梯清零
     await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
+    await expire("a.json")
+    hold_until = await manager.hold_antigravity_transient(
+        "a.json", seconds=600, status_code=503
+    )
+    assert hold_until - time.time() == pytest.approx(7200, abs=5), "一次成功不应清零阶梯"
+
+    # 连续成功把阶梯降到 0 之后，才回到最短一档
+    for _ in range(8):
+        await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
     await expire("a.json")
     hold_until = await manager.hold_antigravity_transient(
         "a.json", seconds=600, status_code=503

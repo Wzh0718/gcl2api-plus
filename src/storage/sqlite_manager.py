@@ -44,7 +44,11 @@ _EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
         'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout'
     )))"""
 # 503 连续失败退避阶梯（秒），最后一档之外统一使用配置上限。
-_TRANSIENT_BACKOFF_STEPS = (60, 120, 240, 480, 900)
+# 5xx 就地冷却阶梯：60s → 5m → 15m → 30m → 1h → 2h → 4h → 12h。
+# 上游 5xx 往往先于账号级处置出现（503 连击 → 短恢复 → 403/TOS），
+# 只在 10 分钟内反复放回轮转会持续制造同样的失败模式，因此阶梯必须能到半天。
+_TRANSIENT_BACKOFF_STEPS = (60, 300, 900, 1800, 3600, 7200, 14400, 43200)
+_TRANSIENT_BACKOFF_CAP = 43200
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -5609,17 +5613,27 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                               )
                         """, (filename,))
 
-                        # 一次成功只清错误计数，不动冷却窗口。
-                        # 5xx 之后紧接着返回的 200 往往来自冷却前发出的在飞请求，
-                        # 它不能证明上游已恢复；窗口必须走完，否则降温形同虚设。
+                        # 恢复期渐进放量：一次 200 不把退避阶梯清零，而是
+                        # 递减一档并插入 30s×档位 的短间隔，让账号按阶梯慢慢
+                        # 回到正常并发；连击 5xx 之后立刻满速是我们要避免的。
+                        # 阶梯降到 0 才彻底放开。
                         await db.execute("""
                             UPDATE antigravity_credentials
-                            SET transient_error_count = 0,
-                                transient_error_at = 0,
+                            SET transient_error_count = MAX(COALESCE(transient_error_count, 0) - 1, 0),
+                                transient_hold_until = CASE
+                                    WHEN COALESCE(transient_error_count, 0) <= 1
+                                        THEN COALESCE(transient_hold_until, 0)
+                                    ELSE MAX(COALESCE(transient_hold_until, 0),
+                                             ? + MIN(30 * (COALESCE(transient_error_count, 0) - 1), 600))
+                                END,
+                                transient_error_at = CASE
+                                    WHEN COALESCE(transient_error_count, 0) <= 1 THEN 0
+                                    ELSE ?
+                                END,
                                 updated_at = unixepoch()
                             WHERE filename = ?
                               AND COALESCE(transient_error_count, 0) > 0
-                        """, (filename,))
+                        """, (time.time(), time.time(), filename))
 
                     await db.commit()
 
@@ -5681,7 +5695,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                         _TRANSIENT_BACKOFF_STEPS[
                             min(count, len(_TRANSIENT_BACKOFF_STEPS) - 1)
                         ],
-                        cap,
+                        max(cap, _TRANSIENT_BACKOFF_CAP),
                     )
                 else:
                     delay = cap
