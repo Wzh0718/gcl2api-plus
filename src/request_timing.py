@@ -1,4 +1,5 @@
-"""Constant-space request timing: no body copies, queues, tasks or global request map."""
+"""Bounded request timing without retaining bodies or completed requests."""
+import asyncio
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -19,6 +20,9 @@ class RequestTiming:
     response_total_seconds: float | None = None
     upstream_response_seconds: float | None = None
     downstream_send_seconds: float | None = None
+    body_first_byte_seconds: float | None = None
+    body_receive_seconds: float | None = None
+    event_loop_lag_max_seconds: float | None = None
     monitor: object = None
     defer_monitor_insert: bool = False
     pending_monitor_row: dict | None = None
@@ -32,17 +36,71 @@ class RequestTiming:
     call_details: dict | None = None
 
     def details(self):
-        return {"stages": dict(self.stages), "parameters": dict(self.parameters),
-                "request": dict(self.request_info), "phase_ms": dict(self.phase_ms)}
+        details = {"stages": dict(self.stages), "parameters": dict(self.parameters),
+                   "request": dict(self.request_info), "phase_ms": dict(self.phase_ms)}
+        ingress = {}
+        if self.body_receive_seconds is not None:
+            ingress.update(
+                body_first_byte_seconds=self.body_first_byte_seconds,
+                body_receive_seconds=self.body_receive_seconds,
+                event_loop_lag_max_seconds=self.event_loop_lag_max_seconds or 0.0,
+            )
+        elif self.event_loop_lag_max_seconds is not None and self.event_loop_lag_max_seconds > 0:
+            ingress["event_loop_lag_max_seconds"] = self.event_loop_lag_max_seconds
+        if ingress:
+            details["ingress"] = ingress
+        return details
 
 
 request_timing: ContextVar[RequestTiming | None] = ContextVar('request_timing', default=None)
 
-# One scalar per worker; no request objects or bodies are retained.
+# Only active timing states are held briefly; no request objects or bodies are retained
+# after the request finishes.
 _inflight_requests = 0
+_active_timing_states: dict[int, RequestTiming] = {}
+_event_loop_probe_handle: asyncio.TimerHandle | None = None
+_EVENT_LOOP_PROBE_SECONDS = 0.1
 
 
 _next_slow_log = 0.0
+
+
+def _event_loop_probe(loop, deadline: float) -> None:
+    global _event_loop_probe_handle
+    if not _active_timing_states:
+        _event_loop_probe_handle = None
+        return
+    now = loop.time()
+    lag = max(0.0, now - deadline)
+    if lag:
+        for state in tuple(_active_timing_states.values()):
+            state.event_loop_lag_max_seconds = max(
+                state.event_loop_lag_max_seconds or 0.0, lag
+            )
+    next_deadline = max(deadline + _EVENT_LOOP_PROBE_SECONDS,
+                        now + _EVENT_LOOP_PROBE_SECONDS)
+    _event_loop_probe_handle = loop.call_at(
+        next_deadline, _event_loop_probe, loop, next_deadline
+    )
+
+
+def _register_timing_state(state: RequestTiming) -> None:
+    global _event_loop_probe_handle
+    _active_timing_states[id(state)] = state
+    if _event_loop_probe_handle is None or _event_loop_probe_handle.cancelled():
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EVENT_LOOP_PROBE_SECONDS
+        _event_loop_probe_handle = loop.call_at(
+            deadline, _event_loop_probe, loop, deadline
+        )
+
+
+def _unregister_timing_state(state: RequestTiming) -> None:
+    global _event_loop_probe_handle
+    _active_timing_states.pop(id(state), None)
+    if not _active_timing_states and _event_loop_probe_handle is not None:
+        _event_loop_probe_handle.cancel()
+        _event_loop_probe_handle = None
 
 
 @contextmanager
@@ -110,7 +168,7 @@ def get_inflight_requests() -> int:
     return _inflight_requests
 
 
-_STAGE_NAMES = frozenset({"body_received", "auth_started", "auth_finished", "api_started",
+_STAGE_NAMES = frozenset({"body_first_byte", "body_received", "auth_started", "auth_finished", "api_started",
                           "first_upstream_send", "last_upstream_send", "last_upstream_data",
                           "billing_started", "billing_saved", "billing_enter", "recorder_lookup",
                           "post_enter", "post_exit", "usage_confirmed", "credential_saved",
@@ -232,11 +290,25 @@ class RequestTimingMiddleware:
                         "openai_images" if "/images/" in path else "openai_chat")
             state.request_info = {"protocol": protocol}
         token = request_timing.set(state)
+        timing_registered = False
 
         async def timed_receive():
+            nonlocal timing_registered
+            if not timing_registered:
+                _register_timing_state(state)
+                timing_registered = True
             message = await receive()
-            if message["type"] == "http.request" and not message.get("more_body", False):
-                mark_stage("body_received")
+            if message["type"] == "http.request":
+                if message.get("body") and state.body_first_byte_seconds is None:
+                    state.body_first_byte_seconds = time.monotonic() - state.started
+                    mark_stage("body_first_byte")
+                if not message.get("more_body", False):
+                    mark_stage("body_received")
+                    if state.body_first_byte_seconds is not None:
+                        state.body_receive_seconds = max(
+                            0.0,
+                            time.monotonic() - state.started - state.body_first_byte_seconds,
+                        )
             return message
 
         async def timed_send(message):
@@ -261,6 +333,8 @@ class RequestTimingMiddleware:
             await self.app(scope, timed_receive, timed_send)
         finally:
             _inflight_requests -= 1
+            if timing_registered:
+                _unregister_timing_state(state)
             request_timing.reset(token)
             _log_slow_request(state)
             # Finish telemetry inline after the response, including on disconnect.

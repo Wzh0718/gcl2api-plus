@@ -101,6 +101,17 @@ test('legacy records without stage timing retain the original metrics', () => {
     assert.doesNotMatch(html, /首次调用上游前|首次至末次|上游末包至下游首包/);
 });
 
+test('ingress timing and event-loop lag are shown when collected', () => {
+    const html = latencyCell({
+        timing_details: {ingress: {
+            body_receive_seconds: 73.58,
+            event_loop_lag_max_seconds: 0.12,
+        }},
+    });
+    assert.match(html, /请求体首字节至末字节 73\.58s/);
+    assert.match(html, /事件循环最大延迟 120\.00ms/);
+});
+
 test('settlement tooltip renders only measured phases and converts milliseconds once', () => {
     const html = latencyCell({timing_details: {phase_ms: {
         credential_save_pg_pool: 1250, model_stats_pg_sql: 0, billing_price_lookup: 3,

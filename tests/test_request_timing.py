@@ -108,6 +108,46 @@ async def test_stream_is_forwarded_without_buffering_and_context_is_released():
 
 
 @pytest.mark.asyncio
+async def test_ingress_timing_records_body_receive_window_and_event_loop_lag():
+    import time
+    from src.request_timing import RequestTimingMiddleware
+
+    messages = iter((
+        {"type": "http.request", "body": b"first", "more_body": True},
+        {"type": "http.request", "body": b"last", "more_body": False},
+    ))
+    observed = []
+
+    async def receive():
+        message = next(messages)
+        if not message["more_body"]:
+            await asyncio.sleep(0.01)
+        return message
+
+    async def app(scope, receive, send):
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        # Deliberately block the event loop long enough for the probe to report it.
+        time.sleep(0.15)
+        await asyncio.sleep(0)
+        observed.append(request_timing.get())
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    await RequestTimingMiddleware(app)(
+        {"type": "http", "method": "POST", "path": "/v1/messages"},
+        receive,
+        lambda message: asyncio.sleep(0),
+    )
+    state = observed[0]
+    assert state.body_first_byte_seconds is not None
+    assert state.body_receive_seconds >= 0.01
+    assert state.event_loop_lag_max_seconds >= 0.05
+    assert state.details()["ingress"]["body_receive_seconds"] >= 0.01
+
+
+@pytest.mark.asyncio
 async def test_timing_persists_without_content_capture_and_legacy_is_unknown(tmp_path, monkeypatch):
     from src.call_monitor import CallMonitor
     from src.storage_adapter import StorageAdapter

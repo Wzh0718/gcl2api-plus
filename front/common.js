@@ -3664,6 +3664,15 @@ function _cmLatencyCell(row) {
             tip.push(`上游末包至下游首包 ${format(firstByte - end)}`);
         }
     }
+    const ingress = row.timing_details?.ingress;
+    if (ingress) {
+        if (measured(ingress.body_receive_seconds)) {
+            tip.push(`请求体首字节至末字节 ${format(ingress.body_receive_seconds)}`);
+        }
+        if (measured(ingress.event_loop_lag_max_seconds)) {
+            tip.push(`事件循环最大延迟 ${format(ingress.event_loop_lag_max_seconds)}`);
+        }
+    }
     const phases = row.timing_details?.phase_ms || {};
     for (const [key, label] of [
         ['credential_save_pg_pool', '凭证保存等连接'], ['credential_save_pg_sql', '凭证保存 SQL'],
