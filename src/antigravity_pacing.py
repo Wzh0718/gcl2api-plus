@@ -136,24 +136,7 @@ def _slot_for(credential_name: str) -> _Slot:
     return slot
 
 
-async def pace_credential(credential_name: str, *, require_dynamic: bool = False) -> float:
-    """按账号维度的发起错峰。
-
-    两种模式，取"动态区间"优先：
-
-    1. 动态最小间隔（``ANTIGRAVITY_PACING_MIN/MAX_INTERVAL_SECONDS``，默认与 0 表示关闭）：
-       每次发往上游的尝试前，在该账号的队列上按 ``uniform(min, max)`` 秒等待。
-       用途是压低单账号请求密度（真人终端通常几十秒到几分钟一次），默认例：
-       min=2、max=10 → 均值 6s，单账号 ≈0.17 rps。代价是吞吐按比例下降，
-       必须按业务量显式开启。
-    2. 固定基准错峰（``antigravity_pacing_base_ms``，默认 80ms + ±50% 抖动）：
-       只用于打散瞬时齐发，不影响平均吞吐。
-
-    调用约定：``require_dynamic=True``（文本请求）时，动态区间未启用就直接返回 0，
-    不会引入固定基准的额外等待；图片请求沿用原行为。
-
-    返回实际等待秒数（0 表示无需等待）。
-    """
+def _pacing_interval(credential_name: str, require_dynamic: bool) -> float:
     if not credential_name:
         return 0.0
     from config import (
@@ -183,19 +166,82 @@ async def pace_credential(credential_name: str, *, require_dynamic: bool = False
         factor = 1.0 + random.uniform(-jitter_pct, jitter_pct) / 100.0
         interval = base_ms * factor / 1000.0
 
+    return interval
+
+
+async def _wait_for_start(credential_name: str) -> float:
+    waited = max(0.0, _NEXT_FREE.get(credential_name, 0.0) - time.monotonic())
+    if waited > 0:
+        await asyncio.sleep(waited)
+    return waited
+
+
+async def pace_credential(credential_name: str, *, require_dynamic: bool = False) -> float:
+    """独立发起错峰；推理路由使用 acquire_paced_credential_slot 协调准入。"""
+    interval = _pacing_interval(credential_name, require_dynamic)
+    if interval <= 0:
+        return 0.0
     async with _lock_for(credential_name):
-        now = time.monotonic()
-        start = max(now, _NEXT_FREE.get(credential_name, 0.0))
-        waited = start - now
-        if waited > 0:
-            await asyncio.sleep(waited)
-        _NEXT_FREE[credential_name] = start + interval
+        waited = await _wait_for_start(credential_name)
+        _NEXT_FREE[credential_name] = time.monotonic() + interval
 
     if waited >= 1.0:
         log.debug(
             f"[PACING] 账号 {credential_name} 节奏等待 {waited:.2f}s（下间隔 {interval:.2f}s）"
         )
     return waited
+
+
+class CredentialStart:
+    """Keep one account's start reservation through asynchronous request preparation.
+
+    The caller retains the existing slot-release responsibility. Call started()
+    immediately before transport dispatch, and close() in its finally block.
+    """
+
+    def __init__(self, credential_name, lock, interval, waited):
+        self.credential_name = credential_name
+        self.lock = lock
+        self.interval = interval
+        self.waited = waited
+
+    def started(self) -> None:
+        if self.lock is not None:
+            _NEXT_FREE[self.credential_name] = time.monotonic() + self.interval
+            self.close()
+
+    def close(self) -> None:
+        if self.lock is not None:
+            self.lock.release()
+            self.lock = None
+
+
+async def acquire_paced_credential_slot(
+    credential_name: str, *, limited: bool = False, require_dynamic: bool = False,
+) -> CredentialStart:
+    """Wait without a fleet permit, then hold the account's start lock until dispatch.
+
+    Serializing pacing and admission prevents a long fleet/account queue from
+    collecting several pre-paced requests for the same account. The next deadline
+    is set at dispatch, after usage checks, rather than before the fleet wait.
+    """
+    interval = _pacing_interval(credential_name, require_dynamic)
+    lock = _lock_for(credential_name) if interval > 0 else None
+    waited = 0.0
+    if lock is not None:
+        started = time.monotonic()
+        await lock.acquire()
+        waited = time.monotonic() - started
+    try:
+        if lock is not None:
+            waited += await _wait_for_start(credential_name)
+        acquire = acquire_limited_credential_slot if limited else acquire_credential_slot
+        waited += await acquire(credential_name)
+    except BaseException:
+        if lock is not None:
+            lock.release()
+        raise
+    return CredentialStart(credential_name, lock, interval, waited)
 
 
 async def acquire_credential_slot(credential_name: str) -> float:

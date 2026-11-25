@@ -1438,14 +1438,12 @@ async def _stream_request_inner(
         # 本地等待单独计时，不计入上游耗时（时效性统计口径 B 只算真实上游时间）。
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
-            acquire_credential_slot,
-            pace_credential,
+            acquire_paced_credential_slot,
             release_credential_slot,
         )
 
         if image_request:
             from src.antigravity_pacing import (
-                acquire_limited_credential_slot as acquire_credential_slot,
                 release_limited_credential_slot as release_credential_slot,
             )
 
@@ -1461,13 +1459,12 @@ async def _stream_request_inner(
             transport="antigravity",
         )
         slot_acquired = False
+        admission = None
         try:
-            # 先按账号节奏等待，再占全池许可：动态间隔可能等数秒，
-            # 占着许可等待会把整池吞吐拖到 1/间隔。
-            pacing_waited += await pace_credential(
-                slot_holder, require_dynamic=not image_request
+            admission = await acquire_paced_credential_slot(
+                slot_holder, limited=image_request, require_dynamic=not image_request,
             )
-            pacing_waited += await acquire_credential_slot(slot_holder)
+            pacing_waited += admission.waited
             slot_acquired = True
             if not image_request and (
                 current_file in rate_limited_credentials
@@ -1490,6 +1487,7 @@ async def _stream_request_inner(
                     f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
                 )
 
+            admission.started()
             async for chunk in stream:
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
@@ -1733,6 +1731,8 @@ async def _stream_request_inner(
                 continue  # 重试
 
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
+            if admission is not None:
+                admission.close()
             if slot_acquired:
                 slot_acquired = False
                 release_credential_slot(slot_holder)
@@ -1784,6 +1784,8 @@ async def _stream_request_inner(
                     await record_billing_once(False)
                 return
         finally:
+            if admission is not None:
+                admission.close()
             if usage_attempt:
                 if native and usage_remainder:
                     consume_usage_chunk("\n")
@@ -2007,8 +2009,7 @@ async def _non_stream_image_request_inner(
         # 图片请求同时受单账号在飞上限约束。
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
-            acquire_limited_credential_slot,
-            pace_credential,
+            acquire_paced_credential_slot,
             release_limited_credential_slot,
         )
 
@@ -2016,9 +2017,10 @@ async def _non_stream_image_request_inner(
 
         started = time.monotonic()  # 兜底：槽位获取异常时 except 分支仍有耗时基准
         slot_acquired = False
+        admission = None
         try:
-            pacing_waited += await pace_credential(current_file)
-            pacing_waited += await acquire_limited_credential_slot(current_file)
+            admission = await acquire_paced_credential_slot(current_file, limited=True)
+            pacing_waited += admission.waited
             slot_acquired = True
             started = time.monotonic()
 
@@ -2029,6 +2031,7 @@ async def _non_stream_image_request_inner(
                 timeout=300.0,
                 request_id=last_request_id,
                 credential_name=current_file,
+                start_admission=admission,
             )
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
             await record_local_capture(current_file, requested_model, reason=exc.rate_limit.reason)
@@ -2055,6 +2058,8 @@ async def _non_stream_image_request_inner(
             )
             continue
         finally:
+            if admission is not None:
+                admission.close()
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_limited_credential_slot(current_file)
@@ -2445,8 +2450,7 @@ async def non_stream_request(
         # 普通文本按轮转取得账号，只执行全池准入和养号检查
         from src.antigravity_pacing import (
             CredentialSlotWaitTimeout,
-            acquire_credential_slot,
-            pace_credential,
+            acquire_paced_credential_slot,
             release_credential_slot,
         )
 
@@ -2454,10 +2458,11 @@ async def non_stream_request(
         pacing_waited = 0.0
 
         slot_acquired = False
+        admission = None
         try:
-            pacing_waited += await pace_credential(slot_holder, require_dynamic=True)
             with measure_phase("slot_acquire"):
-                pacing_waited += await acquire_credential_slot(slot_holder)
+                admission = await acquire_paced_credential_slot(slot_holder, require_dynamic=True)
+            pacing_waited += admission.waited
             slot_acquired = True
             if (
                 current_file in rate_limited_credentials
@@ -2481,6 +2486,7 @@ async def non_stream_request(
                 )
 
             mark_stage("post_enter")
+            admission.started()
             response = await post_async(
                 url=target_url,
                 json=final_payload,
@@ -2714,6 +2720,8 @@ async def non_stream_request(
                 continue  # 重试
 
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
+            if admission is not None:
+                admission.close()
             if slot_acquired:
                 slot_acquired = False
                 release_credential_slot(slot_holder)
@@ -2761,6 +2769,8 @@ async def non_stream_request(
                         media_type="application/json"
                     )
         finally:
+            if admission is not None:
+                admission.close()
             # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
             if slot_acquired:
                 release_credential_slot(slot_holder)
@@ -2849,6 +2859,7 @@ async def _post_image_generate(
     timeout: float = 300.0,
     request_id: Optional[str] = None,
     credential_name: str = "",
+    start_admission=None,
 ) -> ImageUpstreamResult:
     """Run image generation on the configured AGY host with capacity backoff."""
     host = (await get_antigravity_api_url()).rstrip("/")
@@ -2857,6 +2868,8 @@ async def _post_image_generate(
         usage_attempt = await begin_account_usage(credential_name)
         started = time.monotonic()
         try:
+            if start_admission is not None:
+                start_admission.started()
             response = await post_async(
                 url=f"{host}/v1internal:generateContent",
                 json=json_body,

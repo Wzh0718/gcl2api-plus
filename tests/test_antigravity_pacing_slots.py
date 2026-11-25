@@ -7,6 +7,7 @@
 import asyncio
 import copy
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -313,21 +314,23 @@ async def test_stream_uses_rotated_account_even_when_local_slot_is_full(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [True, False])
-async def test_text_keeps_admission_and_paces_before_slot(monkeypatch, streaming):
-    """文本请求先按账号节奏等待再占全池许可（动态区间关闭时等待为 0）。"""
+async def test_text_admits_without_pacing_sleep_when_dynamic_disabled(monkeypatch, streaming):
+    """动态区间关闭时文本仍执行许可准入，但不增加固定基准的等待。"""
     cred = _patch_common(monkeypatch)
-    events = []
+    acquire = AsyncMock(return_value=0.0)
+    monkeypatch.setattr(config, "get_antigravity_pacing_min_interval_seconds_sync", lambda: 0.0)
+    monkeypatch.setattr(config, "get_antigravity_pacing_max_interval_seconds_sync", lambda: 0.0)
+    monkeypatch.setattr(config, "get_antigravity_pacing_base_ms_sync", lambda: 80)
 
-    async def acquire(name):
-        events.append("acquire")
-        return 0.0
+    class NoPacingSleep:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
 
-    async def pace(name, **kwargs):
-        events.append("pace")
-        return 0.0
+        async def sleep(self, delay):
+            pytest.fail("dynamic pacing disabled but text request slept for pacing")
 
     monkeypatch.setattr(pacing, "acquire_credential_slot", acquire)
-    monkeypatch.setattr(pacing, "pace_credential", pace)
+    monkeypatch.setattr(pacing, "asyncio", NoPacingSleep())
 
     async def fake_stream(**kwargs):
         yield 'data: {"candidates": []}\n\n'
@@ -339,8 +342,260 @@ async def test_text_keeps_admission_and_paces_before_slot(monkeypatch, streaming
         monkeypatch.setattr(agy, "post_async", AsyncMock(return_value=_FakeResponse(200, b'{"candidates":[]}')))
         assert (await agy.non_stream_request(_body())).status_code == 200
 
-    assert events == ["pace", "acquire"]
+    acquire.assert_awaited_once_with(cred[0])
     assert _inflight(cred[0]) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True], ids=["nonstream", "stream"])
+@pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
+async def test_upstream_starts_stay_paced_after_fleet_queue(monkeypatch, streaming, image):
+    """许可积压不能让同账号的上游发起挤在一起，节奏等待也不能占用许可。"""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
+    monkeypatch.setattr(agy, "resolve_dynamic_image_model_for_credential", AsyncMock(
+        return_value="gemini-3.1-flash-image"))
+    monkeypatch.setattr(agy, "_record_image_account_outcome", AsyncMock())
+    monkeypatch.setattr(config, "get_antigravity_pacing_enabled_sync", lambda: True)
+    monkeypatch.setattr(config, "get_antigravity_pacing_min_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(config, "get_antigravity_pacing_max_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(pacing, "_speed_factor", lambda name: 1.0)
+    clock = SimpleNamespace(now=1000.0)
+    holders = set()
+
+    class PacingAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay):
+            assert asyncio.current_task() not in holders, "pacing slept while holding a fleet permit"
+            clock.now += delay
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(pacing, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(pacing, "asyncio", PacingAsyncio())
+    first_waiting = asyncio.Event()
+    fleet_open = asyncio.Event()
+    starts = []
+
+    async def blocked_acquire(name):
+        first_waiting.set()
+        await fleet_open.wait()
+        holders.add(asyncio.current_task())
+        return 0.0
+
+    def release(name):
+        holders.discard(asyncio.current_task())
+
+    async def post(**kwargs):
+        starts.append(clock.now)
+        return _FakeResponse(200, b'{"candidates":[]}')
+
+    async def image_post(**kwargs):
+        if kwargs.get("start_admission") is not None:
+            kwargs["start_admission"].started()
+        return SimpleNamespace(response=await post(), host="agy.test", attempts=[])
+
+    async def stream(**kwargs):
+        starts.append(clock.now)
+        yield 'data: {"candidates": []}\n\n'
+
+    monkeypatch.setattr(pacing, "acquire_credential_slot", blocked_acquire)
+    monkeypatch.setattr(pacing, "acquire_limited_credential_slot", blocked_acquire)
+    monkeypatch.setattr(pacing, "release_credential_slot", release)
+    monkeypatch.setattr(pacing, "release_limited_credential_slot", release)
+    monkeypatch.setattr(agy, "post_async", post)
+    monkeypatch.setattr(agy, "_post_image_generate", image_post)
+    monkeypatch.setattr(agy, "stream_post_async", stream)
+
+    async def request():
+        body = _body("gemini-3.1-flash-image" if image else "gemini-2.5-flash")
+        if streaming:
+            chunks = [item async for item in agy.stream_request(body)]
+            assert chunks and not any(isinstance(item, Response) for item in chunks)
+        else:
+            assert (await agy.non_stream_request(body)).status_code == 200
+
+    tasks = [asyncio.create_task(request())]
+    try:
+        await asyncio.wait_for(first_waiting.wait(), timeout=1)
+        clock.now += 1.0  # fleet 排队耗时远大于 50ms 的账号间隔。
+        tasks.append(asyncio.create_task(request()))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        fleet_open.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert len(starts) == 2
+        assert starts[1] - starts[0] >= 0.049
+        assert not holders
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancel_fleet", "cancel_pacing", "fleet_timeout"])
+async def test_paced_admission_recovers_after_cancel_or_timeout(monkeypatch, failure):
+    """未成功准入的请求不释放别人的许可，也不能把账号的节奏锁永久占住。"""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
+    monkeypatch.setattr(config, "get_antigravity_pacing_enabled_sync", lambda: True)
+    monkeypatch.setattr(config, "get_antigravity_pacing_min_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(config, "get_antigravity_pacing_max_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(pacing, "_speed_factor", lambda name: 1.0)
+    clock = SimpleNamespace(now=1000.0)
+    blocked = asyncio.Event()
+    holders = set()
+    permit_releases = []
+    starts = []
+    fail = False
+
+    class PacingAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay):
+            assert asyncio.current_task() not in holders
+            if fail and failure == "cancel_pacing":
+                blocked.set()
+                await asyncio.Event().wait()
+            clock.now += delay
+
+    async def acquire(name):
+        if fail:
+            if failure == "cancel_fleet":
+                blocked.set()
+                await asyncio.Event().wait()
+            elif failure == "fleet_timeout":
+                raise pacing.CredentialSlotWaitTimeout(name)
+        holders.add(asyncio.current_task())
+        return 0.0
+
+    def release(name):
+        assert asyncio.current_task() in holders, "unadmitted request released a fleet permit"
+        holders.remove(asyncio.current_task())
+        permit_releases.append(name)
+
+    async def post(**kwargs):
+        starts.append(clock.now)
+        return _FakeResponse(200, b'{"candidates":[]}')
+
+    monkeypatch.setattr(pacing, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(pacing, "asyncio", PacingAsyncio())
+    monkeypatch.setattr(pacing, "acquire_credential_slot", acquire)
+    monkeypatch.setattr(pacing, "release_credential_slot", release)
+    monkeypatch.setattr(agy, "post_async", post)
+    if failure == "cancel_pacing":
+        assert (await agy.non_stream_request(_body())).status_code == 200
+    fail = True
+    request = asyncio.create_task(agy.non_stream_request(_body()))
+    try:
+        if failure == "fleet_timeout":
+            assert (await asyncio.wait_for(request, 1)).status_code == 429
+        else:
+            await asyncio.wait_for(blocked.wait(), 1)
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        fail = False
+        assert (await asyncio.wait_for(agy.non_stream_request(_body()), 1)).status_code == 200
+        expected_successes = 2 if failure == "cancel_pacing" else 1
+        assert len(starts) == len(permit_releases) == expected_successes
+        assert not holders
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
+@pytest.mark.parametrize("cancel_preparation", [False, True], ids=["resume", "cancel"])
+async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_preparation, image):
+    """取许可后异步检查额度期间仍保留发起顺序，取消检查后其他请求可继续。"""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
+    monkeypatch.setattr(agy, "resolve_dynamic_image_model_for_credential", AsyncMock(
+        return_value="gemini-3.1-flash-image"))
+    monkeypatch.setattr(agy, "_record_image_account_outcome", AsyncMock())
+    monkeypatch.setattr(config, "get_antigravity_pacing_enabled_sync", lambda: True)
+    monkeypatch.setattr(config, "get_antigravity_pacing_min_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(config, "get_antigravity_pacing_max_interval_seconds_sync", lambda: 0.05)
+    monkeypatch.setattr(pacing, "_speed_factor", lambda name: 1.0)
+    clock = SimpleNamespace(now=1000.0)
+    holders = set()
+    preparation_started = asyncio.Event()
+    preparation_open = asyncio.Event()
+    preparations = 0
+    starts = []
+
+    class PacingAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay):
+            assert asyncio.current_task() not in holders
+            clock.now += delay
+            await asyncio.sleep(0)
+
+    async def acquire(name):
+        holders.add(asyncio.current_task())
+        return 0.0
+
+    def release(name):
+        assert asyncio.current_task() in holders
+        holders.remove(asyncio.current_task())
+
+    async def begin_usage(name):
+        nonlocal preparations
+        preparations += 1
+        if preparations == 1:
+            preparation_started.set()
+            await preparation_open.wait()
+        return None
+
+    async def post(**kwargs):
+        starts.append(clock.now)
+        return _FakeResponse(200, b'{"candidates":[]}')
+
+    monkeypatch.setattr(pacing, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(pacing, "asyncio", PacingAsyncio())
+    monkeypatch.setattr(pacing, "acquire_credential_slot", acquire)
+    monkeypatch.setattr(pacing, "acquire_limited_credential_slot", acquire)
+    monkeypatch.setattr(pacing, "release_credential_slot", release)
+    monkeypatch.setattr(pacing, "release_limited_credential_slot", release)
+    monkeypatch.setattr(agy, "begin_account_usage", begin_usage)
+    monkeypatch.setattr(agy, "post_async", post)
+
+    async def request():
+        return await agy.non_stream_request(_body(
+            "gemini-3.1-flash-image" if image else "gemini-2.5-flash"))
+
+    tasks = [asyncio.create_task(request())]
+    try:
+        await asyncio.wait_for(preparation_started.wait(), 1)
+        clock.now += 1.0
+        tasks.append(asyncio.create_task(request()))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert starts == [], "later request bypassed an earlier account start still preparing usage"
+        assert preparations == 1
+        if cancel_preparation:
+            tasks[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[0]
+            assert (await asyncio.wait_for(tasks[1], 1)).status_code == 200
+            assert len(starts) == 1
+        else:
+            preparation_open.set()
+            responses = await asyncio.wait_for(asyncio.gather(*tasks), 1)
+            assert [response.status_code for response in responses] == [200, 200]
+            assert starts[1] - starts[0] >= 0.049
+        assert not holders
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
