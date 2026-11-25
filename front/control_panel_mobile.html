@@ -1332,6 +1332,7 @@
     <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
+    <link rel="stylesheet" href="./front/warmup.css?v=warmup-dashboard">
 </head>
 
 <body>
@@ -1938,13 +1939,23 @@
                         style="background-color: #28a745;">打包下载</button>
                 </div>
 
-                <details class="card" id="antigravityWarmupSettings">
-                    <summary>动态养号与渐进放量</summary>
-                    <p>只使用真实业务流量；按账号和出口 IP 组逐步放量，不产生额外养号请求。</p>
-                    <div id="antigravityWarmupDefaultsForm"></div>
-                    <button type="button" class="btn btn-small" onclick="saveAntigravityWarmupDefaults()">保存养号默认参数</button>
-                    <div id="antigravityWarmupIpGroups"></div>
-                </details>
+                <section class="warmup-dashboard" aria-labelledby="antigravityWarmupTitle">
+                    <div class="warmup-heading">
+                        <h4 id="antigravityWarmupTitle">养号看板</h4>
+                        <button type="button" class="warmup-button" onclick="loadAntigravityWarmupOverview()">刷新养号状态</button>
+                    </div>
+                    <p id="antigravityWarmupSummary" class="warmup-summary" role="status">正在读取养号状态…</p>
+                    <p id="antigravityWarmupError" class="warmup-error" role="alert" hidden></p>
+                    <div id="antigravityWarmupAccounts"></div>
+                    <p class="warmup-help">在下方勾选账号，点击「批量开启养号」。养号使用真实业务流量，逐步提高并发、缩短请求间隔。</p>
+                    <details class="warmup-settings" id="antigravityWarmupSettings">
+                        <summary>养号设置</summary>
+                        <p class="warmup-help">默认参数用于首次开启养号；已有账号请在「管理」中调整。</p>
+                        <div id="antigravityWarmupDefaultsForm" class="warmup-config-grid"></div>
+                        <button type="button" class="warmup-button" onclick="saveAntigravityWarmupDefaults()">保存默认参数</button>
+                        <div id="antigravityWarmupIpGroups"></div>
+                    </details>
+                </section>
 
                 <!-- 批量操作控件 -->
                 <div class="card" style="margin: 15px 0;">
@@ -2927,7 +2938,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=monitor-history"></script>
+    <script src="./front/common.js?v=warmup-dashboard"></script>
 </body>
 
 </html>

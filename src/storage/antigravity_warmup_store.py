@@ -476,7 +476,7 @@ class AntigravityWarmupStore:
                           COALESCE(w.level, 0), COALESCE(w.success_count, 0),
                           w.window_started_at, COALESCE(w.next_start_at, 0),
                           COALESCE(w.config_json, '{}'), c.proxy_mode,
-                          c.bound_proxy_node_id, h.egress_ip, c.proxy_url
+                          c.bound_proxy_node_id, h.egress_ip, c.proxy_url, c.user_email
                    FROM antigravity_credentials c
                    LEFT JOIN antigravity_warmup_accounts w
                      ON w.credential_name = c.filename
@@ -497,6 +497,7 @@ class AntigravityWarmupStore:
                 )
                 accounts[row[0]] = {
                     "credential_name": row[0],
+                    "user_email": row[11],
                     "status": row[1],
                     "level": row[2],
                     "success_count": row[3],
