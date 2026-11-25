@@ -350,7 +350,7 @@ async def test_text_admits_without_pacing_sleep_when_dynamic_disabled(monkeypatc
 @pytest.mark.parametrize("streaming", [False, True], ids=["nonstream", "stream"])
 @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
 async def test_upstream_starts_stay_paced_after_fleet_queue(monkeypatch, streaming, image):
-    """许可积压不能让同账号的上游发起挤在一起，节奏等待也不能占用许可。"""
+    """许可积压不能继续占住同账号的节奏锁，节奏等待也不能占用许可。"""
     _patch_common(monkeypatch)
     monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
     monkeypatch.setattr(agy, "resolve_dynamic_image_model_for_credential", AsyncMock(
@@ -375,11 +375,17 @@ async def test_upstream_starts_stay_paced_after_fleet_queue(monkeypatch, streami
     monkeypatch.setattr(pacing, "time", SimpleNamespace(monotonic=lambda: clock.now))
     monkeypatch.setattr(pacing, "asyncio", PacingAsyncio())
     first_waiting = asyncio.Event()
+    second_waiting = asyncio.Event()
     fleet_open = asyncio.Event()
     starts = []
+    waiting_count = 0
 
     async def blocked_acquire(name):
+        nonlocal waiting_count
+        waiting_count += 1
         first_waiting.set()
+        if waiting_count == 2:
+            second_waiting.set()
         await fleet_open.wait()
         holders.add(asyncio.current_task())
         return 0.0
@@ -423,10 +429,10 @@ async def test_upstream_starts_stay_paced_after_fleet_queue(monkeypatch, streami
         tasks.append(asyncio.create_task(request()))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
+        await asyncio.wait_for(second_waiting.wait(), timeout=1)
         fleet_open.set()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
         assert len(starts) == 2
-        assert starts[1] - starts[0] >= 0.049
         assert not holders
     finally:
         for task in tasks:
@@ -511,8 +517,8 @@ async def test_paced_admission_recovers_after_cancel_or_timeout(monkeypatch, fai
 @pytest.mark.asyncio
 @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
 @pytest.mark.parametrize("cancel_preparation", [False, True], ids=["resume", "cancel"])
-async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_preparation, image):
-    """取许可后异步检查额度期间仍保留发起顺序，取消检查后其他请求可继续。"""
+async def test_usage_preparation_does_not_hold_account_pacing_lock(monkeypatch, cancel_preparation, image):
+    """异步检查额度期间不再持有节奏锁，取消检查后其他请求可继续。"""
     _patch_common(monkeypatch)
     monkeypatch.setattr(agy, "_text_credential_is_available", AsyncMock(return_value=True))
     monkeypatch.setattr(agy, "resolve_dynamic_image_model_for_credential", AsyncMock(
@@ -525,6 +531,7 @@ async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_p
     clock = SimpleNamespace(now=1000.0)
     holders = set()
     preparation_started = asyncio.Event()
+    second_preparation_started = asyncio.Event()
     preparation_open = asyncio.Event()
     preparations = 0
     starts = []
@@ -552,6 +559,8 @@ async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_p
         if preparations == 1:
             preparation_started.set()
             await preparation_open.wait()
+        elif preparations == 2:
+            second_preparation_started.set()
         return None
 
     async def post(**kwargs):
@@ -578,8 +587,9 @@ async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_p
         tasks.append(asyncio.create_task(request()))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert starts == [], "later request bypassed an earlier account start still preparing usage"
-        assert preparations == 1
+        await asyncio.wait_for(second_preparation_started.wait(), 1)
+        assert preparations == 2
+        assert starts == [1001.0], "later request should proceed while the first is preparing"
         if cancel_preparation:
             tasks[0].cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -590,7 +600,7 @@ async def test_usage_preparation_keeps_account_start_order(monkeypatch, cancel_p
             preparation_open.set()
             responses = await asyncio.wait_for(asyncio.gather(*tasks), 1)
             assert [response.status_code for response in responses] == [200, 200]
-            assert starts[1] - starts[0] >= 0.049
+            assert len(starts) == 2
         assert not holders
     finally:
         for task in tasks:
