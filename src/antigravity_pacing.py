@@ -99,6 +99,22 @@ def _configured_concurrency(credential_name: str) -> int:
     return get_antigravity_account_concurrency(credential_name)["request_concurrency"]
 
 
+def _speed_factor(credential_name: str) -> float:
+    """按账号稳定派生「节奏人格」，让整池的间隔成为混合分布而不是同一个区间。
+
+    真人终端之间请求密度差异很大（有人连续追问、有人隔几分钟），
+    全池共用一个 uniform(min,max) 会让间隔分布呈现明显的均匀矩形。
+    """
+    if not credential_name:
+        return 1.0
+    bucket = _stable_digest(credential_name, "pace") % 100
+    if bucket < 20:
+        return 0.6
+    if bucket < 80:
+        return 1.0
+    return 1.6
+
+
 def _lock_for(credential_name: str) -> asyncio.Lock:
     lock = _LOCKS.get(credential_name)
     if lock is None:
@@ -120,45 +136,112 @@ def _slot_for(credential_name: str) -> _Slot:
     return slot
 
 
-async def pace_credential(credential_name: str) -> float:
-    """按账号维度的发起错峰：最小间隔 × (1 ± 抖动)。
-
-    在每次发往上游的尝试前调用；返回实际等待秒数（0 表示无需等待）。
-    配置（面板 > env > 默认）：
-    - antigravity_pacing_enabled：总开关
-    - antigravity_pacing_base_ms：每账号发起错峰基准（毫秒，默认 80）
-    - antigravity_pacing_jitter_pct：抖动幅度百分比（±pct 均匀随机）
-    """
+def _pacing_interval(credential_name: str, require_dynamic: bool) -> float:
     if not credential_name:
         return 0.0
     from config import (
         get_antigravity_pacing_base_ms_sync,
         get_antigravity_pacing_enabled_sync,
         get_antigravity_pacing_jitter_pct_sync,
+        get_antigravity_pacing_max_interval_seconds_sync,
+        get_antigravity_pacing_min_interval_seconds_sync,
     )
 
     if not get_antigravity_pacing_enabled_sync():
         return 0.0
-    base_ms = get_antigravity_pacing_base_ms_sync()
-    if base_ms <= 0:
-        return 0.0
-    jitter_pct = get_antigravity_pacing_jitter_pct_sync()
 
-    async with _lock_for(credential_name):
-        now = time.monotonic()
-        start = max(now, _NEXT_FREE.get(credential_name, 0.0))
-        waited = start - now
-        if waited > 0:
-            await asyncio.sleep(waited)
+    interval: float
+    low = get_antigravity_pacing_min_interval_seconds_sync()
+    high = get_antigravity_pacing_max_interval_seconds_sync()
+    if high > 0 and high >= low:
+        factor = _speed_factor(credential_name)
+        interval = random.uniform(low, high) * factor
+    elif require_dynamic:
+        return 0.0
+    else:
+        base_ms = get_antigravity_pacing_base_ms_sync()
+        if base_ms <= 0:
+            return 0.0
+        jitter_pct = get_antigravity_pacing_jitter_pct_sync()
         factor = 1.0 + random.uniform(-jitter_pct, jitter_pct) / 100.0
         interval = base_ms * factor / 1000.0
-        _NEXT_FREE[credential_name] = start + interval
+
+    return interval
+
+
+async def _wait_for_start(credential_name: str) -> float:
+    waited = max(0.0, _NEXT_FREE.get(credential_name, 0.0) - time.monotonic())
+    if waited > 0:
+        await asyncio.sleep(waited)
+    return waited
+
+
+async def pace_credential(credential_name: str, *, require_dynamic: bool = False) -> float:
+    """独立发起错峰；推理路由使用 acquire_paced_credential_slot 协调准入。"""
+    interval = _pacing_interval(credential_name, require_dynamic)
+    if interval <= 0:
+        return 0.0
+    async with _lock_for(credential_name):
+        waited = await _wait_for_start(credential_name)
+        _NEXT_FREE[credential_name] = time.monotonic() + interval
 
     if waited >= 1.0:
         log.debug(
             f"[PACING] 账号 {credential_name} 节奏等待 {waited:.2f}s（下间隔 {interval:.2f}s）"
         )
     return waited
+
+
+class CredentialStart:
+    """Keep one account's start reservation through asynchronous request preparation.
+
+    The caller retains the existing slot-release responsibility. Call started()
+    immediately before transport dispatch, and close() in its finally block.
+    """
+
+    def __init__(self, credential_name, lock, interval, waited):
+        self.credential_name = credential_name
+        self.lock = lock
+        self.interval = interval
+        self.waited = waited
+
+    def started(self) -> None:
+        if self.lock is not None:
+            _NEXT_FREE[self.credential_name] = time.monotonic() + self.interval
+            self.close()
+
+    def close(self) -> None:
+        if self.lock is not None:
+            self.lock.release()
+            self.lock = None
+
+
+async def acquire_paced_credential_slot(
+    credential_name: str, *, limited: bool = False, require_dynamic: bool = False,
+) -> CredentialStart:
+    """Wait without a fleet permit, then hold the account's start lock until dispatch.
+
+    Serializing pacing and admission prevents a long fleet/account queue from
+    collecting several pre-paced requests for the same account. The next deadline
+    is set at dispatch, after usage checks, rather than before the fleet wait.
+    """
+    interval = _pacing_interval(credential_name, require_dynamic)
+    lock = _lock_for(credential_name) if interval > 0 else None
+    waited = 0.0
+    if lock is not None:
+        started = time.monotonic()
+        await lock.acquire()
+        waited = time.monotonic() - started
+    try:
+        if lock is not None:
+            waited += await _wait_for_start(credential_name)
+        acquire = acquire_limited_credential_slot if limited else acquire_credential_slot
+        waited += await acquire(credential_name)
+    except BaseException:
+        if lock is not None:
+            lock.release()
+        raise
+    return CredentialStart(credential_name, lock, interval, waited)
 
 
 async def acquire_credential_slot(credential_name: str) -> float:

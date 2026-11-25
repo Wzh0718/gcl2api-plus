@@ -164,6 +164,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error(f"PX6 同步服务启动失败: {e}")
 
+    # 额度/档位低频对账（整池轮次租约、每轮 2 个号、每号 1h 租约）
+    try:
+        from src.antigravity_quota_sweep import start_sweep
+        await start_sweep()
+    except Exception as e:
+        log.error(f"额度对账服务启动失败: {e}")
+
     # 调用监控：预热内存缓冲并按保留期执行一次启动清理
     try:
         from src.call_monitor import get_call_monitor
@@ -220,6 +227,13 @@ async def lifespan(app: FastAPI):
         await px6_refresh_service.stop()
     except Exception as e:
         log.error(f"关闭 PX6 同步服务时出错: {e}")
+
+    # 停止额度/档位对账
+    try:
+        from src.antigravity_quota_sweep import stop_sweep
+        await stop_sweep()
+    except Exception as e:
+        log.error(f"关闭额度对账服务时出错: {e}")
 
     # 停止内存回收任务
     if _memory_trim_task and not _memory_trim_task.done():

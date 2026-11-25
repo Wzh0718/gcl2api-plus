@@ -43,14 +43,28 @@ VERIFIED_BUILDS: Tuple[Tuple[str, str, int], ...] = (
 # 无条件接受的：2026-11-24 用生产号实测，linux/amd64、darwin/arm64、
 # darwin/x64、win32/x64 四种 UA 全部 200 且响应一致，因此按真实终端分布配权。
 VERIFIED_PLATFORMS: Tuple[Tuple[str, str, int], ...] = (
-    ("linux", "amd64", 55),
-    ("linux", "arm64", 15),
-    ("darwin", "arm64", 15),
-    ("win32", "x64", 10),
-    ("darwin", "x64", 5),
+    ("linux", "amd64", 40),
+    ("linux", "arm64", 12),
+    ("darwin", "arm64", 22),
+    ("win32", "x64", 20),
+    ("darwin", "x64", 6),
 )
 
 DEFAULT_OS_TYPE, DEFAULT_ARCH, _ = VERIFIED_PLATFORMS[0]
+
+# Accept-Language 分布的近似：真实终端以 en-US 为主，其余按使用量权重。
+# 只影响请求头，不进 UA，且按账号稳定派生（同一账号永远同一个语言）。
+VERIFIED_LOCALES: Tuple[Tuple[str, int], ...] = (
+    ("en-US", 42),
+    ("en-GB", 10),
+    ("de-DE", 9),
+    ("fr-FR", 8),
+    ("es-ES", 7),
+    ("ja-JP", 8),
+    ("pt-BR", 7),
+    ("ko-KR", 5),
+    ("zh-CN", 4),
+)
 
 _PROFILE_KEY = "device_profile"
 _DERIVE_PREFIX = "agy-device-profile:v1:"
@@ -112,6 +126,20 @@ def derive_device_profile(credential_name: str) -> Dict[str, str]:
         "arch": arch,
         "source": "derived",
     }
+
+
+def derive_locale(credential_name: str) -> str:
+    """按账号名稳定派生 Accept-Language；空名返回默认 en-US。"""
+    if not credential_name:
+        return VERIFIED_LOCALES[0][0]
+    bucket = (_digest_int("locale:" + credential_name) >> 16) % 100
+    total = sum(weight for _, weight in VERIFIED_LOCALES) or 1
+    cursor = 0
+    for locale, weight in VERIFIED_LOCALES:
+        cursor += weight
+        if bucket < cursor * 100 // total:
+            return locale
+    return VERIFIED_LOCALES[0][0]
 
 
 def normalize_profile(raw: Any) -> Optional[Dict[str, str]]:

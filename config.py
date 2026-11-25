@@ -526,6 +526,11 @@ _ANTIGRAVITY_PACING_ENABLED_DEFAULT = True
 # 每个请求先随机等 1~2 秒；现在基准只用于打散瞬时齐发。
 _ANTIGRAVITY_PACING_BASE_MS_DEFAULT = 80
 _ANTIGRAVITY_PACING_JITTER_PCT_DEFAULT = 50
+# 2026-11-25：账号级「动态最小间隔」。启用后每次上游尝试前按 [min, max] 秒
+# 均匀随机等待（再乘该账号的节奏人格系数），把单账号请求密度压到接近真人终端；
+# 0 表示不启用。均值 6s 时单账号 ≈0.17 rps，吞吐按比例下降，按业务需要显式开启。
+_ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS_DEFAULT = 0.0
+_ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS_DEFAULT = 0.0
 _ANTIGRAVITY_PACING_CONCURRENCY_DEFAULT = 15
 _ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS_DEFAULT = 30.0
 # 账号静默窗口：每个账号每天有一段不参与调度的时段，按账号名稳定分配。
@@ -545,6 +550,12 @@ _ANTIGRAVITY_FLEET_RPM_DEFAULT = 0
 _ANTIGRAVITY_FLEET_WAIT_SECONDS_DEFAULT = 60.0
 _ANTIGRAVITY_QUOTA_GUARD_ENABLED_DEFAULT = True
 _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT = 0.05
+# 额度/档位低频对账：整池 10 分钟一轮、每轮 2 个号、同一账号 1 小时内只探一次。
+# 整池租约将多 worker 的探测速率合计限制为最多 12 次/小时；游标轮转覆盖账号池。
+_ANTIGRAVITY_QUOTA_SWEEP_ENABLED_DEFAULT = True
+_ANTIGRAVITY_QUOTA_SWEEP_INTERVAL_SECONDS_DEFAULT = 600
+_ANTIGRAVITY_QUOTA_SWEEP_BATCH_DEFAULT = 2
+_ANTIGRAVITY_QUOTA_SWEEP_ACCOUNT_INTERVAL_SECONDS_DEFAULT = 3600
 
 
 def _sync_bool(key: str, env_var: str, default: bool) -> bool:
@@ -637,6 +648,60 @@ def get_antigravity_pacing_base_ms_sync() -> int:
             _ANTIGRAVITY_PACING_BASE_MS_DEFAULT,
             cast=int,
         )
+    )
+
+
+async def get_antigravity_pacing_min_interval_seconds() -> float:
+    """账号级动态最小间隔下限（秒）。0 表示不启用。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_min_interval_seconds",
+        "ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS",
+        _ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 0.0), 600.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS_DEFAULT
+
+
+def get_antigravity_pacing_min_interval_seconds_sync() -> float:
+    return min(
+        max(
+            _sync_number(
+                "antigravity_pacing_min_interval_seconds",
+                "ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS",
+                _ANTIGRAVITY_PACING_MIN_INTERVAL_SECONDS_DEFAULT,
+            ),
+            0.0,
+        ),
+        600.0,
+    )
+
+
+async def get_antigravity_pacing_max_interval_seconds() -> float:
+    """账号级动态最小间隔上限（秒）。0 表示不启用。"""
+    value = await _async_panel_first(
+        "antigravity_pacing_max_interval_seconds",
+        "ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS",
+        _ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 0.0), 600.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS_DEFAULT
+
+
+def get_antigravity_pacing_max_interval_seconds_sync() -> float:
+    return min(
+        max(
+            _sync_number(
+                "antigravity_pacing_max_interval_seconds",
+                "ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS",
+                _ANTIGRAVITY_PACING_MAX_INTERVAL_SECONDS_DEFAULT,
+            ),
+            0.0,
+        ),
+        600.0,
     )
 
 
@@ -942,6 +1007,65 @@ async def get_antigravity_quota_guard_threshold() -> float:
         return min(max(float(value), 0.0), 0.5)
     except (TypeError, ValueError):
         return _ANTIGRAVITY_QUOTA_GUARD_THRESHOLD_DEFAULT
+
+
+async def get_antigravity_quota_sweep_enabled() -> bool:
+    """额度/档位低频对账开关。默认开启。"""
+    value = await _async_panel_first(
+        "antigravity_quota_sweep_enabled", "ANTIGRAVITY_QUOTA_SWEEP_ENABLED", None
+    )
+    if value is None:
+        return _ANTIGRAVITY_QUOTA_SWEEP_ENABLED_DEFAULT
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "yes", "on")
+
+
+def get_antigravity_quota_sweep_enabled_sync() -> bool:
+    return _sync_bool(
+        "antigravity_quota_sweep_enabled",
+        "ANTIGRAVITY_QUOTA_SWEEP_ENABLED",
+        _ANTIGRAVITY_QUOTA_SWEEP_ENABLED_DEFAULT,
+    )
+
+
+async def get_antigravity_quota_sweep_interval_seconds() -> float:
+    """两轮扫描的间隔（秒），下限 60s，避免被误配成高频刷新。"""
+    value = await _async_panel_first(
+        "antigravity_quota_sweep_interval_seconds",
+        "ANTIGRAVITY_QUOTA_SWEEP_INTERVAL_SECONDS",
+        _ANTIGRAVITY_QUOTA_SWEEP_INTERVAL_SECONDS_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 60.0), 24 * 3600.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_QUOTA_SWEEP_INTERVAL_SECONDS_DEFAULT
+
+
+async def get_antigravity_quota_sweep_batch() -> int:
+    """每轮最多探测的账号数，上限 10。"""
+    value = await _async_panel_first(
+        "antigravity_quota_sweep_batch",
+        "ANTIGRAVITY_QUOTA_SWEEP_BATCH",
+        _ANTIGRAVITY_QUOTA_SWEEP_BATCH_DEFAULT,
+    )
+    try:
+        return min(max(int(value), 1), 10)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_QUOTA_SWEEP_BATCH_DEFAULT
+
+
+async def get_antigravity_quota_sweep_account_interval_seconds() -> float:
+    """同一账号两次探测的最小间隔（秒），下限 1h。"""
+    value = await _async_panel_first(
+        "antigravity_quota_sweep_account_interval_seconds",
+        "ANTIGRAVITY_QUOTA_SWEEP_ACCOUNT_INTERVAL_SECONDS",
+        _ANTIGRAVITY_QUOTA_SWEEP_ACCOUNT_INTERVAL_SECONDS_DEFAULT,
+    )
+    try:
+        return min(max(float(value), 3600.0), 7 * 24 * 3600.0)
+    except (TypeError, ValueError):
+        return _ANTIGRAVITY_QUOTA_SWEEP_ACCOUNT_INTERVAL_SECONDS_DEFAULT
 
 
 async def get_enable_geminicli() -> bool:
