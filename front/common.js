@@ -1768,7 +1768,82 @@ function readAntigravityWarmupConfigFields(container) {
     return config;
 }
 
+const ANTIGRAVITY_WARMUP_STATUS_LABELS = {
+    off: '未开启', warming: '养号中', paused: '已暂停',
+    active: '已完成', cancelled: '已取消', account_forbidden: '已退出（TOS）',
+};
+
+function formatWarmupDuration(seconds) {
+    const value = Math.max(Number(seconds) || 0, 0);
+    if (value >= 3600 && value % 3600 === 0) return `${value / 3600} 小时`;
+    if (value >= 60 && value % 60 === 0) return `${value / 60} 分钟`;
+    return `${Number(value.toFixed(3))} 秒`;
+}
+
+function renderAntigravityWarmupAccounts() {
+    const container = document.getElementById('antigravityWarmupAccounts');
+    const summary = document.getElementById('antigravityWarmupSummary');
+    if (!container || !summary) return;
+    const accounts = Object.values(AppState.antigravityWarmup.accounts);
+    const count = status => accounts.filter(state => state.status === status).length;
+    summary.innerHTML = `<strong>养号中 ${count('warming')} 个</strong><span>已暂停 ${count('paused')} 个</span><span>已完成 ${count('active')} 个</span><span>已退出 ${count('account_forbidden')} 个</span>`;
+    const order = { warming: 0, paused: 1, account_forbidden: 2 };
+    const visible = accounts.filter(state => Object.hasOwn(order, state.status))
+        .sort((a, b) => order[a.status] - order[b.status]);
+    if (!visible.length) {
+        container.innerHTML = '<p class="warmup-empty">暂无正在养号的账号。</p>';
+        return;
+    }
+    container.innerHTML = `<table class="warmup-table">
+        <thead><tr><th scope="col">账号</th><th scope="col">当前限制</th><th scope="col">养号目标</th><th scope="col">进度</th><th scope="col">操作</th></tr></thead>
+        <tbody>${visible.map(state => {
+            const config = state.config || {};
+            const limits = state.limits || {};
+            const filename = state.credential_name;
+            const name = state.user_email || filename;
+            const targetConcurrency = state.target_limits?.account_concurrency
+                ?? (config.account_target_concurrency || '跟随全局');
+            const targetInterval = state.target_limits?.account_interval
+                ?? Number(config.account_target_interval_ms || 0) / 1000;
+            const maxLevel = Number(config.max_level || 3);
+            const level = Number(state.level || 0);
+            const elapsed = state.window_started_at
+                ? Math.max(Math.floor(Date.now() / 1000 - Number(state.window_started_at)), 0) : 0;
+            const window = Number(config.window_seconds || 0);
+            const progress = level >= maxLevel ? '已达目标，可完成养号'
+                : `本档成功 ${Number(state.success_count || 0)} / ${Number(config.success_threshold || 10)} 次`;
+            let observation = level >= maxLevel ? '完成后恢复普通调度'
+                : window > 0 ? `观察 ${formatWarmupDuration(Math.min(elapsed, window))} / ${formatWarmupDuration(window)}` : '无需观察等待';
+            if (state.status === 'paused') observation = '养号已暂停';
+            if (state.status === 'account_forbidden') observation = '已永久退出养号';
+            return `<tr>
+                <td class="warmup-account"><strong>${escapeHtml(name)}</strong>
+                    ${name !== filename ? `<small>${escapeHtml(filename)}</small>` : ''}
+                    <span class="warmup-state ${state.status === 'warming' ? 'is-warming' : 'is-stopped'}">${ANTIGRAVITY_WARMUP_STATUS_LABELS[state.status]}</span></td>
+                <td data-label="当前限制">并发 ${Number(limits.account_concurrency || 1)}<small>间隔 ${formatWarmupDuration(limits.account_interval)}</small></td>
+                <td data-label="养号目标">并发 ${escapeHtml(String(targetConcurrency))}<small>间隔 ${formatWarmupDuration(targetInterval)}</small></td>
+                <td class="warmup-progress" data-label="进度">第 ${level + 1} / ${maxLevel + 1} 档<small>${progress}</small><small>${observation}</small></td>
+                <td class="warmup-row-actions">
+                    <button type="button" class="warmup-button" data-warmup-manage="${encodeURIComponent(filename)}" aria-label="管理 ${escapeHtml(name)} 的养号">管理</button>
+                    ${state.status === 'warming' && level >= maxLevel ? `<button type="button" class="warmup-button" data-warmup-complete="${encodeURIComponent(filename)}">完成养号</button>` : ''}
+                </td>
+            </tr>`;
+        }).join('')}</tbody>
+    </table>`;
+    container.querySelectorAll('[data-warmup-manage]').forEach(button => {
+        button.addEventListener('click', () => openAntigravityWarmupDialog(decodeURIComponent(button.dataset.warmupManage)));
+    });
+    container.querySelectorAll('[data-warmup-complete]').forEach(button => {
+        button.addEventListener('click', async () => {
+            button.disabled = true;
+            await antigravityWarmupAction(decodeURIComponent(button.dataset.warmupComplete), 'complete');
+            button.disabled = false;
+        });
+    });
+}
+
 async function loadAntigravityWarmupOverview(showErrors = true) {
+    const errorMessage = document.getElementById('antigravityWarmupError');
     try {
         const response = await fetch('./antigravity/warmup', { headers: getAuthHeaders() });
         const data = await response.json();
@@ -1777,18 +1852,31 @@ async function loadAntigravityWarmupOverview(showErrors = true) {
             accounts: data.accounts || {},
             ip_groups: data.ip_groups || {},
             defaults: data.defaults || {},
+            loaded: true,
         };
+        if (errorMessage) errorMessage.hidden = true;
         renderAntigravityWarmupControls();
         return true;
     } catch (error) {
+        if (errorMessage) {
+            errorMessage.textContent = AppState.antigravityWarmup.loaded
+                ? '刷新失败，以下保留上次结果。请点击「刷新养号状态」重试。'
+                : '养号状态加载失败，请点击「刷新养号状态」重试。';
+            errorMessage.hidden = false;
+        }
+        if (!AppState.antigravityWarmup.loaded) {
+            const summary = document.getElementById('antigravityWarmupSummary');
+            if (summary) summary.textContent = '养号数量暂不可用';
+        }
         if (showErrors) showStatus(error.message, 'error');
         return false;
     }
 }
 
 function renderAntigravityWarmupControls() {
+    renderAntigravityWarmupAccounts();
     const defaultsForm = document.getElementById('antigravityWarmupDefaultsForm');
-    if (defaultsForm) {
+    if (defaultsForm && !defaultsForm.querySelector('input')) {
         defaultsForm.innerHTML = buildAntigravityWarmupConfigFields(
             AppState.antigravityWarmup.defaults,
             'warmup-default-'
@@ -1797,7 +1885,7 @@ function renderAntigravityWarmupControls() {
     const groupsContainer = document.getElementById('antigravityWarmupIpGroups');
     if (!groupsContainer) return;
     const groups = Object.values(AppState.antigravityWarmup.ip_groups || {});
-    groupsContainer.innerHTML = groups.length ? '<h5>出口 IP 组预算</h5>' + groups.map(group => `
+    groupsContainer.innerHTML = groups.length ? '<h5>同一出口的共享限制</h5>' + groups.map(group => `
         <div class="proxy-dialog-field">
             <code>${escapeHtml(group.ip_key)}</code>
             <span>档位 ${Number(group.level || 0) + 1}，当前组并发 ${group.limits?.ip_concurrency || 1}</span>
@@ -1823,6 +1911,7 @@ async function saveAntigravityWarmupDefaults() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || '保存养号默认参数失败');
         AppState.antigravityWarmup.defaults = data.defaults;
+        form.innerHTML = '';
         renderAntigravityWarmupControls();
         showStatus('养号默认参数已保存', 'success');
     } catch (error) {
@@ -1897,7 +1986,7 @@ function openAntigravityWarmupDialog(filename) {
                 <h3>配置养号</h3>
                 <button type="button" class="proxy-dialog-close" data-warmup-close aria-label="关闭">×</button>
             </div>
-            <p class="proxy-dialog-copy">${escapeHtml(filename)}；当前状态：${escapeHtml(state?.status || 'off')}。只使用真实业务流量。</p>
+            <p class="proxy-dialog-copy">${escapeHtml(filename)}；当前状态：${escapeHtml(ANTIGRAVITY_WARMUP_STATUS_LABELS[state?.status || 'off'] || state.status)}。只使用真实业务流量。</p>
             <div id="warmupAccountFields">${buildAntigravityWarmupConfigFields(config, 'warmup-account-')}</div>
             <div class="proxy-dialog-actions">
                 <button type="button" class="batch-btn batch-enable" data-warmup-action="start">开启养号</button>
@@ -6640,6 +6729,11 @@ const accountUsageFields = {
     generated_tokens_per_hour: 'antigravityAccountTokensPerHour',
 };
 
+const pacingIntervalFields = {
+    antigravity_pacing_min_interval_seconds: 'antigravityPacingMinIntervalSeconds',
+    antigravity_pacing_max_interval_seconds: 'antigravityPacingMaxIntervalSeconds',
+};
+
 async function loadConfig() {
     const loading = document.getElementById('configLoading');
     const form = document.getElementById('configForm');
@@ -6784,6 +6878,9 @@ function populateConfigForm() {
     setConfigField('antigravityHubCl', c.antigravity_hub_cl || '');
     document.getElementById('antigravityPacingEnabled').checked = Boolean(c.antigravity_pacing_enabled !== false);
     setConfigField('antigravityPacingBaseMs', c.antigravity_pacing_base_ms ?? 80);
+    for (const [key, id] of Object.entries(pacingIntervalFields)) {
+        setConfigField(id, c[key] ?? 0);
+    }
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
     setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
     setConfigField('antigravityPacingSlotWaitSeconds', c.antigravity_pacing_slot_wait_seconds ?? 30);
@@ -6958,6 +7055,24 @@ async function saveConfig() {
             accountUsage[key] = value;
         }
 
+        const pacingIntervals = {};
+        for (const [key, id] of Object.entries(pacingIntervalFields)) {
+            const field = document.getElementById(id);
+            const value = field.valueAsNumber;
+            if (!Number.isFinite(value) || value < 0 || value > 600) {
+                field.focus();
+                showStatus('动态发起间隔须填写 0–600 之间的秒数', 'error');
+                return;
+            }
+            pacingIntervals[key] = value;
+        }
+        if (pacingIntervals.antigravity_pacing_max_interval_seconds > 0
+                && pacingIntervals.antigravity_pacing_max_interval_seconds < pacingIntervals.antigravity_pacing_min_interval_seconds) {
+            document.getElementById('antigravityPacingMaxIntervalSeconds').focus();
+            showStatus('动态发起间隔上限必须不小于下限，填 0 关闭动态间隔', 'error');
+            return;
+        }
+
         const config = {
             host: getValue('host', '0.0.0.0'),
             port: getInt('port', 7861),
@@ -6990,6 +7105,7 @@ async function saveConfig() {
             antigravity_hub_cl: getValue('antigravityHubCl'),
             antigravity_pacing_enabled: getChecked('antigravityPacingEnabled'),
             antigravity_pacing_base_ms: getInt('antigravityPacingBaseMs', 80),
+            ...pacingIntervals,
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
             antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
             antigravity_pacing_slot_wait_seconds: getValue('antigravityPacingSlotWaitSeconds', '30'),

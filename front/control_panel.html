@@ -2118,6 +2118,7 @@
     <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
+    <link rel="stylesheet" href="./front/warmup.css?v=warmup-dashboard">
 </head>
 
 <body>
@@ -2762,13 +2763,23 @@
                     <button class="download-all-btn" onclick="downloadAllAntigravityCreds()">打包下载所有文件</button>
                 </div>
 
-                <details class="batch-controls" id="antigravityWarmupSettings">
-                    <summary>动态养号与渐进放量</summary>
-                    <p class="proxy-dialog-copy">只使用真实业务流量；按账号和出口 IP 组逐步放量，不产生额外养号请求。</p>
-                    <div id="antigravityWarmupDefaultsForm"></div>
-                    <button type="button" class="batch-btn" onclick="saveAntigravityWarmupDefaults()">保存养号默认参数</button>
-                    <div id="antigravityWarmupIpGroups"></div>
-                </details>
+                <section class="warmup-dashboard" aria-labelledby="antigravityWarmupTitle">
+                    <div class="warmup-heading">
+                        <h4 id="antigravityWarmupTitle">养号看板</h4>
+                        <button type="button" class="warmup-button" onclick="loadAntigravityWarmupOverview()">刷新养号状态</button>
+                    </div>
+                    <p id="antigravityWarmupSummary" class="warmup-summary" role="status">正在读取养号状态…</p>
+                    <p id="antigravityWarmupError" class="warmup-error" role="alert" hidden></p>
+                    <div id="antigravityWarmupAccounts"></div>
+                    <p class="warmup-help">在下方勾选账号，点击「批量开启养号」。养号使用真实业务流量，逐步提高并发、缩短请求间隔。</p>
+                    <details class="warmup-settings" id="antigravityWarmupSettings">
+                        <summary>养号设置</summary>
+                        <p class="warmup-help">默认参数用于首次开启养号；已有账号请在「管理」中调整。</p>
+                        <div id="antigravityWarmupDefaultsForm" class="warmup-config-grid"></div>
+                        <button type="button" class="warmup-button" onclick="saveAntigravityWarmupDefaults()">保存默认参数</button>
+                        <div id="antigravityWarmupIpGroups"></div>
+                    </details>
+                </section>
 
                 <!-- 批量操作控件 -->
                 <div class="batch-controls">
@@ -3294,10 +3305,24 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityPacingEnabled" class="config-checkbox" />
-                                    账号请求节奏（并发闸门 + 随机抖动）
+                                    账号请求节奏与并发控制
                                 </label>
-                                <small class="config-note">普通文本按可用账号轮转并直接发送。发起间隔适用于图片和提示词融合请求。 <span
+                                <small class="config-note">动态发起间隔适用于普通文本、图片和提示词融合请求，连续请求可能排队。 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingMinIntervalSeconds">动态发起间隔下限（秒/账号）:</label>
+                                <input type="number" id="antigravityPacingMinIntervalSeconds" class="config-input"
+                                    min="0" max="600" step="any" aria-describedby="antigravityPacingIntervalNote" />
+                                <small id="antigravityPacingIntervalNote" class="config-note">每次发起从上下限之间随机取值，再乘以账号系数（0.6、1 或 1.6）。间隔越大，吞吐越低，排队可能越长。</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingMaxIntervalSeconds">动态发起间隔上限（秒/账号）:</label>
+                                <input type="number" id="antigravityPacingMaxIntervalSeconds" class="config-input"
+                                    min="0" max="600" step="any" aria-describedby="antigravityPacingIntervalDisableNote" />
+                                <small id="antigravityPacingIntervalDisableNote" class="config-note">默认两项均为 0；上限填 0 关闭动态间隔，大于 0 时须不小于下限。支持热更新。</small>
                             </div>
 
                             <div class="form-group">
@@ -3366,7 +3391,7 @@
                                 <label for="antigravityPacingBaseMs">请求发起错峰基准（毫秒/账号）:</label>
                                 <input type="number" id="antigravityPacingBaseMs" class="config-input" min="0"
                                     max="600000" step="10" />
-                                <small class="config-note">同一账号两次请求发起时刻的最小间隔，默认 80；仅用于打散瞬时齐发，不再限制吞吐（0 = 不设错峰）。旧版默认 1500 会把单账号锁成 0.67 rps</small>
+                                <small class="config-note">动态间隔关闭时，图片和提示词融合使用此基准及下方抖动；普通文本不使用固定错峰。默认 80，填 0 关闭固定错峰。</small>
                             </div>
 
                             <div class="form-group">
@@ -3741,7 +3766,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=monitor-history"></script>
+    <script src="./front/common.js?v=pacing-intervals"></script>
 
 </body>
 

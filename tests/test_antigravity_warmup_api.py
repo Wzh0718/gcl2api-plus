@@ -116,3 +116,31 @@ def test_invalid_action_and_config_are_rejected(client):
         json={"account_initial_concurrency": 3, "account_target_concurrency": 2},
     )
     assert invalid_config.status_code == 400
+
+
+def test_overview_resolves_each_accounts_own_target(client, monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "get_antigravity_pacing_concurrency_sync", lambda: 9)
+    client.post("/antigravity/warmup/a.json", json={
+        "action": "start", "config": {"account_target_concurrency": 0},
+    }).raise_for_status()
+    client.post("/antigravity/warmup/b.json", json={
+        "action": "start", "config": {
+            "account_target_concurrency": 4, "account_target_interval_ms": 250,
+        },
+    }).raise_for_status()
+    # Changing defaults must not replace the targets of accounts already warming.
+    client.put("/antigravity/warmup/defaults", json={
+        "account_target_concurrency": 12,
+    }).raise_for_status()
+    overview = client.get("/antigravity/warmup").json()
+    a, b = (overview["accounts"][name] for name in ("a.json", "b.json"))
+    assert a["limits"]["account_concurrency"] == 1
+    assert a["target_limits"]["account_concurrency"] == 9
+    assert b["target_limits"]["account_concurrency"] == 4
+    assert b["target_limits"]["account_interval"] == 0.25
+    monkeypatch.setattr(config, "get_antigravity_pacing_concurrency_sync", lambda: 6)
+    refreshed = client.get("/antigravity/warmup").json()["accounts"]
+    assert refreshed["a.json"]["target_limits"]["account_concurrency"] == 6
+    assert refreshed["b.json"]["target_limits"]["account_concurrency"] == 4

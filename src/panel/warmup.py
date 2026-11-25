@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from src.antigravity_dynamic_warmup import (
     DEFAULT_WARMUP_CONFIG,
     normalize_warmup_config,
+    warmup_limits,
 )
 from src.storage_adapter import get_storage_adapter
 from src.utils import verify_panel_token
@@ -49,7 +50,11 @@ async def get_warmup_overview(_token: str = Depends(verify_panel_token)):
     storage = await get_storage_adapter()
     stored = await storage.get_config("antigravity_warmup_defaults", {})
     defaults = normalize_warmup_config(stored)
-    return {"defaults": defaults, **await storage._backend.list_antigravity_warmup()}
+    overview = await storage._backend.list_antigravity_warmup()
+    for state in overview["accounts"].values():
+        config = state["config"]
+        state["target_limits"] = warmup_limits(config, config["max_level"])
+    return {"defaults": defaults, **overview}
 
 
 @router.put("/antigravity/warmup/defaults")
