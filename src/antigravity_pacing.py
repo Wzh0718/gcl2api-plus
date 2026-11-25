@@ -99,6 +99,22 @@ def _configured_concurrency(credential_name: str) -> int:
     return get_antigravity_account_concurrency(credential_name)["request_concurrency"]
 
 
+def _speed_factor(credential_name: str) -> float:
+    """按账号稳定派生「节奏人格」，让整池的间隔成为混合分布而不是同一个区间。
+
+    真人终端之间请求密度差异很大（有人连续追问、有人隔几分钟），
+    全池共用一个 uniform(min,max) 会让间隔分布呈现明显的均匀矩形。
+    """
+    if not credential_name:
+        return 1.0
+    bucket = _stable_digest(credential_name, "pace") % 100
+    if bucket < 20:
+        return 0.6
+    if bucket < 80:
+        return 1.0
+    return 1.6
+
+
 def _lock_for(credential_name: str) -> asyncio.Lock:
     lock = _LOCKS.get(credential_name)
     if lock is None:
@@ -120,14 +136,23 @@ def _slot_for(credential_name: str) -> _Slot:
     return slot
 
 
-async def pace_credential(credential_name: str) -> float:
-    """按账号维度的发起错峰：最小间隔 × (1 ± 抖动)。
+async def pace_credential(credential_name: str, *, require_dynamic: bool = False) -> float:
+    """按账号维度的发起错峰。
 
-    在每次发往上游的尝试前调用；返回实际等待秒数（0 表示无需等待）。
-    配置（面板 > env > 默认）：
-    - antigravity_pacing_enabled：总开关
-    - antigravity_pacing_base_ms：每账号发起错峰基准（毫秒，默认 80）
-    - antigravity_pacing_jitter_pct：抖动幅度百分比（±pct 均匀随机）
+    两种模式，取"动态区间"优先：
+
+    1. 动态最小间隔（``ANTIGRAVITY_PACING_MIN/MAX_INTERVAL_SECONDS``，默认与 0 表示关闭）：
+       每次发往上游的尝试前，在该账号的队列上按 ``uniform(min, max)`` 秒等待。
+       用途是压低单账号请求密度（真人终端通常几十秒到几分钟一次），默认例：
+       min=2、max=10 → 均值 6s，单账号 ≈0.17 rps。代价是吞吐按比例下降，
+       必须按业务量显式开启。
+    2. 固定基准错峰（``antigravity_pacing_base_ms``，默认 80ms + ±50% 抖动）：
+       只用于打散瞬时齐发，不影响平均吞吐。
+
+    调用约定：``require_dynamic=True``（文本请求）时，动态区间未启用就直接返回 0，
+    不会引入固定基准的额外等待；图片请求沿用原行为。
+
+    返回实际等待秒数（0 表示无需等待）。
     """
     if not credential_name:
         return 0.0
@@ -135,14 +160,28 @@ async def pace_credential(credential_name: str) -> float:
         get_antigravity_pacing_base_ms_sync,
         get_antigravity_pacing_enabled_sync,
         get_antigravity_pacing_jitter_pct_sync,
+        get_antigravity_pacing_max_interval_seconds_sync,
+        get_antigravity_pacing_min_interval_seconds_sync,
     )
 
     if not get_antigravity_pacing_enabled_sync():
         return 0.0
-    base_ms = get_antigravity_pacing_base_ms_sync()
-    if base_ms <= 0:
+
+    interval: float
+    low = get_antigravity_pacing_min_interval_seconds_sync()
+    high = get_antigravity_pacing_max_interval_seconds_sync()
+    if high > 0 and high >= low:
+        factor = _speed_factor(credential_name)
+        interval = random.uniform(low, high) * factor
+    elif require_dynamic:
         return 0.0
-    jitter_pct = get_antigravity_pacing_jitter_pct_sync()
+    else:
+        base_ms = get_antigravity_pacing_base_ms_sync()
+        if base_ms <= 0:
+            return 0.0
+        jitter_pct = get_antigravity_pacing_jitter_pct_sync()
+        factor = 1.0 + random.uniform(-jitter_pct, jitter_pct) / 100.0
+        interval = base_ms * factor / 1000.0
 
     async with _lock_for(credential_name):
         now = time.monotonic()
@@ -150,8 +189,6 @@ async def pace_credential(credential_name: str) -> float:
         waited = start - now
         if waited > 0:
             await asyncio.sleep(waited)
-        factor = 1.0 + random.uniform(-jitter_pct, jitter_pct) / 100.0
-        interval = base_ms * factor / 1000.0
         _NEXT_FREE[credential_name] = start + interval
 
     if waited >= 1.0:

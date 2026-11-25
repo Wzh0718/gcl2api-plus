@@ -1470,6 +1470,29 @@ async def _collect_quota_for_filename(filename: str, mode: str) -> dict:
         )
 
         if quota_info.get("success"):
+            # 额度是权威实时数据：顺手清掉与额度矛盾的残留模型冷却。
+            # 否则会出现「面板显示 100% 剩余，但请求一直被自家冷却挡住」。
+            try:
+                state = await storage_adapter.get_credential_state(filename, mode=mode)
+                cooldowns = (state or {}).get("model_cooldowns") or {}
+                if cooldowns:
+                    from src.api.antigravity import reconcile_model_cooldowns_with_quota
+
+                    cleared = await reconcile_model_cooldowns_with_quota(
+                        storage_adapter._backend,
+                        filename,
+                        cooldowns,
+                        quota_info.get("models") or {},
+                        quota_info.get("groups"),
+                        mode=mode,
+                    )
+                    if cleared:
+                        log.info(
+                            f"[ANTIGRAVITY QUOTA] 额度已恢复，清理 {cleared} 条残留模型冷却: {filename}"
+                        )
+            except Exception as exc:  # noqa: BLE001 - 对账失败不影响额度返回
+                log.warning(f"[ANTIGRAVITY QUOTA] 冷却对账失败 {filename}: {exc}")
+
             # 顺带用 loadCodeAssist 的 paidTier 校准实时档位：凭证库里的 tier 是
             # 导入时快照（存储层对未判定的 tier 还会默认落 "pro"），只有把快照
             # 一起交给上游判定，才能区分「付费权益失效」和「本来就是免费档」。

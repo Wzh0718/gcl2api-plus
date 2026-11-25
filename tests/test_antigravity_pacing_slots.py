@@ -313,7 +313,8 @@ async def test_stream_uses_rotated_account_even_when_local_slot_is_full(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [True, False])
-async def test_text_keeps_admission_and_skips_start_pacing(monkeypatch, streaming):
+async def test_text_keeps_admission_and_paces_before_slot(monkeypatch, streaming):
+    """文本请求先按账号节奏等待再占全池许可（动态区间关闭时等待为 0）。"""
     cred = _patch_common(monkeypatch)
     events = []
 
@@ -321,7 +322,7 @@ async def test_text_keeps_admission_and_skips_start_pacing(monkeypatch, streamin
         events.append("acquire")
         return 0.0
 
-    async def pace(name):
+    async def pace(name, **kwargs):
         events.append("pace")
         return 0.0
 
@@ -338,7 +339,7 @@ async def test_text_keeps_admission_and_skips_start_pacing(monkeypatch, streamin
         monkeypatch.setattr(agy, "post_async", AsyncMock(return_value=_FakeResponse(200, b'{"candidates":[]}')))
         assert (await agy.non_stream_request(_body())).status_code == 200
 
-    assert events == ["acquire"]
+    assert events == ["pace", "acquire"]
     assert _inflight(cred[0]) == 0
 
 
