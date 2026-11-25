@@ -1168,7 +1168,6 @@ async def _select_text_credential(model_name):
 
     chain = None
     earliest = None
-    probed = False
     while True:
         with measure_phase("credential_lookup"), database_timing_scope("credential"):
             result = await credential_manager.get_valid_credential(
@@ -1177,19 +1176,9 @@ async def _select_text_credential(model_name):
         if result:
             return model_name, result
 
-        # 没有可用账号可能只是我方冷却还没到期，而上游额度早已重置
-        # （Starter Quota 每日/每周重置、升级、平台侧提前放开）。用只读的
-        # fetchAvailableModels 探测一次，清掉没有依据的冷却后重试同一次选号。
-        if not probed:
-            probed = True
-            try:
-                if await release_stale_model_cooldowns(model_name):
-                    continue
-            except Exception as exc:  # noqa: BLE001 - 探测失败不得影响降级链
-                log.warning(
-                    f"[ANTIGRAVITY] 冷却探测失败: {type(exc).__name__}: {exc}"
-                )
-
+        # 冷却恢复不在这里同步探测：选号路径必须保持"只读存储、不额外等待上游"
+        # 的语义（deadline 计算依赖同一次 claim 的观测）。恢复由后台低频对账
+        # （antigravity_quota_sweep，每账号 1 小时租约）和面板额度查询负责。
         usage = selection_usage_resume_at.get()
         deadline = selection_retry_at.get() or usage
         if deadline and (earliest is None or deadline < earliest[0]):
@@ -3483,118 +3472,3 @@ async def reconcile_model_cooldowns_with_quota(
                 log.warning(f"[ANTIGRAVITY] 清除模型冷却失败 {filename}/{model_name}: {e}")
 
     return cleared
-
-
-# ==================== 冷却到期前的上游探测 ====================
-
-# 一次选号失败最多探测的账号数：fetchAvailableModels 只读、不消耗额度，
-# 但每个账号要付一次上游往返，必须保持有界。
-COOLDOWN_PROBE_MAX_ACCOUNTS = 2
-# 同一账号两次探测的最小间隔，避免持续 429 时把探测本身变成额外流量。
-COOLDOWN_PROBE_ACCOUNT_INTERVAL_SECONDS = 300.0
-# 两轮探测之间的最小间隔（多副本各自限流，探测不是热路径）。
-COOLDOWN_PROBE_RUN_INTERVAL_SECONDS = 15.0
-
-_COOLDOWN_PROBE_LAST: Dict[str, float] = {}
-_COOLDOWN_PROBE_STATE: Dict[str, float] = {"last_run": 0.0}
-_COOLDOWN_PROBE_LOCK = asyncio.Lock()
-
-
-def reset_cooldown_probe_state() -> None:
-    """清空探测节流状态（测试与运维排查用）。"""
-    _COOLDOWN_PROBE_LAST.clear()
-    _COOLDOWN_PROBE_STATE["last_run"] = 0.0
-
-
-async def release_stale_model_cooldowns(model_name: str) -> int:
-    """按需探测冷却中的账号，清掉与上游实际额度不符的模型冷却。
-
-    只处理「该模型仍在冷却中」且账号本身未被禁用/条款封禁的账号。
-    探测使用 fetchAvailableModels（只读、不消耗额度），拿到 quotaInfo 与
-    weekly/5h 分组后交给 reconcile_model_cooldowns_with_quota 判定：
-    短冷却信 5h 窗口，长冷却只信 weekly 窗口，避免清完再 429 的抖动。
-
-    Returns:
-        清除的模型冷却条数；0 表示没有可清除的冷却（或本轮被节流/探测失败）。
-    """
-    if not model_name:
-        return 0
-    now = time.time()
-    if now - _COOLDOWN_PROBE_STATE["last_run"] < COOLDOWN_PROBE_RUN_INTERVAL_SECONDS:
-        return 0
-    if _COOLDOWN_PROBE_LOCK.locked():
-        return 0
-
-    async with _COOLDOWN_PROBE_LOCK:
-        now = time.time()
-        if now - _COOLDOWN_PROBE_STATE["last_run"] < COOLDOWN_PROBE_RUN_INTERVAL_SECONDS:
-            return 0
-        _COOLDOWN_PROBE_STATE["last_run"] = now
-
-        try:
-            states = await credential_manager.get_creds_status(mode="antigravity")
-        except Exception as exc:  # noqa: BLE001 - 探测失败不得影响请求路径
-            log.warning(f"[COOLDOWN PROBE] 读取账号状态失败: {type(exc).__name__}")
-            return 0
-
-        candidates: list[tuple[float, str]] = []
-        for filename, state in (states or {}).items():
-            if not isinstance(state, dict) or state.get("disabled"):
-                continue
-            if state.get("warmup_status") in {"paused", "account_forbidden"}:
-                continue
-            cooldowns = state.get("model_cooldowns") or {}
-            until = cooldowns.get(model_name)
-            if not isinstance(until, (int, float)) or until <= now:
-                continue
-            if now - _COOLDOWN_PROBE_LAST.get(filename, 0.0) < COOLDOWN_PROBE_ACCOUNT_INTERVAL_SECONDS:
-                continue
-            candidates.append((float(until), filename))
-
-        if not candidates:
-            return 0
-        # 最先到期的先探：它最可能已经恢复。
-        candidates.sort()
-        if len(_COOLDOWN_PROBE_LAST) > 2000:
-            _COOLDOWN_PROBE_LAST.clear()
-
-        from src.storage_adapter import get_storage_adapter
-
-        backend = (await get_storage_adapter())._backend
-        cleared = 0
-        for until, filename in candidates[:COOLDOWN_PROBE_MAX_ACCOUNTS]:
-            _COOLDOWN_PROBE_LAST[filename] = time.time()
-            try:
-                credential_data, creds = await credential_manager.get_account_credentials(
-                    filename, "antigravity"
-                )
-                access_token = credential_data.get("access_token") or credential_data.get("token")
-                if not access_token:
-                    continue
-                info = await fetch_quota_info(
-                    access_token,
-                    project_id=credential_data.get("project_id"),
-                    proxy_url=getattr(creds, "proxy_url", ...),
-                    credential_data=credential_data,
-                    credential_name=filename,
-                )
-                if not info.get("success"):
-                    continue
-                cleared += await reconcile_model_cooldowns_with_quota(
-                    backend,
-                    filename,
-                    {model_name: until},
-                    info.get("models") or {},
-                    info.get("groups"),
-                    mode="antigravity",
-                )
-            except Exception as exc:  # noqa: BLE001 - 单账号失败不影响其它候选
-                log.warning(
-                    f"[COOLDOWN PROBE] {filename} 探测失败: {type(exc).__name__}: {exc}"
-                )
-
-        if cleared:
-            log.info(
-                f"[COOLDOWN PROBE] 上游额度已恢复，清除 {cleared} 条残留冷却（模型 {model_name}）"
-            )
-        return cleared
