@@ -1810,9 +1810,9 @@ function renderAntigravityWarmupAccounts() {
             const elapsed = state.window_started_at
                 ? Math.max(Math.floor(Date.now() / 1000 - Number(state.window_started_at)), 0) : 0;
             const window = Number(config.window_seconds || 0);
-            const progress = level >= maxLevel ? '已达目标，可完成养号'
+            const progress = level >= maxLevel ? '已达养号目标'
                 : `本档成功 ${Number(state.success_count || 0)} / ${Number(config.success_threshold || 10)} 次`;
-            let observation = level >= maxLevel ? '完成后恢复普通调度'
+            let observation = level >= maxLevel ? '达标后自动恢复普通调度'
                 : window > 0 ? `观察 ${formatWarmupDuration(Math.min(elapsed, window))} / ${formatWarmupDuration(window)}` : '无需观察等待';
             if (state.status === 'paused') observation = '养号已暂停';
             if (state.status === 'account_forbidden') observation = '已永久退出养号';
@@ -1825,20 +1825,12 @@ function renderAntigravityWarmupAccounts() {
                 <td class="warmup-progress" data-label="进度">第 ${level + 1} / ${maxLevel + 1} 档<small>${progress}</small><small>${observation}</small></td>
                 <td class="warmup-row-actions">
                     <button type="button" class="warmup-button" data-warmup-manage="${encodeURIComponent(filename)}" aria-label="管理 ${escapeHtml(name)} 的养号">管理</button>
-                    ${state.status === 'warming' && level >= maxLevel ? `<button type="button" class="warmup-button" data-warmup-complete="${encodeURIComponent(filename)}">完成养号</button>` : ''}
                 </td>
             </tr>`;
         }).join('')}</tbody>
     </table>`;
     container.querySelectorAll('[data-warmup-manage]').forEach(button => {
         button.addEventListener('click', () => openAntigravityWarmupDialog(decodeURIComponent(button.dataset.warmupManage)));
-    });
-    container.querySelectorAll('[data-warmup-complete]').forEach(button => {
-        button.addEventListener('click', async () => {
-            button.disabled = true;
-            await antigravityWarmupAction(decodeURIComponent(button.dataset.warmupComplete), 'complete');
-            button.disabled = false;
-        });
     });
 }
 

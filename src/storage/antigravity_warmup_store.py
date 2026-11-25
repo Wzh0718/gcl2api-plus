@@ -31,6 +31,30 @@ class AntigravityWarmupStore:
             "selectable": warmup_selectable("off"),
         }
 
+    async def _complete_ready_warmups(self) -> None:
+        """Reconcile legacy full-level accounts once during storage initialization."""
+        from src.antigravity_dynamic_warmup import normalize_warmup_config
+
+        async with sqlite_connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """SELECT w.credential_name, w.level, w.config_json
+                   FROM antigravity_warmup_accounts w
+                   JOIN antigravity_credentials c ON c.filename = w.credential_name
+                   WHERE w.status = 'warming' AND c.disabled = 0"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for filename, level, raw_config in rows:
+                config = normalize_warmup_config(json.loads(raw_config or "{}"))
+                if level >= config["max_level"]:
+                    await db.execute(
+                        """UPDATE antigravity_warmup_accounts
+                           SET status = 'active', updated_at = ?
+                           WHERE credential_name = ? AND status = 'warming'""",
+                        (time.time(), filename),
+                    )
+            await db.commit()
+
     async def get_antigravity_warmup(self, filename: str) -> Dict[str, Any]:
         self._ensure_initialized()
         filename = os.path.basename(filename)
@@ -372,7 +396,7 @@ class AntigravityWarmupStore:
                     (lease_id,),
                 )
 
-                async def advance(table: str, key: str, value: str, config_json: str) -> None:
+                async def advance(table: str, key: str, value: str, config_json: str) -> bool:
                     async with db.execute(
                         f"""SELECT level, success_count, window_started_at
                             FROM {table} WHERE {key} = ?""",
@@ -397,6 +421,7 @@ class AntigravityWarmupStore:
                             WHERE {key} = ?""",
                         (level, count, window_started, now, value),
                     )
+                    return level >= limits["max_level"]
 
                 async def demote(table: str, key: str, value: str) -> None:
                     await db.execute(
@@ -408,33 +433,45 @@ class AntigravityWarmupStore:
                         (now, now + 60, now, value),
                     )
 
+                async with db.execute(
+                    """SELECT status, config_json FROM antigravity_warmup_accounts
+                       WHERE credential_name = ?""",
+                    (filename,),
+                ) as cursor:
+                    account = await cursor.fetchone()
+                # In-flight leases may finish after completion, pause or cancellation.
+                # Release them without changing the newer account or IP-group state.
+                if not account or account[0] != "warming":
+                    await db.commit()
+                    return True
+
                 if outcome == "success":
+                    completed = await advance(
+                        "antigravity_warmup_accounts",
+                        "credential_name",
+                        filename,
+                        account[1],
+                    )
                     async with db.execute(
-                        """SELECT status, config_json FROM antigravity_warmup_accounts
-                           WHERE credential_name = ?""",
-                        (filename,),
+                        """SELECT config_json FROM antigravity_warmup_ip_groups
+                           WHERE ip_key = ?""",
+                        (ip_key,),
                     ) as cursor:
-                        account = await cursor.fetchone()
-                    if account and account[0] == "warming":
+                        group = await cursor.fetchone()
+                    if group:
                         await advance(
-                            "antigravity_warmup_accounts",
-                            "credential_name",
-                            filename,
-                            account[1],
+                            "antigravity_warmup_ip_groups",
+                            "ip_key",
+                            ip_key,
+                            group[0],
                         )
-                        async with db.execute(
-                            """SELECT config_json FROM antigravity_warmup_ip_groups
-                               WHERE ip_key = ?""",
-                            (ip_key,),
-                        ) as cursor:
-                            group = await cursor.fetchone()
-                        if group:
-                            await advance(
-                                "antigravity_warmup_ip_groups",
-                                "ip_key",
-                                ip_key,
-                                group[0],
-                            )
+                    if completed:
+                        await db.execute(
+                            """UPDATE antigravity_warmup_accounts
+                               SET status = 'active', updated_at = ?
+                               WHERE credential_name = ? AND status = 'warming'""",
+                            (now, filename),
+                        )
                 elif outcome == "rate_limited":
                     await demote(
                         "antigravity_warmup_accounts", "credential_name", filename

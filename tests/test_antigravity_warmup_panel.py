@@ -27,7 +27,7 @@ window.onload = () => {};
     });
     const data = {defaults: config, ip_groups: {}, accounts: {
         'first.json': state('first.json', 'warming'),
-        'target.json': state('target.json', 'warming', {
+        'target.json': state('target.json', 'active', {
             level: 3, limits: {account_concurrency: 15, account_interval: .08},
         }),
         'paused.json': state('paused.json', 'paused'),
@@ -107,17 +107,17 @@ def test_warmup_dashboard(template, size, tmp_path):
     output = re.search(r'<output id="test-result"[^>]*>(.*?)</output>', result.stdout, re.S)
     assert output and output[1].startswith("{"), output and output[1]
     data = json.loads(unescape(output[1]))
-    assert data["summary"] == "养号中 2 个已暂停 1 个已完成 1 个已退出 1 个"
-    assert len(data["rows"]) == 4
+    assert data["summary"] == "养号中 1 个已暂停 1 个已完成 2 个已退出 1 个"
+    assert len(data["rows"]) == 3
     assert "first@example.com" in data["rows"][0]
     assert "并发 15" in data["rows"][0] and "间隔 0.08 秒" in data["rows"][0]
     assert "本档成功 4 / 10 次" in data["rows"][0] and "观察 5 分钟 / 30 分钟" in data["rows"][0]
-    assert "已达目标，可完成养号" in data["rows"][1]
-    assert "养号已暂停" in data["rows"][2] and "已永久退出养号" in data["rows"][3]
-    assert data["completionButtons"] == 1
+    assert all("target@example.com" not in row for row in data["rows"])
+    assert "养号已暂停" in data["rows"][1] and "已永久退出养号" in data["rows"][2]
+    assert data["completionButtons"] == 0
     assert data["settingsClosed"] and data["visibleWithoutExpanding"]
     assert "first.json" in data["dialog"] and "当前状态：养号中" in data["dialog"]
     assert data["draftKept"] == "42"
-    assert "保留上次结果" in data["error"] and data["rowsAfterError"] == 4
+    assert "保留上次结果" in data["error"] and data["rowsAfterError"] == 3
     assert data["empty"] == "暂无正在养号的账号。" and "养号中 0 个" in data["emptySummary"]
     assert data["errorCleared"] and data["width"] > 300 and not data["overflow"]

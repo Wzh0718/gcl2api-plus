@@ -67,6 +67,7 @@ class MySQLManager(SQLiteManager):
                 if stats_dsn:
                     from src.storage.pg_model_stats import PostgresModelStats
                     self._pg_stats = await PostgresModelStats.open(stats_dsn)
+                await self._complete_ready_warmups()
                 self._initialized = True
                 log.info("MySQL main store ready")
             except BaseException:
