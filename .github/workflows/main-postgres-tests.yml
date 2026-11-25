@@ -2,14 +2,8 @@ name: PostgreSQL main store tests
 on:
   pull_request:
     branches: [dev, custom]
-    paths:
-      - 'src/**'
-      - 'scripts/postgres/**'
-      - 'scripts/mysql/**'
-      - 'requirements.txt'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - '.github/workflows/main-postgres-tests.yml'
+# Both branches require the postgres check. Path filters would leave documentation
+# and configuration PRs waiting forever for a check that was never scheduled.
 permissions:
   contents: read
 jobs:
