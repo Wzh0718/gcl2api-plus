@@ -142,6 +142,7 @@ async def test_content_persistence_auth_and_email(tmp_path, monkeypatch):
         assert detail["request_details"]["client"]["system"] == {"system": "秘密"}
         assert detail["request_details"]["client"]["tools"] == [{"name": "test"}]
         assert "upstream" in detail["request_details"]
+        assert detail["_capture_window"]["created_at"] == rows[0]["created_at"]
 
         async def storage():
             return adapter
@@ -154,7 +155,8 @@ async def test_content_persistence_auth_and_email(tmp_path, monkeypatch):
             response = await client.get("/call-monitor/content?request_id=r-content")
             assert response.status_code == 200
             assert response.headers["cache-control"] == "no-store"
-            assert response.json() == detail
+            assert response.json() == {key: value for key, value in detail.items()
+                                       if key != "_capture_window"}
             assert (await client.get("/call-monitor/content?request_id=missing")).status_code == 404
 
         class Accounts:
@@ -247,3 +249,44 @@ async def test_detail_never_displays_comparison_sample(tmp_path, monkeypatch, ha
     else:
         assert response["request_details"] == {}
         assert response["capture_state"] == "not_available"
+
+
+@pytest.mark.parametrize("created,total,gateway,expected", [
+    (10000, 30, 10, 9965),
+    (10000, None, 8, 9987),
+    (10000, 3600, 10, 6395),
+    (10000, 1, 10, 9985),
+    (10000, None, None, 0),
+    (10000, float("nan"), -1, 0),
+    (float("nan"), 30, 10, 0),
+])
+async def test_detail_bounds_all_capture_queries_by_full_request_duration(
+    monkeypatch, created, total, gateway, expected,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src import request_capture, capture_config
+    from src.panel import call_monitor as panel
+
+    calls = []
+
+    class Store:
+        def query(self, name, policy, **kwargs):
+            calls.append((name, kwargs))
+            return []
+
+    monkeypatch.setattr(request_capture, "get_capture_store", Store)
+    monkeypatch.setattr(capture_config, "capture_policies", lambda: dict.fromkeys(
+        ("normal", "errors", "features"), {}))
+    content = {"_capture_window": {"created_at": created, "response_total_seconds": total,
+                                   "gateway_seconds": gateway},
+               "request_features": {"capture_id": "current"}}
+    backend = SimpleNamespace(get_call_record_content=AsyncMock(return_value=content))
+    monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(
+        return_value=SimpleNamespace(_backend=backend)))
+
+    response = await panel.call_monitor_content(record_id=123, _token="test")
+    assert "_capture_window" not in json.loads(response.body)
+    assert [name for name, _ in calls] == ["normal", "errors", "features"]
+    assert all(kwargs["since"] == expected for _, kwargs in calls)
+    assert all(kwargs["request_id"] == "current" for _, kwargs in calls)
