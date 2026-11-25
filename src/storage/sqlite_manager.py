@@ -302,6 +302,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     log.info("Model statistics writes use PostgreSQL")
                 self.recent_cache = recent_monitor_cache.RecentMonitorCache(self._db_path, cache_id, self.monitor_excluded_accounts())
                 self.monitor_history = MonitorHistory(self._db_path)
+                await self._complete_ready_warmups()
                 self._initialized = True
                 log.info(f"SQLite storage initialized at {self._db_path}")
 
