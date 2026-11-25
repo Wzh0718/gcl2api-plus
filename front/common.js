@@ -6729,6 +6729,11 @@ const accountUsageFields = {
     generated_tokens_per_hour: 'antigravityAccountTokensPerHour',
 };
 
+const pacingIntervalFields = {
+    antigravity_pacing_min_interval_seconds: 'antigravityPacingMinIntervalSeconds',
+    antigravity_pacing_max_interval_seconds: 'antigravityPacingMaxIntervalSeconds',
+};
+
 async function loadConfig() {
     const loading = document.getElementById('configLoading');
     const form = document.getElementById('configForm');
@@ -6873,6 +6878,9 @@ function populateConfigForm() {
     setConfigField('antigravityHubCl', c.antigravity_hub_cl || '');
     document.getElementById('antigravityPacingEnabled').checked = Boolean(c.antigravity_pacing_enabled !== false);
     setConfigField('antigravityPacingBaseMs', c.antigravity_pacing_base_ms ?? 80);
+    for (const [key, id] of Object.entries(pacingIntervalFields)) {
+        setConfigField(id, c[key] ?? 0);
+    }
     setConfigField('antigravityPacingJitterPct', c.antigravity_pacing_jitter_pct ?? 50);
     setConfigField('antigravityPacingConcurrency', c.antigravity_pacing_concurrency ?? 15);
     setConfigField('antigravityPacingSlotWaitSeconds', c.antigravity_pacing_slot_wait_seconds ?? 30);
@@ -7047,6 +7055,24 @@ async function saveConfig() {
             accountUsage[key] = value;
         }
 
+        const pacingIntervals = {};
+        for (const [key, id] of Object.entries(pacingIntervalFields)) {
+            const field = document.getElementById(id);
+            const value = field.valueAsNumber;
+            if (!Number.isFinite(value) || value < 0 || value > 600) {
+                field.focus();
+                showStatus('动态发起间隔须填写 0–600 之间的秒数', 'error');
+                return;
+            }
+            pacingIntervals[key] = value;
+        }
+        if (pacingIntervals.antigravity_pacing_max_interval_seconds > 0
+                && pacingIntervals.antigravity_pacing_max_interval_seconds < pacingIntervals.antigravity_pacing_min_interval_seconds) {
+            document.getElementById('antigravityPacingMaxIntervalSeconds').focus();
+            showStatus('动态发起间隔上限必须不小于下限，填 0 关闭动态间隔', 'error');
+            return;
+        }
+
         const config = {
             host: getValue('host', '0.0.0.0'),
             port: getInt('port', 7861),
@@ -7079,6 +7105,7 @@ async function saveConfig() {
             antigravity_hub_cl: getValue('antigravityHubCl'),
             antigravity_pacing_enabled: getChecked('antigravityPacingEnabled'),
             antigravity_pacing_base_ms: getInt('antigravityPacingBaseMs', 80),
+            ...pacingIntervals,
             antigravity_pacing_jitter_pct: getInt('antigravityPacingJitterPct', 50),
             antigravity_pacing_concurrency: getInt('antigravityPacingConcurrency', 15),
             antigravity_pacing_slot_wait_seconds: getValue('antigravityPacingSlotWaitSeconds', '30'),

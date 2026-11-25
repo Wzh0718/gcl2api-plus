@@ -2505,11 +2505,27 @@
                             <div class="form-group">
                                 <label>
                                     <input type="checkbox" id="antigravityPacingEnabled" />
-                                    账号请求节奏（并发闸门 + 随机抖动）
+                                    账号请求节奏与并发控制
                                 </label>
                                 <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">普通文本按可用账号轮转并直接发送。发起间隔适用于图片和提示词融合请求。
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">动态发起间隔适用于普通文本、图片和提示词融合请求，连续请求可能排队。
                                     <span style="color: #28a745;">✓ 支持热更新</span></small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingMinIntervalSeconds">动态发起间隔下限（秒/账号）:</label>
+                                <input type="number" id="antigravityPacingMinIntervalSeconds" min="0" max="600" step="any"
+                                    aria-describedby="antigravityPacingIntervalNote" />
+                                <small id="antigravityPacingIntervalNote"
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">每次发起从上下限之间随机取值，再乘以账号系数（0.6、1 或 1.6）。间隔越大，吞吐越低，排队可能越长。</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="antigravityPacingMaxIntervalSeconds">动态发起间隔上限（秒/账号）:</label>
+                                <input type="number" id="antigravityPacingMaxIntervalSeconds" min="0" max="600" step="any"
+                                    aria-describedby="antigravityPacingIntervalDisableNote" />
+                                <small id="antigravityPacingIntervalDisableNote"
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认两项均为 0；上限填 0 关闭动态间隔，大于 0 时须不小于下限。支持热更新。</small>
                             </div>
 
                             <div class="form-group">
@@ -2574,7 +2590,7 @@
                                 <label for="antigravityPacingBaseMs">请求发起错峰基准（毫秒/账号）:</label>
                                 <input type="number" id="antigravityPacingBaseMs" min="0" max="600000" step="10" />
                                 <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 80；仅打散瞬时齐发，不再限制吞吐（0 = 不错峰）</small>
+                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">动态间隔关闭时，图片和提示词融合使用此基准及下方抖动；普通文本不使用固定错峰。默认 80，填 0 关闭固定错峰。</small>
                             </div>
 
                             <div class="form-group">
@@ -2938,7 +2954,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=warmup-dashboard"></script>
+    <script src="./front/common.js?v=pacing-intervals"></script>
 </body>
 
 </html>

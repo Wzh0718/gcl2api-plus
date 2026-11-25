@@ -122,6 +122,8 @@ async def get_config(token: str = Depends(verify_panel_token)):
         # Antigravity 请求节奏与 429 治理（2026-10-21 起）
         current_config["antigravity_pacing_enabled"] = await config.get_antigravity_pacing_enabled()
         current_config["antigravity_pacing_base_ms"] = await config.get_antigravity_pacing_base_ms()
+        current_config["antigravity_pacing_min_interval_seconds"] = await config.get_antigravity_pacing_min_interval_seconds()
+        current_config["antigravity_pacing_max_interval_seconds"] = await config.get_antigravity_pacing_max_interval_seconds()
         current_config["antigravity_pacing_jitter_pct"] = await config.get_antigravity_pacing_jitter_pct()
         current_config["antigravity_pacing_concurrency"] = await config.get_antigravity_pacing_concurrency()
         current_config["antigravity_pacing_slot_wait_seconds"] = await config.get_antigravity_pacing_slot_wait_seconds()
@@ -360,6 +362,26 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config["antigravity_fleet_wait_seconds"] = wait_seconds
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="全池闸门等待上限必须是0-600之间的秒数")
+
+        interval_keys = ("antigravity_pacing_min_interval_seconds", "antigravity_pacing_max_interval_seconds")
+        if set(interval_keys) & new_config.keys():
+            for key in interval_keys:
+                if key in new_config:
+                    try:
+                        value = new_config[key]
+                        number = float(value)
+                        if isinstance(value, bool) or not math.isfinite(number) or not 0 <= number <= 600:
+                            raise ValueError
+                        new_config[key] = number
+                    except (TypeError, ValueError, OverflowError):
+                        raise HTTPException(400, "动态发起间隔必须是0-600之间的有限秒数")
+            # Partial API updates must also respect the retained counterpart.
+            low = (new_config[interval_keys[0]] if interval_keys[0] in new_config
+                   else await config.get_antigravity_pacing_min_interval_seconds())
+            high = (new_config[interval_keys[1]] if interval_keys[1] in new_config
+                    else await config.get_antigravity_pacing_max_interval_seconds())
+            if high > 0 and high < low:
+                raise HTTPException(400, "动态发起间隔上限必须不小于下限，填0关闭动态间隔")
 
         if "antigravity_pacing_base_ms" in new_config:
             try:
