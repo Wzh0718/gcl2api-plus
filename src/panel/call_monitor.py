@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -427,6 +428,8 @@ async def call_monitor_content(
     content = await getter(request_id, record_id=record_id)
     if content is None:
         raise HTTPException(status_code=404, detail="记录不存在或已超过保留期")
+    content = dict(content)
+    window = content.pop("_capture_window", {})
     capture_id = content.get("request_features", {}).get("capture_id")
     if capture_id:
         import asyncio
@@ -435,17 +438,27 @@ async def call_monitor_content(
         from src.request_features import content_snapshot
         store = get_capture_store()
         policies = capture_policies()
+        # The row is recorded near response completion. Include the whole logical
+        # request (including retries/streaming) and a small clock/teardown margin.
+        # Legacy rows without valid timing retain the full-retention lookup.
+        created = window.get("created_at")
+        durations = [value for value in (window.get("response_total_seconds"),
+                                         window.get("gateway_seconds"))
+                     if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0]
+        since = (max(0, created - max(durations) - 5)
+                 if isinstance(created, (int, float)) and math.isfinite(created) and durations else 0)
         snapshots = []
         for name in ("normal", "errors"):
             snapshots.extend(await asyncio.to_thread(store.query, name, policies[name],
-                                                     request_id=capture_id, limit=30, include_prior_success=False))
+                                                     request_id=capture_id, since=since, limit=30,
+                                                     include_prior_success=False))
         snapshots.sort(key=lambda row: row.get("created_at", 0), reverse=True)
         chosen = next((r for r in snapshots if r.get("details", {}).get("upstream")), None)
         chosen = chosen or next((r for r in snapshots if r.get("details")), {})
         content["request_details"] = {stage: content_snapshot(payload) for stage, payload in
                                       chosen.get("details", {}).items() if isinstance(payload, dict)}
         feature_rows = await asyncio.to_thread(store.query, "features", policies["features"],
-                                               request_id=capture_id, limit=30)
+                                               request_id=capture_id, since=since, limit=30)
         captured_features = next((
             row["features"] for row in feature_rows
             if row.get("features") and (row.get("attempt_id") == chosen.get("attempt_id")
