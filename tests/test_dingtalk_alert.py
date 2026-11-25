@@ -34,6 +34,23 @@ class DingTalkAlertUnitTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result)
 
+    def test_account_level_503_is_excluded_from_unavailable_check(self):
+        states = {
+            "503.json": {
+                "disabled": False,
+                "error_codes": [503],
+                "model_cooldowns": {},
+            },
+        }
+
+        result = all_accounts_are_unavailable(
+            states,
+            "gemini-test",
+            attempted_credentials={"503.json"},
+        )
+
+        self.assertFalse(result)
+
     def test_earliest_recovery_uses_enabled_account_model_cooldowns(self):
         now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc).timestamp()
         states = {
@@ -103,6 +120,26 @@ class DingTalkAlertUnitTest(unittest.IsolatedAsyncioTestCase):
                 sent = await send_all_accounts_unavailable_alert(
                     model_name="gemini-test",
                     credential_states={},
+                )
+
+        self.assertFalse(sent)
+        fake_post.assert_not_awaited()
+
+    async def test_sender_skips_snapshot_containing_only_account_level_503(self):
+        fake_post = AsyncMock()
+        webhook = "https://oapi.dingtalk.com/robot/send?access_token=test-token"
+
+        with patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": webhook}, clear=False):
+            with patch("src.dingtalk_alert.post_async", fake_post):
+                sent = await send_all_accounts_unavailable_alert(
+                    model_name="gemini-test",
+                    credential_states={
+                        "503.json": {
+                            "disabled": False,
+                            "error_codes": [503],
+                            "model_cooldowns": {},
+                        },
+                    },
                 )
 
         self.assertFalse(sent)
