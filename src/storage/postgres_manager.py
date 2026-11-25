@@ -111,6 +111,7 @@ class PostgresManager(SQLiteManager):
                 self._cooldowns = AccountCooldowns(main_dsn() + "|" + database.schema)
                 self.recent_cache = recent_monitor_cache.RecentMonitorCache(database, cache_id, self.monitor_excluded_accounts())
                 self.monitor_history = MonitorHistory(database)
+                await self._complete_ready_warmups()
                 self._initialized = True
                 log.info(f"PostgreSQL main pool ready: max_size={database.pool.max_size} per worker")
             except BaseException:

@@ -150,3 +150,37 @@ def test_compose_storage_selection_respects_service_environment(monkeypatch):
     assert main_backend() == "sqlite"
     monkeypatch.setenv("MAIN_STORAGE_BACKEND", "mysql")
     assert main_backend() == "mysql"
+
+
+@pytest.mark.parametrize("backend", ["postgresql", "mysql"])
+async def test_warmup_completion_and_legacy_restart(backend, tmp_path, monkeypatch):
+    from tests.test_antigravity_dynamic_warmup import assert_automatic_completion
+    from src.storage.sqlite_pragmas import connect
+
+    setting = "MAIN_MYSQL_DSN" if backend == "mysql" else "MAIN_POSTGRES_DSN"
+    dsn = os.getenv("TEST_" + setting)
+    if not dsn:
+        pytest.skip("Requires TEST_" + setting)
+    monkeypatch.setenv(setting, dsn)
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.setenv("MAIN_POSTGRES_SCHEMA", "warmup_" + uuid4().hex)
+    monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.delenv("MODEL_STATS_POSTGRES_DSN", raising=False)
+    name = uuid4().hex + ".json"
+    storage = StorageAdapter()
+    try:
+        await storage.initialize()
+        manager = storage._backend
+        await manager.store_credential(name, {"access_token": "test"}, mode="antigravity")
+        await assert_automatic_completion(manager, name, "test:" + name)
+        # Simulate the old version leaving a full-level account warming.
+        async with connect(manager._db_path) as db:
+            await db.execute("UPDATE antigravity_warmup_accounts SET status='warming' WHERE credential_name=?", (name,))
+            await db.commit()
+        await storage.close()
+        storage = StorageAdapter()
+        await storage.initialize()
+        state = await storage._backend.get_antigravity_warmup(name)
+        assert state["status"] == "active" and state["level"] == 2
+    finally:
+        await storage.close()

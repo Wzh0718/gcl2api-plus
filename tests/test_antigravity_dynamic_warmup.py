@@ -393,3 +393,72 @@ async def test_tos_response_permanently_excludes_warmup_account(tmp_path, monkey
     blocked = await manager.acquire_antigravity_warmup_lease("a.json", "node:1")
     assert blocked["acquired"] is False
     pacing.reset_state()
+
+
+async def assert_automatic_completion(manager, name="a.json", ip_key="node:1"):
+    config = {**TEST_CONFIG, "account_initial_concurrency": 3,
+              "account_target_concurrency": 3, "ip_initial_concurrency": 3,
+              "ip_target_concurrency": 3}
+    await manager.set_antigravity_warmup([name], "start", config)
+    # Both success count and the observation window must pass on each step.
+    for started, finished, expected in [(100, 100, 0), (101, 110, 1),
+                                         (111, 119, 1)]:
+        lease = await manager.acquire_antigravity_warmup_lease(name, ip_key, now=started)
+        await manager.record_antigravity_warmup_result(lease["lease_id"], "success", now=finished)
+        state = await manager.get_antigravity_warmup(name)
+        assert state["status"] == "warming"
+        assert state["level"] == expected
+    final = await manager.acquire_antigravity_warmup_lease(name, ip_key, now=120)
+    late = await manager.acquire_antigravity_warmup_lease(name, ip_key, now=120)
+    assert final["acquired"] and late["acquired"]
+    await manager.record_antigravity_warmup_result(final["lease_id"], "success", now=120)
+    state = await manager.get_antigravity_warmup(name)
+    assert state["status"] == "active" and state["level"] == config["max_level"]
+    assert (await manager.list_antigravity_warmup())["accounts"][name]["status"] == "active"
+    ordinary = await manager.acquire_antigravity_warmup_lease(name, ip_key, now=120)
+    assert ordinary == {"enabled": False, "acquired": True, "lease_id": None}
+    # A request already in flight must not undo automatic completion.
+    await manager.record_antigravity_warmup_result(late["lease_id"], "rate_limited", now=121)
+    assert await manager.get_antigravity_warmup(name) == state
+    assert not await manager.record_antigravity_warmup_result(final["lease_id"], "success", now=122)
+
+
+@pytest.mark.asyncio
+async def test_final_level_automatically_completes_warmup(tmp_path, monkeypatch):
+    manager = await make_manager(tmp_path, monkeypatch)
+    try:
+        await assert_automatic_completion(manager)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_completes_only_legacy_ready_accounts(tmp_path, monkeypatch):
+    from src.storage.sqlite_manager import sqlite_connect
+
+    manager = await make_manager(tmp_path, monkeypatch)
+    states = {"a.json": ("warming", 2, 0), "b.json": ("warming", 1, 0),
+              "paused.json": ("paused", 2, 0), "disabled.json": ("warming", 2, 1),
+              "cancelled.json": ("cancelled", 2, 0),
+              "forbidden.json": ("account_forbidden", 2, 0)}
+    for name, (status, level, disabled) in states.items():
+        await manager.store_credential(name, {"access_token": "test"}, mode="antigravity")
+        await manager.set_antigravity_warmup([name], "start", TEST_CONFIG)
+        async with sqlite_connect(manager._db_path) as db:
+            await db.execute("UPDATE antigravity_warmup_accounts SET status=?, level=? WHERE credential_name=?",
+                             (status, level, name))
+            await db.execute("UPDATE antigravity_credentials SET disabled=? WHERE filename=?", (disabled, name))
+            await db.commit()
+    await manager.close()
+    manager = SQLiteManager()
+    await manager.initialize()
+    try:
+        for name, (status, level, _) in states.items():
+            state = await manager.get_antigravity_warmup(name)
+            assert state["status"] == ("active" if name == "a.json" else status)
+            assert state["level"] == level
+        before = await manager.get_antigravity_warmup("a.json")
+        await manager._complete_ready_warmups()
+        assert await manager.get_antigravity_warmup("a.json") == before
+    finally:
+        await manager.close()
