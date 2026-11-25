@@ -75,6 +75,35 @@ def get_earliest_recovery_timestamp(
     return min(recovery_times) if recovery_times else None
 
 
+def _has_account_level_503_error(state: Dict[str, Any]) -> bool:
+    """Return whether an enabled account has a recorded HTTP 503 error.
+
+    Account-level 503 responses are transient upstream failures.  They put an
+    account into a transient hold, but do not mean the account has exhausted
+    its quota or has been disabled, so they must not make the account-exhaustion
+    alert fire.
+    """
+    if state.get("disabled"):
+        return False
+    error_codes = state.get("error_codes", ())
+    if isinstance(error_codes, (str, bytes)):
+        error_codes = (error_codes,)
+    if not isinstance(error_codes, Iterable):
+        error_codes = (error_codes,)
+    return any(str(code).strip() == "503" for code in error_codes)
+
+
+def _exclude_account_level_503_errors(
+    credential_states: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Remove enabled accounts with a recorded account-level 503 error."""
+    return {
+        credential_name: state
+        for credential_name, state in credential_states.items()
+        if not isinstance(state, dict) or not _has_account_level_503_error(state)
+    }
+
+
 def all_accounts_are_unavailable(
     credential_states: Dict[str, Dict[str, Any]],
     model_name: str,
@@ -82,7 +111,8 @@ def all_accounts_are_unavailable(
     *,
     now: Optional[float] = None,
 ) -> bool:
-    """Check whether every configured account is disabled, cooling down, or attempted."""
+    """Check whether every alertable account is disabled, cooling down, or attempted."""
+    credential_states = _exclude_account_level_503_errors(credential_states)
     if not credential_states:
         return False
 
@@ -161,8 +191,11 @@ async def send_all_accounts_unavailable_alert(
     now: Optional[float] = None,
 ) -> bool:
     """Send account-exhaustion alerts with a configurable process-local cooldown."""
+    credential_states = _exclude_account_level_503_errors(credential_states)
     if not credential_states:
-        log.warning("[DINGTALK] skipped all-account alert: credential snapshot is empty")
+        log.warning(
+            "[DINGTALK] skipped all-account alert: no alertable credentials"
+        )
         return False
 
     from config import (get_dingtalk_all_accounts_alert_enabled,
