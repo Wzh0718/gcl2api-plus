@@ -122,7 +122,8 @@ async def test_mysql_shared_repository_paths(tmp_path, monkeypatch):
         for timestamp in (deadline, deadline - 30):
             assert await manager.set_model_cooldown(name, "m.v1", timestamp, mode="antigravity")
         state = await manager.get_credential_state(name, mode="antigravity")
-        assert state["model_cooldowns"]["m.v1"] == deadline
+        # MySQL's float/JSON round trip may differ by a sub-microsecond ULP.
+        assert state["model_cooldowns"]["m.v1"] == pytest.approx(deadline, rel=0, abs=1e-6)
         assert await manager.set_model_cooldown(name, "m.v1", None, mode="antigravity")
         picked, _, _ = await manager._claim_next("m.v1", set(), name)
         assert picked[0] == name
