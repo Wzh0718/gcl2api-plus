@@ -11,9 +11,9 @@
 
 - `loadCodeAssist` / `fetchAvailableModels` 虽然不消耗额度，但账号级调用频率
   本身就是风控特征。整池频繁扫描等于告诉上游"这是一批脚本号"。
-- 因此扫描按"整池 10 分钟一轮、每轮 2 个号"，并用 Redis 做**跨进程的每账号
-  租约**（默认 6 小时）。71 个号时约 12 次/小时，落在正常客户端行为区间；
-  增加副本也不会让同一账号被重复探测。
+- 整池默认 10 分钟一轮、每轮 2 个号，Redis 轮次租约协调多个 worker，
+  每账号另有 1 小时租约；游标保证未探测账号不会被固定优先级饿死。
+- 未配置 Redis 时使用进程内租约；已配置但不可用时跳过本轮，恢复后继续。
 
 只做三件事：校准 tier、清掉与上游额度矛盾的冷却、记录 403/刷新失败的分类。
 不自动禁用账号——封禁判定仍走既有的 403 复核链路。
@@ -22,9 +22,12 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_right
 import json
+import math
 import random
 import time
+import uuid
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from log import log
@@ -32,7 +35,27 @@ from log import log
 SWEEP_LOCK_PREFIX = "gcli:quota-sweep:v1"
 _STARTUP_DELAY_SECONDS = 90.0
 _MEMORY_LEASES: Dict[str, float] = {}
+_MEMORY_ROUND_UNTIL = 0.0
+_MEMORY_ROUND_ACTIVE = False
+_MEMORY_CURSOR = ""
 _LOOP_TASK: Optional[asyncio.Task] = None
+_BACKEND = ""
+
+# Both heartbeat and final cooldown updates must still belong to this worker.
+_RENEW_ROUND = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+"""
+
+# Fence each new probe as well as the heartbeat. A stalled worker resuming after
+# its round expires must not move the new owner's cursor or start another probe.
+_CLAIM_PROBE = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
+if not redis.call('SET', KEYS[2], '1', 'NX', 'EX', ARGV[2]) then return 0 end
+redis.call('SET', KEYS[3], ARGV[3])
+return 1
+"""
 
 
 def _tier_from_paid_tier(paid_tier: Dict[str, Any]) -> str:
@@ -63,29 +86,35 @@ def _candidate_priority(state: Dict[str, Any], now: float) -> Tuple[int, float, 
 
 
 async def _redis():
-    try:
-        from src.redis_config import create_redis_client_from_env
+    from src.redis_config import create_redis_client_from_env, redis_socket_timeouts
 
-        return create_redis_client_from_env(decode_responses=True)
-    except Exception:  # noqa: BLE001 - 缓存不可用时退回进程内租约
-        return None
+    connect_timeout, socket_timeout = redis_socket_timeouts()
+    return create_redis_client_from_env(
+        decode_responses=True,
+        socket_connect_timeout=connect_timeout,
+        socket_timeout=socket_timeout,
+    )
 
 
-async def _claim_probe_lease(client, filename: str, ttl: int) -> bool:
+async def _claim_probe_lease(client, filename: str, ttl: int, owner: str) -> bool:
     """跨进程抢占「本账号本周期内已探测」租约。"""
     key = f"{SWEEP_LOCK_PREFIX}:{filename}"
     if client is not None:
-        try:
-            claimed = await client.set(key, "1", nx=True, ex=ttl)
-            return bool(claimed)
-        except Exception as exc:  # noqa: BLE001 - Redis 抖动时退回内存
-            log.debug(f"[QUOTA SWEEP] Redis 租约失败，退回内存: {type(exc).__name__}")
+        claimed = await client.eval(
+            _CLAIM_PROBE, 3, f"{SWEEP_LOCK_PREFIX}:round", key,
+            f"{SWEEP_LOCK_PREFIX}:cursor", owner, ttl, filename,
+        )
+        if claimed == -1:
+            raise RuntimeError("quota sweep round lease lost")
+        return bool(claimed)
     now = time.time()
     expires = _MEMORY_LEASES.get(filename, 0.0)
     if expires > now:
         return False
     if len(_MEMORY_LEASES) > 2000:
-        _MEMORY_LEASES.clear()
+        for name, deadline in list(_MEMORY_LEASES.items()):
+            if deadline <= now:
+                del _MEMORY_LEASES[name]
     _MEMORY_LEASES[filename] = now + ttl
     return True
 
@@ -225,25 +254,12 @@ async def _probe_account(filename: str, state: Dict[str, Any]) -> Optional[str]:
     return "cooldown_kept"
 
 
-async def sweep_once(*, batch: Optional[int] = None) -> Dict[str, Any]:
-    """执行一轮扫描，最多探测 batch 个账号。"""
-    from config import (
-        get_antigravity_quota_sweep_account_interval_seconds,
-        get_antigravity_quota_sweep_batch,
-    )
+async def _scan_candidates(client, owner: str, limit: int, account_interval: int, stats: dict) -> None:
+    global _MEMORY_CURSOR
     from src.credential_manager import credential_manager
 
-    limit = batch if batch is not None else await get_antigravity_quota_sweep_batch()
-    account_interval = int(await get_antigravity_quota_sweep_account_interval_seconds())
-    stats: Dict[str, Any] = {"scanned": 0, "skipped": 0}
     counters: Dict[str, int] = {}
-
-    try:
-        states = await credential_manager.get_creds_status(mode="antigravity")
-    except Exception as exc:  # noqa: BLE001
-        log.warning(f"[QUOTA SWEEP] 读取账号状态失败: {type(exc).__name__}")
-        return stats
-
+    states = await credential_manager.get_creds_status(mode="antigravity")
     now = time.time()
     candidates: list[Tuple[Tuple[int, float, str], str, Dict[str, Any]]] = []
     for filename, state in (states or {}).items():
@@ -253,32 +269,32 @@ async def sweep_once(*, batch: Optional[int] = None) -> Dict[str, Any]:
             continue
         candidates.append((_candidate_priority(state, now), filename, state))
     candidates.sort(key=lambda item: (item[0], item[1]))
+    cursor_key = f"{SWEEP_LOCK_PREFIX}:cursor"
+    cursor = await client.get(cursor_key) if client is not None else _MEMORY_CURSOR
+    if cursor:
+        # Only the initial round uses urgency. Subsequent rounds traverse a stable
+        # ring, so expired leases at its head cannot displace unseen accounts.
+        candidates.sort(key=lambda item: item[1])
+        offset = bisect_right([item[1] for item in candidates], cursor)
+        candidates = candidates[offset:] + candidates[:offset]
 
-    client = await _redis()
-    try:
-        for _, filename, state in candidates:
-            if stats["scanned"] >= limit:
-                break
-            if not await _claim_probe_lease(client, filename, account_interval):
-                continue
-            try:
-                outcome = await _probe_account(filename, state)
-                stats["scanned"] += 1
-                if outcome:
-                    counters[outcome.split(":")[0]] = counters.get(outcome.split(":")[0], 0) + 1
-                stats.setdefault("results", {})[filename] = outcome
-            except Exception as exc:  # noqa: BLE001 - 单账号失败不影响整轮
-                stats["scanned"] += 1
-                counters["error"] = counters.get("error", 0) + 1
-                log.warning(
-                    f"[QUOTA SWEEP] {filename} 探测失败: {type(exc).__name__}: {exc}"
-                )
-    finally:
-        if client is not None:
-            try:
-                await client.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+    for _, filename, state in candidates:
+        if stats["scanned"] >= limit:
+            break
+        if not await _claim_probe_lease(client, filename, account_interval, owner):
+            continue
+        if client is None:
+            _MEMORY_CURSOR = filename
+        stats["scanned"] += 1
+        try:
+            outcome = await _probe_account(filename, state)
+            if outcome:
+                label = outcome.split(":")[0]
+                counters[label] = counters.get(label, 0) + 1
+            stats.setdefault("results", {})[filename] = outcome
+        except Exception as exc:  # noqa: BLE001 - 单账号失败不影响整轮
+            counters["error"] = counters.get("error", 0) + 1
+            log.warning(f"[QUOTA SWEEP] {filename} 探测失败: {type(exc).__name__}: {exc}")
 
     stats["ok"] = counters.get("ok", 0)
     stats.update(counters)
@@ -286,14 +302,89 @@ async def sweep_once(*, batch: Optional[int] = None) -> Dict[str, Any]:
     if stats["scanned"]:
         log.info(
             f"[QUOTA SWEEP] 本轮探测 {stats['scanned']} 个账号，"
-            f"跳过 {stats['skipped']} 个（租约未到期），结果 {json.dumps(counters, ensure_ascii=False)}"
+            f"未探测 {stats['skipped']} 个，结果 {json.dumps(counters, ensure_ascii=False)}"
         )
+
+
+async def _renew_round(client, owner: str, ttl: int) -> None:
+    while True:
+        await asyncio.sleep(min(20.0, ttl / 3))
+        if not await client.eval(_RENEW_ROUND, 1, f"{SWEEP_LOCK_PREFIX}:round", owner, ttl * 1000):
+            raise RuntimeError("quota sweep round lease lost")
+
+
+async def _scan_with_renewal(client, owner, ttl, limit, account_interval, stats):
+    scan = asyncio.create_task(_scan_candidates(client, owner, limit, account_interval, stats))
+    heartbeat = asyncio.create_task(_renew_round(client, owner, ttl))
+    try:
+        done, _ = await asyncio.wait((scan, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+        if heartbeat in done:
+            await heartbeat  # A lost/unreachable lease cancels in-progress probing.
+        await scan
+    finally:
+        scan.cancel()
+        heartbeat.cancel()
+        await asyncio.gather(scan, heartbeat, return_exceptions=True)
+
+
+async def sweep_once(*, batch: Optional[int] = None) -> Dict[str, Any]:
+    """执行一个整池租约保护的批次；Redis 故障时不启动本地副本。"""
+    global _MEMORY_ROUND_UNTIL, _MEMORY_ROUND_ACTIVE, _BACKEND
+    from config import (
+        get_antigravity_quota_sweep_account_interval_seconds,
+        get_antigravity_quota_sweep_batch,
+        get_antigravity_quota_sweep_interval_seconds,
+    )
+
+    limit = batch if batch is not None else await get_antigravity_quota_sweep_batch()
+    account_interval = int(await get_antigravity_quota_sweep_account_interval_seconds())
+    interval = await get_antigravity_quota_sweep_interval_seconds()
+    ttl = max(60, math.ceil(interval))
+    stats: Dict[str, Any] = {"scanned": 0, "skipped": 0}
+    client = None
+    claimed = False
+    owner = uuid.uuid4().hex
+    started = time.monotonic()
+    try:
+        client = await _redis()
+        backend = "redis" if client is not None else "memory (single process)"
+        if backend != _BACKEND:
+            log.info(f"[QUOTA SWEEP] lease backend: {backend}")
+            _BACKEND = backend
+        if client is not None:
+            claimed = bool(await client.set(f"{SWEEP_LOCK_PREFIX}:round", owner, nx=True, ex=ttl))
+        elif not _MEMORY_ROUND_ACTIVE and time.monotonic() >= _MEMORY_ROUND_UNTIL:
+            _MEMORY_ROUND_ACTIVE = claimed = True
+        if claimed:
+            started = time.monotonic()
+            if client is not None:
+                await _scan_with_renewal(client, owner, ttl, limit, account_interval, stats)
+            else:
+                _MEMORY_ROUND_UNTIL = started + interval
+                await _scan_candidates(None, owner, limit, account_interval, stats)
+    except Exception as exc:
+        log.warning(f"[QUOTA SWEEP] 本轮停止，等待下轮重试: {type(exc).__name__}: {exc}")
+    finally:
+        if claimed and client is None:
+            _MEMORY_ROUND_ACTIVE = False
+        if client is not None:
+            try:
+                if claimed:
+                    remaining_ms = max(1, math.ceil((started + interval - time.monotonic()) * 1000))
+                    await client.eval(_RENEW_ROUND, 1, f"{SWEEP_LOCK_PREFIX}:round", owner, remaining_ms)
+            except Exception as exc:
+                log.warning(f"[QUOTA SWEEP] 轮次租约收尾失败，等待 TTL: {type(exc).__name__}")
+            finally:
+                try:
+                    await client.aclose()
+                except Exception as exc:
+                    log.warning(f"[QUOTA SWEEP] Redis 连接关闭失败: {type(exc).__name__}")
     return stats
 
 
 def _jitter(interval: float) -> float:
-    """±15% 抖动，避免多副本在同一秒对齐成突发。"""
-    return interval * random.uniform(0.85, 1.15)
+    """仅正向抖动，避免提前撞上尚未到期的轮次租约后空等一整轮。"""
+    return interval * random.uniform(1.0, 1.15)
 
 
 async def sweep_loop() -> None:
@@ -347,4 +438,9 @@ async def stop_sweep() -> None:
 
 def reset_memory_leases() -> None:
     """测试与运维排查用：清空进程内租约。"""
+    global _MEMORY_ROUND_UNTIL, _MEMORY_ROUND_ACTIVE, _MEMORY_CURSOR, _BACKEND
     _MEMORY_LEASES.clear()
+    _MEMORY_ROUND_UNTIL = 0.0
+    _MEMORY_ROUND_ACTIVE = False
+    _MEMORY_CURSOR = ""
+    _BACKEND = ""
