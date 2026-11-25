@@ -193,55 +193,58 @@ async def pace_credential(credential_name: str, *, require_dynamic: bool = False
 
 
 class CredentialStart:
-    """Keep one account's start reservation through asynchronous request preparation.
+    """Handle a pacing reservation without holding a lock during request setup.
 
-    The caller retains the existing slot-release responsibility. Call started()
-    immediately before transport dispatch, and close() in its finally block.
+    The pacing timestamp is reserved before account/fleet admission.  The caller
+    retains the existing slot-release responsibility; ``started`` and ``close``
+    remain no-op lifecycle hooks for callers that already use them.
     """
 
-    def __init__(self, credential_name, lock, interval, waited):
+    def __init__(self, credential_name, interval, waited):
         self.credential_name = credential_name
-        self.lock = lock
+        self.lock = None
         self.interval = interval
         self.waited = waited
 
     def started(self) -> None:
-        if self.lock is not None:
-            _NEXT_FREE[self.credential_name] = time.monotonic() + self.interval
-            self.close()
+        return None
 
     def close(self) -> None:
-        if self.lock is not None:
-            self.lock.release()
-            self.lock = None
+        return None
 
 
 async def acquire_paced_credential_slot(
     credential_name: str, *, limited: bool = False, require_dynamic: bool = False,
 ) -> CredentialStart:
-    """Wait without a fleet permit, then hold the account's start lock until dispatch.
+    """Reserve the account's next start, then acquire admission independently.
 
-    Serializing pacing and admission prevents a long fleet/account queue from
-    collecting several pre-paced requests for the same account. The next deadline
-    is set at dispatch, after usage checks, rather than before the fleet wait.
+    The reservation is serialized under the per-account lock, which is released
+    before fleet/account admission and asynchronous request preparation. This
+    prevents a stalled admission from blocking every later request for the same
+    account while preserving the configured spacing between starts.
     """
     interval = _pacing_interval(credential_name, require_dynamic)
-    lock = _lock_for(credential_name) if interval > 0 else None
     waited = 0.0
-    if lock is not None:
+    if interval > 0:
+        lock = _lock_for(credential_name)
         started = time.monotonic()
-        await lock.acquire()
-        waited = time.monotonic() - started
-    try:
-        if lock is not None:
+        acquired = False
+        try:
+            await lock.acquire()
+            acquired = True
+            waited = time.monotonic() - started
             waited += await _wait_for_start(credential_name)
+            _NEXT_FREE[credential_name] = time.monotonic() + interval
+        finally:
+            if acquired:
+                lock.release()
+
+    try:
         acquire = acquire_limited_credential_slot if limited else acquire_credential_slot
         waited += await acquire(credential_name)
     except BaseException:
-        if lock is not None:
-            lock.release()
         raise
-    return CredentialStart(credential_name, lock, interval, waited)
+    return CredentialStart(credential_name, interval, waited)
 
 
 async def acquire_credential_slot(credential_name: str) -> float:
