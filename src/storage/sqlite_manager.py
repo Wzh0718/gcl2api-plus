@@ -4201,12 +4201,13 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         """
         self._ensure_initialized()
         await self.flush_call_records()
+        columns = ("request_features, request_details, created_at, "
+                   "response_total_seconds, gateway_seconds")
         if record_id is not None:
-            sql = ("SELECT request_features, request_details FROM call_records "
-                   "WHERE id = ? LIMIT 1")
+            sql = f"SELECT {columns} FROM call_records WHERE id = ? LIMIT 1"
             params: Tuple[Any, ...] = (int(record_id),)
         else:
-            sql = ("SELECT request_features, request_details FROM call_records "
+            sql = (f"SELECT {columns} FROM call_records "
                    "WHERE request_id = ? ORDER BY id DESC LIMIT 1")
             params = (request_id,)
         async with sqlite_connect(self._db_path) as db:
@@ -4215,7 +4216,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if row is None:
             return None
         return {"request_id": request_id, "request_features": json.loads(row[0] or "{}"),
-                "request_details": await asyncio.to_thread(decode_details, row[1])}
+                "request_details": await asyncio.to_thread(decode_details, row[1]),
+                "_capture_window": {"created_at": row[2], "response_total_seconds": row[3],
+                                    "gateway_seconds": row[4]}}
 
     @staticmethod
     def _call_record_filters(

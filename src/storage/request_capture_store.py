@@ -272,7 +272,9 @@ class CaptureStore:
             # Release the lock between segments so historical searches do not
             # pause new evidence writes for the duration of a whole-store scan.
             with self._guard():
-                if not path.exists():
+                # The latest append time is also used by retention maintenance.
+                # Skip historical segments before reading/checksumming their payloads.
+                if not path.exists() or path.stat().st_mtime < cutoff:
                     continue
                 frames = []
                 start = 0

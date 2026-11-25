@@ -107,3 +107,24 @@ def test_allocated_disk_usage_never_exceeds_budget_during_append(tmp_path, monke
     for i in range(100):
         assert store.write("normal", event(i), policy(), now=1000)
     assert peak > 0
+
+
+def test_request_time_window_never_opens_older_segments(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    store = CaptureStore(tmp_path)
+    for i in range(8):
+        assert store.write("normal", event(i), policy(), now=1000)
+    assert store.write("normal", event("current", at=4500), policy(), now=4500)
+    older = {path for path in (tmp_path / "normal").glob("*.seg")
+             if path.stat().st_mtime < 4000}
+    assert older
+    original_open = Path.open
+
+    def bounded_open(path, *args, **kwargs):
+        assert path not in older, "A recent detail lookup must skip historical segments"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", bounded_open)
+    result = store.query("normal", policy(), request_id="request-current", since=4000, now=4500)
+    assert [row["request_id"] for row in result] == ["request-current"]
