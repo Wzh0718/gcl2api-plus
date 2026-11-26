@@ -63,10 +63,9 @@ async def test_retry_helper_does_not_hold_account_on_capacity(monkeypatch):
         held.append((status_code, credential_name))
 
     monkeypatch.setattr(utils, "hold_transient_account", fake_hold)
-    monkeypatch.setattr(utils.asyncio, "sleep", lambda *_: _noop())
 
     should_retry = await utils.handle_error_with_retry(
-        object(), 503, "a.json", True, 0, 3, 0.0,
+        object(), 503, "a.json", True, 0, 3,
         mode="antigravity", error_text=CAPACITY_BODY,
     )
 
@@ -84,10 +83,9 @@ async def test_retry_helper_still_holds_on_account_level_503(monkeypatch):
         held.append((status_code, credential_name))
 
     monkeypatch.setattr(utils, "hold_transient_account", fake_hold)
-    monkeypatch.setattr(utils.asyncio, "sleep", lambda *_: _noop())
 
     should_retry = await utils.handle_error_with_retry(
-        object(), 503, "a.json", True, 0, 3, 0.0,
+        object(), 503, "a.json", True, 0, 3,
         mode="antigravity", error_text=ACCOUNT_BODY,
     )
 
@@ -102,7 +100,3 @@ async def test_image_capacity_guard_uses_same_semantics():
 
     assert agy.is_image_model_capacity_exhausted(503, CAPACITY_BODY) is True
     assert agy.is_image_model_capacity_exhausted(503, ACCOUNT_BODY) is False
-
-
-async def _noop():
-    return None

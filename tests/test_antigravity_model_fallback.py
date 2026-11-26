@@ -353,6 +353,96 @@ def _patch_text_transport(monkeypatch, respond):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("failure", ["capacity", "500", "502", "503", "empty", "network"])
+@pytest.mark.parametrize("recovers", [False, True])
+async def test_text_retry_waits_once_per_attempt(monkeypatch, streaming, failure, recovers):
+    from src.api import utils
+    from test_antigravity_capacity_not_account import CAPACITY_BODY
+
+    model = "gemini-2.5-flash-lite"
+    _patch_common(monkeypatch, [], max_retries=2)
+    monkeypatch.setattr(agy, "get_retry_config", lambda: _awaitable({
+        "retry_enabled": True, "max_retries": 2, "retry_interval": 5,
+    }))
+    monkeypatch.setattr(agy, "handle_error_with_retry", utils.handle_error_with_retry)
+    monkeypatch.setattr(agy, "get_auto_ban_error_codes", lambda: _awaitable([500, 502]))
+    monkeypatch.setattr(utils, "hold_transient_account", lambda *a, **k: _awaitable(None))
+    monkeypatch.setattr(agy, "hold_transient_account", lambda *a, **k: _awaitable(None))
+    monkeypatch.setattr(agy.credential_manager, "get_valid_credential", lambda **k: _awaitable(
+        ("a.json", {"access_token": "a", "project_id": "proj"}),
+    ))
+    waits, sent = [], []
+    monkeypatch.setattr(agy.asyncio, "sleep", lambda delay: _awaitable(waits.append(delay)))
+
+    def respond(*args):
+        sent.append(args)
+        if recovers and len(sent) == 3:
+            return _FakeResponse(200, b'{"response":{"candidates":[]}}')
+        if failure == "network":
+            raise RuntimeError("simulated transport failure")
+        if failure == "empty":
+            return _FakeResponse(200, b"")
+        status = 503 if failure == "capacity" else int(failure)
+        return _FakeResponse(status, CAPACITY_BODY.encode() if failure == "capacity" else b'{"error":"unavailable"}')
+
+    _patch_text_transport(monkeypatch, respond)
+    if streaming and failure == "empty":
+        async def stream(**kwargs):
+            response = respond(kwargs["body"]["model"], kwargs["headers"]["Authorization"])
+            if response.content:
+                yield 'data: {"candidates": []}\n\n'
+        monkeypatch.setattr(agy, "stream_post_async", stream)
+
+    response = await _run_text_request(streaming, model)
+    expected = 200 if recovers else 503 if failure == "capacity" else int(failure) if failure.isdigit() else 500
+    assert response.status_code == expected
+    assert len(sent) == 3
+    assert [delay for delay in waits if delay > 0] == [5, 5]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_cancellation_during_retry_delay_releases_slot(monkeypatch, streaming):
+    from src.api import utils
+    from test_antigravity_capacity_not_account import CAPACITY_BODY
+
+    _patch_common(monkeypatch, [], max_retries=1)
+    monkeypatch.setattr(agy, "get_retry_config", lambda: _awaitable({
+        "retry_enabled": True, "max_retries": 1, "retry_interval": 5,
+    }))
+    monkeypatch.setattr(agy, "handle_error_with_retry", utils.handle_error_with_retry)
+    monkeypatch.setattr(agy.credential_manager, "get_valid_credential", lambda **k: _awaitable(
+        ("a.json", {"access_token": "a", "project_id": "proj"}),
+    ))
+    entered = asyncio.Event()
+    released, sent = [], []
+
+    async def wait(delay):
+        assert delay == 5
+        entered.set()
+        await asyncio.Event().wait()
+
+    def respond(*args):
+        sent.append(args)
+        return _FakeResponse(503, CAPACITY_BODY.encode())
+
+    monkeypatch.setattr(agy.asyncio, "sleep", wait)
+    monkeypatch.setattr(pacing, "acquire_credential_slot", lambda name: _awaitable(0))
+    monkeypatch.setattr(pacing, "release_credential_slot", released.append)
+    _patch_text_transport(monkeypatch, respond)
+    task = asyncio.create_task(_run_text_request(streaming, "gemini-2.5-flash-lite"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(sent) == 1
+    assert released == ["a.json"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_tail_429_stops_after_first_credential(monkeypatch, streaming):
     """即使时钟越过CD，同一请求也不能绕回已试凭证。"""
     model = "gemini-2.5-flash"

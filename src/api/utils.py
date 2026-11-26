@@ -3,7 +3,6 @@ Base API Client - 共用的 API 客户端基础功能
 提供错误处理、自动封禁、重试逻辑等共同功能
 """
 
-import asyncio
 import json
 import re
 import time
@@ -97,12 +96,11 @@ async def handle_error_with_retry(
     retry_enabled: bool,
     attempt: int,
     max_retries: int,
-    retry_interval: float,
     mode: str = "geminicli",
     error_text: str = "",
 ) -> bool:
     """
-    统一处理错误和重试逻辑
+    处理错误并判断是否重试；等待由调用方的凭证切换阶段统一执行。
 
     仅在以下情况下进行自动重试:
     1. 429错误(速率限制)
@@ -117,7 +115,6 @@ async def handle_error_with_retry(
         retry_enabled: 是否启用重试
         attempt: 当前重试次数
         max_retries: 最大重试次数
-        retry_interval: 重试间隔
         mode: 模式（geminicli 或 antigravity）
         error_text: 上游响应体，用于区分账号级 5xx 与模型级容量耗尽
         
@@ -143,7 +140,6 @@ async def handle_error_with_retry(
                 f"[{mode.upper()} RETRY] {status_code} transient; "
                 f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
             )
-            await asyncio.sleep(retry_interval)
             return True
         return False
 
@@ -160,7 +156,6 @@ async def handle_error_with_retry(
                 f"[{mode.upper()} RETRY] Retrying with next credential after auto-ban "
                 f"(status {status_code}, attempt {attempt + 1}/{max_retries})"
             )
-            await asyncio.sleep(retry_interval)
             return True
         return False
 
@@ -170,7 +165,6 @@ async def handle_error_with_retry(
             f"[{mode.upper()} RETRY] {status_code} error encountered, retrying "
             f"(attempt {attempt + 1}/{max_retries})"
         )
-        await asyncio.sleep(retry_interval)
         return True
 
     # 其他错误不进行重试

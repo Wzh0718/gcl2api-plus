@@ -51,7 +51,7 @@ async def test_configured_400_does_not_disable_or_rotate_antigravity_account(mon
     manager = SimpleNamespace(set_cred_disabled=AsyncMock())
 
     retry = await utils.handle_error_with_retry(
-        manager, 400, "account.json", True, 0, 3, 0, mode="antigravity"
+        manager, 400, "account.json", True, 0, 3, mode="antigravity"
     )
 
     assert retry is False
@@ -65,7 +65,7 @@ async def test_geminicli_configured_400_retains_existing_policy(monkeypatch):
     manager = SimpleNamespace(set_cred_disabled=AsyncMock())
 
     retry = await utils.handle_error_with_retry(
-        manager, 400, "account.json", True, 0, 3, 0, mode="geminicli"
+        manager, 400, "account.json", True, 0, 3, mode="geminicli"
     )
 
     assert retry is True
