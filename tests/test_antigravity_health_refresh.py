@@ -326,3 +326,100 @@ async def test_exclusive_readiness_preserves_strict_gate_and_echo_exception(heal
             eligibility_status=eligibility, eligibility_reason=reason, eligibility_checked_at=time.time() - age)
         assert ("a" in await health_store.health_ready_credential_names(policy)) is ready
     assert "a" not in await health_store.health_ready_credential_names((False, 300, False))
+
+
+@pytest.mark.asyncio
+async def test_background_health_accepts_valid_binding_near_expiry(health_store, monkeypatch):
+    from src.credential_manager import CredentialManager
+    from src.antigravity_health_refresh import refresh_due_accounts
+    from src.egress_probe import Observation
+    from src.storage_adapter import get_storage_adapter
+
+    group = await health_store.create_proxy_group('near-expiry')
+    await health_store.import_proxy_group_nodes(group['id'], [{
+        'name': 'only-valid-node', 'proxy_url': 'http://proxy.invalid:8080',
+        'expires_at': time.time() + 3600,
+    }])
+    await health_store.store_credential('near-expiry.json', {'access_token': 'test'}, mode='antigravity')
+    await health_store.batch_update_credential_network(['near-expiry.json'], proxy_mode='group', proxy_group_id=group['id'])
+    network = await health_store.resolve_credential_network('near-expiry.json', mode='antigravity')
+    assert network['bound_proxy_node_id'] is not None
+    assert network['proxy_url'] == 'http://proxy.invalid:8080'
+    manager = CredentialManager()
+    manager._initialized = True
+    manager._storage_adapter = await get_storage_adapter()
+    monkeypatch.setattr(manager, '_should_refresh_token', AsyncMock(return_value=False))
+    monkeypatch.setattr('config.get_antigravity_egress_ip_check_url', AsyncMock(return_value='https://echo.invalid'))
+    monkeypatch.setattr('src.antigravity_account_health.observe_egress', AsyncMock(return_value=Observation(200, '203.0.113.8', 'US')))
+    monkeypatch.setattr('src.antigravity_account_health.post_async', AsyncMock(return_value=SimpleNamespace(
+        status_code=200, json=lambda: {'currentTier': {'id': 'free-tier'}},
+    )))
+    monkeypatch.setattr('src.google_oauth_api.warm_antigravity_environment', AsyncMock())
+    await refresh_due_accounts(manager, (True, 300, True))
+    health = await health_store.get_antigravity_account_health('near-expiry.json')
+    assert health['binding_status'] == 'healthy'
+    assert health['eligibility_status'] == 'eligible'
+    assert 'near-expiry.json' in await health_store.health_ready_credential_names((True, 300, True))
+
+
+@pytest.mark.parametrize('dsn1,dsn2', [
+    ('postgresql://test:first@primary:5432,standby:5432/main?target_session_attrs=read-write',
+     'host=primary,standby port=5432 dbname=main user=test password=second target_session_attrs=read-write'),
+    ('host=primary port=5432 dbname=main user=test password=first',
+     'host=primary port=5432 dbname=main user=test password=second'),
+    ('  postgresql://test:first@primary:5432,standby:5432/main  ',
+     '  host=primary,standby port=5432 dbname=main user=test password=second  '),
+])
+def test_postgres_health_lease_identity_uses_connection_parameters(monkeypatch, dsn1, dsn2):
+    from src.antigravity_health_refresh import _lease_key
+    backend = SimpleNamespace(main_postgres=True)
+    monkeypatch.setenv('MAIN_POSTGRES_SCHEMA', 'health')
+    monkeypatch.setenv('MAIN_POSTGRES_DSN', dsn1)
+    first = _lease_key(backend)
+    monkeypatch.setenv('MAIN_POSTGRES_DSN', dsn2)
+    assert _lease_key(backend) == first
+    monkeypatch.setenv('MAIN_POSTGRES_SCHEMA', 'other')
+    assert _lease_key(backend) != first
+
+
+@pytest.mark.asyncio
+async def test_memory_refresh_does_not_parse_redis_lease_identity(monkeypatch):
+    from src import antigravity_health_refresh as refresh
+    from unittest.mock import Mock
+    manager = SimpleNamespace(_storage_adapter=SimpleNamespace(_backend=SimpleNamespace(main_postgres=True)))
+    monkeypatch.setattr('src.credential_manager.credential_manager._get_or_create', AsyncMock(return_value=manager))
+    monkeypatch.setattr('src.redis_config.create_redis_client_from_env', lambda **kwargs: None)
+    parser = Mock(side_effect=AssertionError('memory mode does not need a Redis lease key'))
+    monkeypatch.setattr(refresh, '_lease_key', parser)
+    monkeypatch.setattr(refresh, '_loop', AsyncMock())
+    try:
+        task = await refresh.start_health_refresh()
+        await task
+        parser.assert_not_called()
+    finally:
+        await refresh.stop_health_refresh()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['expired', 'disabled', 'cooldown'])
+async def test_health_write_rejects_binding_that_became_unavailable(health_store, change):
+    from src.credential_revision import REVISION_KEY
+    from src.storage.sqlite_manager import sqlite_connect
+
+    group = await health_store.create_proxy_group('unavailable-binding')
+    await health_store.import_proxy_group_nodes(group['id'], [{
+        'name': 'node', 'proxy_url': 'http://proxy.invalid:8080', 'expires_at': time.time() + 3600,
+    }])
+    await health_store.store_credential('a', {'access_token': 'test'}, mode='antigravity')
+    await health_store.batch_update_credential_network(['a'], proxy_mode='group', proxy_group_id=group['id'])
+    network = await health_store.resolve_credential_network('a', mode='antigravity')
+    credential = await health_store.get_credential('a', mode='antigravity')
+    field, value = {'expired': ('expires_at', time.time() - 1), 'disabled': ('enabled', 0),
+                    'cooldown': ('cooldown_until', time.time() + 60)}[change]
+    async with sqlite_connect(health_store._db_path) as db:
+        await db.execute(f'UPDATE proxy_group_nodes SET {field} = ? WHERE id = ?', (value, network['bound_proxy_node_id']))
+        await db.commit()
+    await health_store.update_antigravity_account_health('a', expected_network=network,
+        expected_revision=credential[REVISION_KEY], check_started_at=time.time(),
+        binding_status='healthy', eligibility_status='eligible', eligibility_checked_at=time.time())
+    assert (await health_store.get_antigravity_account_health('a'))['binding_status'] == 'unchecked'

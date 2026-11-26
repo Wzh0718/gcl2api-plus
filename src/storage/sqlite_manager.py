@@ -1908,7 +1908,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         }
 
     @staticmethod
-    def _resolved_network(network):
+    def _resolved_network(network, *, rotate_expiring=True):
         """Return a usable binding snapshot, or None when a new node must be selected."""
         if network.get("fixed_proxy_ip"):
             available = network["bound_proxy_available"]
@@ -1921,7 +1921,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         if network["proxy_mode"] == "group" and network.get("proxy_group_id"):
             expires_at = network.get("bound_proxy_expires_at")
             if network.get("bound_proxy_available") and (
-                expires_at is None or expires_at > time.time() + PROXY_EXPIRY_LEAD_SECONDS
+                not rotate_expiring or expires_at is None
+                or expires_at > time.time() + PROXY_EXPIRY_LEAD_SECONDS
             ):
                 # The joined snapshot already establishes that this binding can
                 # be reused. Take the writer lock only when a change is possible.
@@ -2214,7 +2215,9 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     (filename,),
                 ) as cursor:
                     snapshot = await cursor.fetchone()
-                live = self._resolved_network(self._network_from_row(snapshot[1:]))
+                # Validate the current, still-usable binding without applying
+                # the proactive rotation threshold or choosing a replacement.
+                live = self._resolved_network(self._network_from_row(snapshot[1:]), rotate_expiring=False)
                 route_fields = ("proxy_mode", "proxy_url", "proxy_group_id",
                                 "bound_proxy_node_id", "fixed_proxy_ip", "exclusive_assignment")
                 changed = (

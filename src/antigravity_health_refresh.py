@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextvars import Context
 import hashlib
+import getpass
 import os
 import time
 import uuid
@@ -87,17 +88,31 @@ def _lease_key(backend):
     # Distinguish independent stores sharing Redis. Password rotation must not
     # create a second leader for the same database, and secrets never enter keys.
     if getattr(backend, "main_postgres", False):
-        dsn = os.getenv("MAIN_POSTGRES_DSN")
+        dsn = (os.getenv("MAIN_POSTGRES_DSN") or "").strip()
     elif getattr(backend, "main_mysql", False):
-        dsn = os.getenv("MAIN_MYSQL_DSN")
+        dsn = (os.getenv("MAIN_MYSQL_DSN") or "").strip()
     else:
         dsn = None
-    if dsn:
+    if dsn and getattr(backend, "main_postgres", False):
+        from psycopg.conninfo import conninfo_to_dict
+        params = conninfo_to_dict(dsn)
+        hosts = (params.get("host") or os.getenv("PGHOST", "")).split(",")
+        addresses = (params.get("hostaddr") or os.getenv("PGHOSTADDR", "")).split(",")
+        count = max(len(hosts), len(addresses))
+        ports = (params.get("port") or os.getenv("PGPORT") or "5432").split(",")
+        if len(ports) == 1:
+            ports *= count
+        endpoints = tuple((hosts[i] if i < len(hosts) else "",
+                           addresses[i] if i < len(addresses) else "",
+                           ports[i] or "5432") for i in range(count))
+        database = (params.get("dbname") or os.getenv("PGDATABASE") or params.get("user")
+                    or os.getenv("PGUSER") or getpass.getuser())
+        identity = ("postgresql", endpoints, database,
+                    os.getenv("MAIN_POSTGRES_SCHEMA", "gcli_main"),
+                    params.get("service") or os.getenv("PGSERVICE", ""))
+    elif dsn:
         url = urlsplit(dsn)
-        postgres = getattr(backend, "main_postgres", False)
-        identity = ("postgresql" if postgres else "mysql", url.hostname,
-                    url.port or (5432 if postgres else 3306), url.path,
-                    os.getenv("MAIN_POSTGRES_SCHEMA", "gcli_main") if postgres else "")
+        identity = ("mysql", url.hostname, url.port or 3306, url.path, "")
     else:
         identity = os.path.realpath(str(backend._db_path))
     digest = hashlib.sha256(repr(identity).encode()).hexdigest()[:24]
@@ -157,7 +172,8 @@ async def start_health_refresh():
     _WAKE = asyncio.Event()
     log.info("[HEALTH REFRESH] backend=" + ("redis; durable work=main database" if client is not None
         else "memory (single process); restart reconstructs work from main database"))
-    _TASK = asyncio.create_task(_loop(manager, client, _lease_key(backend)),
+    key = _lease_key(backend) if client is not None else None
+    _TASK = asyncio.create_task(_loop(manager, client, key),
         name="antigravity_health_refresh", context=Context())
     return _TASK
 
