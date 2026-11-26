@@ -401,3 +401,108 @@ async def test_legacy_stream_still_closes_resources_on_other_exits(ending):
     assert released == [True]
     if ending == 'complete':
         assert messages[-1] == {'type': 'http.response.body', 'body': b'', 'more_body': False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('channel', ['antigravity', 'geminicli'])
+@pytest.mark.parametrize('spec_version', ['2.1', '2.4'])
+async def test_responses_route_deadline_releases_translated_upstream(short_deadline, monkeypatch, channel, spec_version):
+    import importlib
+    from fastapi import FastAPI
+    from src.api_keys import ApiKeyPrincipal
+
+    module = importlib.import_module(f'src.router.{channel}.responses')
+    baseline = timing.get_inflight_requests()
+    entered = []
+    released = []
+    messages = []
+
+    async def chunks():
+        entered.append(True)
+        try:
+            await asyncio.Event().wait()
+            yield b''
+        finally:
+            await asyncio.sleep(0)
+            released.append(True)
+
+    async def chat_completions(request, principal):
+        return ClosingStreamingResponse(chunks(), media_type='text/event-stream')
+
+    monkeypatch.setattr(module, 'chat_completions', chat_completions)
+    app = FastAPI()
+    app.include_router(module.router)
+    if channel == 'antigravity':
+        app.dependency_overrides[module.authenticate_antigravity_key] = lambda: ApiKeyPrincipal('env', 'test', 'environment', '')
+    else:
+        app.dependency_overrides[module.authenticate_bearer] = lambda: 'test'
+    app.add_middleware(timing.RequestTimingMiddleware)
+    body = json.dumps({'model': 'gemini-2.5-flash', 'input': 'hi', 'stream': True}).encode()
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        messages.append(message)
+
+    await asyncio.wait_for(app(
+        {'type': 'http', 'method': 'POST', 'path': '/v1/responses',
+         'http_version': '1.1', 'query_string': b'', 'headers': [(b'content-type', b'application/json')],
+         'asgi': {'spec_version': spec_version}}, receive, send,
+    ), 1)
+    assert entered == released == [True]
+    assert timing.get_inflight_requests() == baseline
+    assert messages[0]['status'] == 200
+    assert not any(b'response.completed' in m.get('body', b'') for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_deadline_during_disconnect_cleanup_does_not_cancel_cleanup_again(short_deadline):
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    released = []
+    baseline = timing.get_inflight_requests()
+
+    async def chunks():
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+            yield b''
+        finally:
+            cleaning.set()
+            await release_cleanup.wait()
+            released.append(True)
+
+    async def app(scope, receive, send):
+        await ClosingStreamingResponse(chunks())(scope, receive, send)
+
+    async def receive():
+        await entered.wait()
+        return {'type': 'http.disconnect'}
+
+    async def send(message):
+        pass
+
+    request = asyncio.create_task(timing.RequestTimingMiddleware(app)(
+        {'type': 'http', 'method': 'POST', 'path': '/v1/chat/completions',
+         'asgi': {'spec_version': '2.1'}}, receive, send,
+    ))
+    try:
+        await asyncio.wait_for(cleaning.wait(), 1)
+        # Disconnect already cancelled the stream once. The request deadline must
+        # not cancel the async resource cleanup a second time.
+        await asyncio.sleep(0.08)
+        release_cleanup.set()
+        await asyncio.wait_for(request, 1)
+        assert released == [True]
+        assert timing.get_inflight_requests() == baseline
+    finally:
+        release_cleanup.set()
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
