@@ -275,7 +275,7 @@ async def stream_request(
                         # 检查是否应该重试
                         should_retry = await handle_error_with_retry(
                             credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                            retry_config["retry_enabled"], attempt, max_retries,
                             mode="geminicli"
                         )
 
@@ -546,7 +546,7 @@ async def non_stream_request(
                 # 检查是否应该重试（会自动处理禁用逻辑）
                 should_retry = await handle_error_with_retry(
                     credential_manager, status_code, current_file,
-                    retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                    retry_config["retry_enabled"], attempt, max_retries,
                     mode="geminicli"
                 )
 
