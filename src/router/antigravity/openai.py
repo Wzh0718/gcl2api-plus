@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
 # 标准库
 import asyncio
 import base64
+from contextlib import aclosing
 import json
 import time
 
@@ -680,6 +681,7 @@ async def chat_completions(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(first_attempt_stream, "prefetch-error")
             yield first_chunk
             return
 
@@ -769,61 +771,63 @@ async def chat_completions(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(stream_gen, "prefetch-error")
             yield first_chunk
             return
 
         response_id = str(uuid.uuid4())
 
         # yield所有数据,处理可能的错误Response
-        async for chunk in prepend_async_item(first_chunk, stream_gen):
-            # 检查是否是Response对象（错误情况）
-            if isinstance(chunk, Response):
-                # 将Response转换为SSE格式的错误消息
-                try:
-                    error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
-                    gemini_error = json.loads(error_content.decode('utf-8'))
-                    # 转换为 OpenAI 格式错误
-                    from src.converter.openai2gemini import convert_gemini_to_openai_response
-                    openai_error = convert_gemini_to_openai_response(
-                        gemini_error,
-                        real_model,
-                        chunk.status_code
-                    )
-                    yield f"data: {json.dumps(openai_error)}\n\n".encode('utf-8')
-                except Exception:
-                    yield f"data: {json.dumps({'error': 'Stream error'})}\n\n".encode('utf-8')
-                yield b"data: [DONE]\n\n"
-                return
-            else:
-                # 正常的bytes数据，转换为 OpenAI 格式
-                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
-
-                # 跳过空行
-                if not chunk_str.strip():
-                    continue
-
-                # 处理 [DONE] 标记
-                if chunk_str.strip() == "data: [DONE]":
-                    yield "data: [DONE]\n\n".encode('utf-8')
-                    return
-
-                # 解析并转换 Gemini chunk 为 OpenAI 格式
-                if chunk_str.startswith("data: "):
+        async with aclosing(prepend_async_item(first_chunk, stream_gen)) as chunks:
+            async for chunk in chunks:
+                # 检查是否是Response对象（错误情况）
+                if isinstance(chunk, Response):
+                    # 将Response转换为SSE格式的错误消息
                     try:
-                        # 转换为 OpenAI 格式
-                        from src.converter.openai2gemini import convert_gemini_to_openai_stream
-                        openai_chunk_str = convert_gemini_to_openai_stream(
-                            chunk_str,
+                        error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
+                        gemini_error = json.loads(error_content.decode('utf-8'))
+                        # 转换为 OpenAI 格式错误
+                        from src.converter.openai2gemini import convert_gemini_to_openai_response
+                        openai_error = convert_gemini_to_openai_response(
+                            gemini_error,
                             real_model,
-                            response_id
+                            chunk.status_code
                         )
+                        yield f"data: {json.dumps(openai_error)}\n\n".encode('utf-8')
+                    except Exception:
+                        yield f"data: {json.dumps({'error': 'Stream error'})}\n\n".encode('utf-8')
+                    yield b"data: [DONE]\n\n"
+                    return
+                else:
+                    # 正常的bytes数据，转换为 OpenAI 格式
+                    chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
 
-                        if openai_chunk_str:
-                            yield openai_chunk_str.encode('utf-8')
-
-                    except Exception as e:
-                        log.error(f"Failed to convert chunk: {e}")
+                    # 跳过空行
+                    if not chunk_str.strip():
                         continue
+
+                    # 处理 [DONE] 标记
+                    if chunk_str.strip() == "data: [DONE]":
+                        yield "data: [DONE]\n\n".encode('utf-8')
+                        return
+
+                    # 解析并转换 Gemini chunk 为 OpenAI 格式
+                    if chunk_str.startswith("data: "):
+                        try:
+                            # 转换为 OpenAI 格式
+                            from src.converter.openai2gemini import convert_gemini_to_openai_stream
+                            openai_chunk_str = convert_gemini_to_openai_stream(
+                                chunk_str,
+                                real_model,
+                                response_id
+                            )
+
+                            if openai_chunk_str:
+                                yield openai_chunk_str.encode('utf-8')
+
+                        except Exception as e:
+                            log.error(f"Failed to convert chunk: {e}")
+                            continue
 
         # 发送结束标记
         yield "data: [DONE]\n\n".encode('utf-8')

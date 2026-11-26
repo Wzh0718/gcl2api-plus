@@ -260,6 +260,8 @@ async def test_completed_requests_do_not_accumulate_timing_state(monkeypatch):
     async def batch():
         for _ in range(3000):
             await middleware(scope, None, send)
+        # Let the event loop discard cancelled request-deadline TimerHandles.
+        await asyncio.sleep(0)
     tracemalloc.start()
     try:
         await batch()

@@ -344,8 +344,10 @@ async def acquire_limited_credential_slot(credential_name: str) -> float:
             )
         return waited
     except BaseException:
-        await release_dynamic_warmup_slot(credential_name)
-        fleet_release()
+        try:
+            await release_dynamic_warmup_slot(credential_name)
+        finally:
+            fleet_release()
         raise
 
 

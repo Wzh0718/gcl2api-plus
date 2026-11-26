@@ -3,6 +3,7 @@ Vertex AI OpenAI-compatible Router - Handles OpenAI format requests via anonymou
 通过匿名 Vertex AI 端点处理 OpenAI 格式请求
 """
 
+from contextlib import aclosing
 import json
 import uuid
 
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from log import log
+from src.stream_guard import aclose_quietly
 from src.utils import authenticate_bearer, get_base_model_from_feature_model
 from src.models import OpenAIChatCompletionRequest, model_to_dict
 from src.router.hi_check import is_health_check_request, create_health_check_response
@@ -90,42 +92,44 @@ async def chat_completions(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(stream_gen, "prefetch-error")
             yield first_chunk
             return
 
         response_id = str(uuid.uuid4())
 
-        async for chunk in prepend_async_item(first_chunk, stream_gen):
-            if isinstance(chunk, Response):
-                try:
-                    error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b"").encode()
-                    gemini_error = json.loads(error_content.decode())
-                    from src.converter.openai2gemini import convert_gemini_to_openai_response
-                    openai_error = convert_gemini_to_openai_response(gemini_error, real_model, chunk.status_code)
-                    yield f"data: {json.dumps(openai_error)}\n\n".encode()
-                except Exception:
-                    yield f"data: {json.dumps({'error': 'Stream error'})}\n\n".encode()
-                yield b"data: [DONE]\n\n"
-                return
+        async with aclosing(prepend_async_item(first_chunk, stream_gen)) as chunks:
+            async for chunk in chunks:
+                if isinstance(chunk, Response):
+                    try:
+                        error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b"").encode()
+                        gemini_error = json.loads(error_content.decode())
+                        from src.converter.openai2gemini import convert_gemini_to_openai_response
+                        openai_error = convert_gemini_to_openai_response(gemini_error, real_model, chunk.status_code)
+                        yield f"data: {json.dumps(openai_error)}\n\n".encode()
+                    except Exception:
+                        yield f"data: {json.dumps({'error': 'Stream error'})}\n\n".encode()
+                    yield b"data: [DONE]\n\n"
+                    return
 
-            chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+                chunk_str = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
 
-            if not chunk_str.strip():
-                continue
-
-            if chunk_str.strip() == "data: [DONE]":
-                yield "data: [DONE]\n\n".encode("utf-8")
-                return
-
-            if chunk_str.startswith("data: "):
-                try:
-                    from src.converter.openai2gemini import convert_gemini_to_openai_stream
-                    openai_chunk_str = convert_gemini_to_openai_stream(chunk_str, real_model, response_id)
-                    if openai_chunk_str:
-                        yield openai_chunk_str.encode("utf-8")
-                except Exception as e:
-                    log.error(f"[VERTEX-OPENAI] Failed to convert chunk: {e}")
+                if not chunk_str.strip():
                     continue
+
+                if chunk_str.strip() == "data: [DONE]":
+                    yield "data: [DONE]\n\n".encode("utf-8")
+                    return
+
+                if chunk_str.startswith("data: "):
+                    try:
+                        from src.converter.openai2gemini import convert_gemini_to_openai_stream
+                        openai_chunk_str = convert_gemini_to_openai_stream(chunk_str, real_model, response_id)
+                        if openai_chunk_str:
+                            yield openai_chunk_str.encode("utf-8")
+                    except Exception as e:
+                        log.error(f"[VERTEX-OPENAI] Failed to convert chunk: {e}")
+                        continue
 
         yield "data: [DONE]\n\n".encode("utf-8")
 

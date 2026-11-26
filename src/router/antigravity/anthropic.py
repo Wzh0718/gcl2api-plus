@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 # 标准库
 import asyncio
+from contextlib import aclosing
 import json
 
 # 第三方库
@@ -259,6 +260,7 @@ async def messages(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(first_attempt_stream, "prefetch-error")
             yield first_chunk
             return
 
@@ -298,8 +300,9 @@ async def messages(
                 await aclose_quietly(process_gen, "[ANTIGRAVITY-ANTI-TRUNCATION]")
 
         # 直接将整个流传递给转换器
+        bytes_stream = bytes_wrapper()
         converter_gen = gemini_stream_to_anthropic_stream(
-            bytes_wrapper(),
+            bytes_stream,
             real_model,
             200
         )
@@ -310,6 +313,7 @@ async def messages(
         finally:
             # 客户端断连等导致本生成器被关闭时，级联关闭转换器流
             await aclose_quietly(converter_gen, "[ANTIGRAVITY-ANTI-TRUNCATION]")
+            await aclose_quietly(bytes_stream, "[ANTIGRAVITY-ANTI-TRUNCATION]")
 
     # ========== 普通流式生成器 ==========
     async def normal_stream_generator():
@@ -327,44 +331,44 @@ async def messages(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(stream_gen, "prefetch-error")
             yield first_chunk
             return
 
         # 包装流式生成器以处理错误响应
         async def gemini_chunk_wrapper():
-            async for chunk in prepend_async_item(first_chunk, stream_gen):
-                # 检查是否是Response对象（错误情况）
-                if isinstance(chunk, Response):
-                    # 错误响应，不进行转换，直接传递
-                    try:
-                        error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
-                        gemini_error = json.loads(error_content.decode('utf-8'))
-                        from src.converter.anthropic2gemini import gemini_to_anthropic_response
-                        anthropic_error = gemini_to_anthropic_response(
-                            gemini_error,
-                            real_model,
-                            chunk.status_code
-                        )
-                        yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
-                    except Exception:
-                        yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
-                    yield b"data: [DONE]\n\n"
-                    return
-                else:
-                    # 确保是bytes类型
-                    if isinstance(chunk, str):
-                        yield chunk.encode('utf-8')
+            async with aclosing(prepend_async_item(first_chunk, stream_gen)) as chunks:
+                async for chunk in chunks:
+                    # 检查是否是Response对象（错误情况）
+                    if isinstance(chunk, Response):
+                        # 错误响应，不进行转换，直接传递
+                        try:
+                            error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
+                            gemini_error = json.loads(error_content.decode('utf-8'))
+                            from src.converter.anthropic2gemini import gemini_to_anthropic_response
+                            anthropic_error = gemini_to_anthropic_response(
+                                gemini_error,
+                                real_model,
+                                chunk.status_code
+                            )
+                            yield f"data: {json.dumps(anthropic_error)}\n\n".encode('utf-8')
+                        except Exception:
+                            yield f"data: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': 'Stream error'}})}\n\n".encode('utf-8')
+                        yield b"data: [DONE]\n\n"
+                        return
                     else:
-                        yield chunk
+                        # 确保是bytes类型
+                        if isinstance(chunk, str):
+                            yield chunk.encode('utf-8')
+                        else:
+                            yield chunk
 
-        # 使用转换器处理整个流
-        async for anthropic_chunk in gemini_stream_to_anthropic_stream(
-            gemini_chunk_wrapper(),
-            real_model,
-            200
-        ):
-            if anthropic_chunk:
-                yield anthropic_chunk
+        # Each conversion layer owns and closes the iterator it consumes.
+        async with aclosing(gemini_chunk_wrapper()) as gemini_chunks:
+            async with aclosing(gemini_stream_to_anthropic_stream(gemini_chunks, real_model, 200)) as converted:
+                async for anthropic_chunk in converted:
+                    if anthropic_chunk:
+                        yield anthropic_chunk
 
     # ========== 根据模式选择生成器 ==========
     if use_fake_streaming:
