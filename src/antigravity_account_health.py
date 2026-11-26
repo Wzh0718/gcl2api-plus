@@ -113,6 +113,25 @@ def _safe_reason(response: Any, payload: Any) -> str:
     return value[:1000]
 
 
+class GuardedHealthStorage:
+    """Fence probe writes if credentials, routing or newer evidence changed."""
+    def __init__(self, storage, network, credential_data):
+        from src.credential_revision import REVISION_KEY
+        self.storage = storage
+        self.network = dict(network)
+        self.revision = credential_data.get(REVISION_KEY)
+        self.started_at = time.time()
+
+    def __getattr__(self, name):
+        return getattr(self.storage, name)
+
+    async def update_antigravity_account_health(self, filename, **updates):
+        return await self.storage.update_antigravity_account_health(
+            filename, expected_network=self.network, expected_revision=self.revision,
+            check_started_at=self.started_at, **updates,
+        )
+
+
 async def check_antigravity_account_health(
     *,
     storage: Any,

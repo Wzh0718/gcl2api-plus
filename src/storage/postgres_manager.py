@@ -175,11 +175,11 @@ class PostgresManager(SQLiteManager):
         )
         return reason
 
-    async def _claim_next(self, model_name, attempted, credential_name):
+    async def _claim_next(self, model_name, attempted, credential_name, health_policy=None):
         from config import get_antigravity_dormant_enabled_sync
 
         if not get_antigravity_dormant_enabled_sync():
-            return await self._claim_active(model_name, attempted, credential_name)
+            return await self._claim_active(model_name, attempted, credential_name, health_policy)
         # The Python quiet-hours decision must precede advancing a dormant account.
         from src.antigravity_pacing import is_dormant
 
@@ -192,7 +192,7 @@ class PostgresManager(SQLiteManager):
                 await db.execute("SELECT pg_advisory_xact_lock(72210440)")
             with measure_phase("selection_locked_work"):
                 now = time.time()
-                where, params = self._claim_filter(model_name, attempted, credential_name, now)
+                where, params = self._claim_filter(model_name, attempted, credential_name, now, health_policy=health_policy)
                 query = self._SELECT_CREDENTIAL.format(where_sql=where) + " FOR UPDATE"
                 async with db.execute(query, params) as cursor:
                     row = await cursor.fetchone()
@@ -242,10 +242,10 @@ class PostgresManager(SQLiteManager):
         except Exception as exc:
             log.warning(f"Account cooldown snapshot failed: {type(exc).__name__}")
 
-    async def _claim_active(self, model_name, attempted, credential_name):
+    async def _claim_active(self, model_name, attempted, credential_name, health_policy=None):
         # Coalesce only live requests with identical eligibility. A free connection
         # starts immediately; no batching timer and no preallocated credentials.
-        key = (model_name, frozenset(attempted), credential_name)
+        key = (model_name, frozenset(attempted), credential_name, health_policy)
         waiters = self._claim_batches.get(key)
         if waiters is None:
             waiters = self._claim_batches[key] = []
@@ -277,7 +277,7 @@ class PostgresManager(SQLiteManager):
 
     async def _run_claim_batch(self, key, waiters):
         try:
-            model, excluded, pinned = key
+            model, excluded, pinned, health_policy = key
             cache = self._cooldowns
             snapshot = await cache.read(model)
             if snapshot is not None:
@@ -324,13 +324,13 @@ class PostgresManager(SQLiteManager):
                 del self._claim_batches[key]
 
     async def _rotate_batch(self, conn, key, count, blocked=()):
-        model_name, attempted, credential_name = key
+        model_name, attempted, credential_name, health_policy = key
         now = time.time()
         cutoff = now - ROUTING_WINDOW_SECONDS
-        where, params = self._claim_filter(model_name, attempted, credential_name, now)
+        where, params = self._claim_filter(model_name, attempted, credential_name, now, health_policy=health_policy)
         # A cold Redis roster must give the same retry deadline as a cache hit.
         # Evaluate this aggregate only when the claim returns no account.
-        eligible, eligible_params = self._claim_filter(None, attempted, credential_name, now, include_held=True)
+        eligible, eligible_params = self._claim_filter(None, attempted, credential_name, now, include_held=True, health_policy=health_policy)
         resume = f"""
             SELECT ARRAY[
                 MIN(usage_resume_at) FILTER (
