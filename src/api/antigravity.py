@@ -1579,7 +1579,7 @@ async def _stream_request_inner(
 
                         should_retry = await handle_error_with_retry(
                             credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                            retry_config["retry_enabled"], attempt, max_retries,
                             mode="antigravity",
                             error_text=error_body or "",
                         )
@@ -2650,7 +2650,7 @@ async def non_stream_request(
 
                     should_retry = await handle_error_with_retry(
                         credential_manager, status_code, current_file,
-                        retry_config["retry_enabled"], attempt, max_retries, retry_interval,
+                        retry_config["retry_enabled"], attempt, max_retries,
                         mode="antigravity",
                         error_text=error_text or "",
                     )
