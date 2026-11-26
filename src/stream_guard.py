@@ -16,13 +16,29 @@ from fastapi.responses import StreamingResponse
 from log import log
 
 
+async def finish_cleanup(awaitable):
+    """Finish cleanup once, deferring caller cancellation until it has completed."""
+    task = asyncio.ensure_future(awaitable)
+    cancelled = None
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        return task.result()
+    finally:
+        if cancelled is not None:
+            raise cancelled
+
+
 async def aclose_quietly(iterator: Any, context: str = "") -> None:
     """尽力关闭异步迭代器/生成器，异常只记日志不抛出。"""
     aclose = getattr(iterator, "aclose", None)
     if not callable(aclose):
         return
     try:
-        await aclose()
+        await finish_cleanup(aclose())
     except Exception as e:
         log.debug(f"关闭流式迭代器失败 {context}: {e}")
 
@@ -60,18 +76,7 @@ class ClosingStreamingResponse(StreamingResponse):
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            cleanup = asyncio.gather(*tasks, return_exceptions=True)
-            cancelled = None
-            while not cleanup.done():
-                try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError as exc:
-                    # A disconnect may already be unwinding the upstream when
-                    # the request deadline arrives. Do not cancel that cleanup
-                    # again; propagate the parent cancellation once it finishes.
-                    cancelled = exc
-            if cancelled is not None:
-                raise cancelled
+            await finish_cleanup(asyncio.gather(*tasks, return_exceptions=True))
         if self.background is not None:
             await self.background()
 
