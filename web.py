@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import get_server_host, get_server_port
+from config import get_server_host, get_server_keep_alive_timeout, get_server_port
 from log import log
 
 # Import managers and utilities
@@ -373,6 +373,10 @@ def main():
     from hypercorn.run import run
 
     workers = int(os.environ.get("WORKERS", 1))
+    # Keep the server's idle window above HTTPX's default 5s pool expiry.
+    # This does not limit an active model request or stream.
+    keep_alive_timeout = get_server_keep_alive_timeout()
+    log.info(f"HTTP 空闲连接超时: {keep_alive_timeout:g} 秒")
 
     async def _run():
         port = await get_server_port()
@@ -391,6 +395,7 @@ def main():
         config.accesslog = "-"
         config.errorlog = "-"
         config.loglevel = "INFO"
+        config.keep_alive_timeout = keep_alive_timeout
 
         await serve(app, config)
 
@@ -413,6 +418,7 @@ def main():
         config.accesslog = "-"
         config.errorlog = "-"
         config.loglevel = "INFO"
+        config.keep_alive_timeout = keep_alive_timeout
         config.workers = workers
         config.application_path = "web:app"
 

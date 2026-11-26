@@ -6,6 +6,7 @@ Centralizes all configuration to avoid duplication across modules.
 - 修改配置时调用 reload_config() 重新从数据库加载
 """
 
+import math
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -321,6 +322,18 @@ async def get_stream_idle_timeout() -> float:
 
 
 # Server Configuration
+def get_server_keep_alive_timeout() -> float:
+    """Startup-only idle connection timeout; ENV > default, in both worker modes."""
+    raw = os.getenv("HTTP_KEEP_ALIVE_TIMEOUT", "").strip() or "60"
+    try:
+        timeout = float(raw)
+    except ValueError:
+        raise ValueError("HTTP_KEEP_ALIVE_TIMEOUT 必须是大于 0 的有限秒数") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("HTTP_KEEP_ALIVE_TIMEOUT 必须是大于 0 的有限秒数")
+    return timeout
+
+
 async def get_server_host() -> str:
     """
     Get server host setting.
