@@ -7,6 +7,7 @@ import time
 import uuid
 
 import httpx
+from starlette.responses import JSONResponse
 
 from log import log
 
@@ -60,6 +61,7 @@ _inflight_requests = 0
 _active_timing_states: dict[int, RequestTiming] = {}
 _event_loop_probe_handle: asyncio.TimerHandle | None = None
 _EVENT_LOOP_PROBE_SECONDS = 0.1
+REQUEST_TIMEOUT_SECONDS = 60 * 60
 
 
 _next_slow_log = 0.0
@@ -291,6 +293,8 @@ class RequestTimingMiddleware:
             state.request_info = {"protocol": protocol}
         token = request_timing.set(state)
         timing_registered = False
+        response_started = False
+        response_is_sse = False
 
         async def timed_receive():
             nonlocal timing_registered
@@ -312,6 +316,13 @@ class RequestTimingMiddleware:
             return message
 
         async def timed_send(message):
+            nonlocal response_started, response_is_sse
+            if message['type'] == 'http.response.start':
+                response_started = True
+                response_is_sse = any(
+                    name.lower() == b'content-type' and value.startswith(b'text/event-stream')
+                    for name, value in message.get('headers', [])
+                )
             if (message['type'] == 'http.response.body' and message.get('body')
                     and state.downstream_first_byte_seconds is None):
                 state.downstream_first_byte_seconds = time.monotonic() - state.started
@@ -330,7 +341,41 @@ class RequestTimingMiddleware:
         _inflight_requests += 1
         state.request_info["worker_inflight_at_entry"] = _inflight_requests
         try:
-            await self.app(scope, timed_receive, timed_send)
+            deadline = asyncio.timeout(REQUEST_TIMEOUT_SECONDS)
+            try:
+                # One deadline for upload, authentication, retries and the entire stream.
+                # Cancellation unwinds the app's upstream/lease cleanup before we return.
+                async with deadline:
+                    await self.app(scope, timed_receive, timed_send)
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
+            if deadline.expired():
+                state.request_info['timed_out'] = True
+                log.warning(f'[REQUEST TIMEOUT] timing_id={state.timing_id} limit_seconds={REQUEST_TIMEOUT_SECONDS}')
+                error = {'message': 'Request exceeded the 1 hour time limit.',
+                         'type': 'timeout_error', 'code': 'request_timeout'}
+                protocol = state.request_info['protocol']
+                if protocol == 'gemini':
+                    error = {'message': error['message'], 'code': 504, 'status': 'DEADLINE_EXCEEDED'}
+                body = {'error': error}
+                if protocol == 'anthropic':
+                    body['type'] = 'error'
+                headers = {'Connection': 'close'} if scope.get('http_version', '1.1') in ('1.0', '1.1') else {}
+                response = JSONResponse(body, status_code=504, headers=headers)
+                # A client that stopped reading must not keep timeout handling alive.
+                try:
+                    async with asyncio.timeout(5):
+                        if not response_started:
+                            await response(scope, receive, timed_send)
+                        elif scope.get('http_version') == '2':
+                            # HTTP/2 shares the connection: end only this stream. A
+                            # plain ASGI return would leave Hypercorn's h2 buffer open.
+                            chunk = b'event: error\ndata: ' + response.body + b'\n\n' if response_is_sse else b''
+                            await send({'type': 'http.response.body', 'body': chunk, 'more_body': False})
+                        # For HTTP/1, omit the final body so the server aborts the connection.
+                except (TimeoutError, OSError):
+                    pass
         finally:
             _inflight_requests -= 1
             if timing_registered:
