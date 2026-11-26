@@ -1076,10 +1076,11 @@ class AntigravityHealthGateTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def _ready(self, manager, credential_data=None):
+    async def _ready(self, manager, credential_data=None, *, force=False):
         return await manager.ensure_antigravity_account_ready(
             "account.json",
             credential_data or {"access_token": "token"},
+            force=force,
         )
 
     async def test_fresh_geo_blocked_cache_is_allowed(self):
@@ -1136,7 +1137,7 @@ class AntigravityHealthGateTests(unittest.IsolatedAsyncioTestCase):
         with enabled_patch, ttl_patch, patch.object(
             manager, "check_antigravity_account_health", check_mock
         ):
-            self.assertIsNone(await self._ready(manager))
+            self.assertIsNone(await self._ready(manager, force=True))
 
     async def test_fresh_check_inconclusive_is_allowed(self):
         manager = self._make_manager({})
@@ -1150,7 +1151,7 @@ class AntigravityHealthGateTests(unittest.IsolatedAsyncioTestCase):
         with enabled_patch, ttl_patch, patch.object(
             manager, "check_antigravity_account_health", check_mock
         ):
-            result = await self._ready(manager)
+            result = await self._ready(manager, force=True)
         self.assertIsNotNone(result)
 
     async def test_exclusive_group_requires_fresh_eligible_health_even_when_global_gate_is_off(self):

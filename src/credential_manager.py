@@ -258,6 +258,10 @@ class CredentialManager:
             )
 
         selection_options = {"credential_name": pinned} if pinned else {}
+        if mode == "antigravity":
+            from src.antigravity_health_refresh import get_health_policy, request_health_refresh
+            selection_options["health_policy"] = await get_health_policy()
+            request_health_refresh()
 
         # 最多重试3次
         max_retries = 3
@@ -314,6 +318,8 @@ class CredentialManager:
 
             # 如果没有可用凭证，直接返回None
             if not result:
+                if mode == "antigravity" and not selection_retry_at.get() and not selection_usage_resume_at.get():
+                    selection_retry_at.set(time.time() + 5)
                 if attempt == 0:
                     log.warning(f"没有可用凭证 (mode={mode}, model_name={model_name})")
                 return None
@@ -363,6 +369,9 @@ class CredentialManager:
             states = await self._storage_adapter.get_all_credential_states(
                 mode="antigravity"
             )
+            from src.antigravity_health_refresh import get_health_policy, request_health_refresh
+            request_health_refresh()
+            ready_names = await self._storage_adapter.health_ready_credential_names(await get_health_policy())
             active_filenames = set(states)
             self._image_runtime_health = {
                 filename: health
@@ -376,12 +385,15 @@ class CredentialManager:
                 runtime_health=self._image_runtime_health,
                 excluded_filenames=attempted_filenames,
             )
+            ranked = [name for name in ranked if name in ready_names]
             now = time.time()
             available = [name for name in ranked if (states[name].get("usage_resume_at") or 0) <= now]
             if ranked and not available:
                 selection_usage_resume_at.set(min(states[name]["usage_resume_at"] for name in ranked))
             ranked = available
             if not ranked:
+                if not selection_retry_at.get() and not selection_usage_resume_at.get():
+                    selection_retry_at.set(time.time() + 5)
                 log.warning(
                     f"没有可用图片凭证 (mode=antigravity, model_name={model_name})"
                 )
@@ -564,7 +576,7 @@ class CredentialManager:
             ttl_seconds = min(ttl_seconds, EXCLUSIVE_PROBE_RETRY_SECONDS)
         def usable_exclusive_route(check):
             if account_health_is_fresh_eligible(check, ttl_seconds=ttl_seconds):
-                return True
+                return not network.get("fixed_proxy_ip") or network["fixed_proxy_ip"] == check.get("egress_ip")
             return (
                 bool(network.get("proxy_url") and network.get("proxy_node_id"))
                 and check.get("eligibility_status") == "error"
@@ -606,6 +618,12 @@ class CredentialManager:
                 else:
                     log.warning(message)
             return credential_data
+
+        if not force:
+            from src.antigravity_health_refresh import request_health_refresh
+            request_health_refresh()
+            selection_retry_at.set(max(selection_retry_at.get(), time.time() + 5))
+            return None
 
         access_token = credential_data.get("access_token") or credential_data.get("token")
         if not access_token:
@@ -653,7 +671,7 @@ class CredentialManager:
             get_antigravity_api_url,
             get_antigravity_egress_ip_check_url,
         )
-        from .antigravity_account_health import check_antigravity_account_health
+        from .antigravity_account_health import check_antigravity_account_health, GuardedHealthStorage
 
         if credential_data is None:
             credential_data = await self._storage_adapter.get_credential(
@@ -679,7 +697,7 @@ class CredentialManager:
             raise ValueError("Antigravity credential has no access token")
         return dict(
             await check_antigravity_account_health(
-                storage=self._storage_adapter,
+                storage=GuardedHealthStorage(self._storage_adapter, network, credential_data),
                 credential_name=credential_name,
                 access_token=access_token,
                 network=network,

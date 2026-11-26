@@ -605,6 +605,9 @@ async def test_image_credential_selection_uses_rotation_and_exclusions(monkeypat
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         async def get_all_credential_states(self, mode):
             assert mode == "antigravity"
             return {
@@ -662,6 +665,9 @@ async def test_image_selection_advances_usage_before_reusing_account(monkeypatch
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         def __init__(self):
             self.states = {
                 "first.json": {
@@ -740,6 +746,9 @@ async def test_image_selection_refreshes_after_cross_worker_claim_conflict(
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         def __init__(self):
             self.states = {
                 "contended.json": {
@@ -813,6 +822,9 @@ async def test_explicit_image_request_uses_image_pool_for_non_image_model_alias(
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         async def get_all_credential_states(self, mode):
             return {
                 "ultra.json": {
@@ -861,6 +873,9 @@ async def test_image_credential_selection_reserves_distinct_accounts_until_relea
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         async def get_all_credential_states(self, mode):
             return {
                 "pro.json": {
@@ -931,6 +946,9 @@ async def test_image_credential_release_is_token_safe_and_resettable(monkeypatch
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         async def get_all_credential_states(self, mode):
             return {
                 "ultra.json": {
@@ -1001,6 +1019,9 @@ async def test_image_credential_selection_prunes_removed_account_health(monkeypa
     from src.credential_manager import CredentialManager
 
     class FakeAdapter:
+        async def health_ready_credential_names(self, policy):
+            return set(await self.get_all_credential_states("antigravity"))
+
         async def get_all_credential_states(self, mode):
             return {
                 "current.json": {

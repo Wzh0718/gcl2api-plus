@@ -1244,6 +1244,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         model_name: Optional[str] = None,
         exclude_filenames: Optional[List[str]] = None,
         credential_name: Optional[str] = None,
+        health_policy=None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """
         获取一个可用凭证（负载均衡）
@@ -1280,6 +1281,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     excluded=excluded,
                     candidate_limit=candidate_limit,
                     credential_name=credential_name,
+                    health_policy=health_policy,
                 )
 
             async with sqlite_connect(self._db_path) as db:
@@ -1326,12 +1328,14 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         excluded: List[str],
         candidate_limit: int,
         credential_name: Optional[str] = None,
+        health_policy=None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """Atomically take an eligible account from the queue and move it to the tail."""
         selection_usage_resume_at.set(0)
         attempted = set(excluded)
         for _ in range(candidate_limit):
-            row, resume_at, dormant = await self._claim_next(model_name, attempted, credential_name)
+            options = {"health_policy": health_policy} if health_policy is not None else {}
+            row, resume_at, dormant = await self._claim_next(model_name, attempted, credential_name, **options)
             if row is None:
                 selection_usage_resume_at.set(resume_at)
                 return None
@@ -1366,10 +1370,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return filename, credential_data
         return None
 
-    async def _claim_next(self, model_name, attempted, credential_name):
+    async def _claim_next(self, model_name, attempted, credential_name, health_policy=None):
         async with measured_db_lock(self._selection_lock, "selection_lock_wait", "selection_locked_work"):
             worker = asyncio.create_task(asyncio.to_thread(
-                self._claim_antigravity_row, model_name, attempted, credential_name
+                self._claim_antigravity_row, model_name, attempted, credential_name, health_policy
             ))
             try:
                 return await asyncio.shield(worker)
@@ -1410,7 +1414,7 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
     _ADVANCE_TURN = _ADVANCE_TURN_SQL.format(target="?")
 
     @staticmethod
-    def _claim_filter(model_name, attempted, credential_name, current_time, *, include_held=False):
+    def _claim_filter(model_name, attempted, credential_name, current_time, *, include_held=False, health_policy=None):
         params: List[Any] = [current_time, current_time]
         where_sql = """disabled = 0
             AND (
@@ -1449,6 +1453,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
               ))
         )"""
         params.extend((current_time - EXCLUSIVE_PROBE_RETRY_SECONDS, current_time))
+        if health_policy is not None:
+            predicate, health_params = SQLiteManager._health_ready_filter(health_policy, current_time)
+            where_sql += f" AND ({predicate})"
+            params.extend(health_params)
         if credential_name:
             where_sql += " AND filename = ?"
             params.append(credential_name)
@@ -1463,11 +1471,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
 
         return where_sql, [*params, current_time]
 
-    def _claim_antigravity_row(self, model_name, attempted, credential_name):
+    def _claim_antigravity_row(self, model_name, attempted, credential_name, health_policy=None):
         from src.antigravity_pacing import is_dormant
 
         now = time.time()
-        where, params = self._claim_filter(model_name, attempted, credential_name, now)
+        where, params = self._claim_filter(model_name, attempted, credential_name, now, health_policy=health_policy)
         cutoff = now - ROUTING_WINDOW_SECONDS
         with self._claim_transaction() as db:
             row = db.execute(self._SELECT_CREDENTIAL.format(where_sql=where), params).fetchone()
@@ -2022,21 +2030,102 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                                bound_proxy_url=None, bound_proxy_node_name=None)
         return network
 
+    @staticmethod
+    def _health_ready_filter(policy, now):
+        """SQL equivalent of the cached health gate; never performs network I/O.
+
+        Opt in only for inference claims. Administrative callers can still claim
+        unchecked accounts. The tuple is (enabled, ttl_seconds, echo_configured).
+        """
+        enabled, ttl, echo = policy
+        exclusive = """(fixed_proxy_ip IS NOT NULL OR EXISTS (
+            SELECT 1 FROM proxy_groups g WHERE g.id = proxy_group_id
+            AND g.exclusive_assignment = 1))"""
+        read_failure = """(h.eligibility_status = 'error'
+            AND h.binding_status IN ('unchecked', 'proxy_failed')
+            AND h.eligibility_reason IN (
+                'IP echo read failed: ReadError', 'IP echo read failed: ReadTimeout',
+                'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout')
+            AND COALESCE(h.last_403_category, '') = ''
+            AND bound_proxy_node_id IS NOT NULL)"""
+        sql = f"""((? = 0 AND NOT {exclusive}) OR EXISTS (
+            SELECT 1 FROM antigravity_account_health h
+            WHERE h.credential_name = antigravity_credentials.filename
+              AND h.eligibility_checked_at BETWEEN ? AND ?
+              AND h.binding_status <> 'proxy_drift'
+              AND h.eligibility_status <> 'account_blocked'
+              AND (NOT {exclusive} OR (? = 1
+                AND (h.eligibility_status NOT IN ('geo_blocked', 'error')
+                     OR h.eligibility_checked_at >= ?)
+                AND ((h.binding_status = 'healthy' AND h.eligibility_status = 'eligible'
+                      AND (fixed_proxy_ip IS NULL OR fixed_proxy_ip = h.egress_ip))
+                     OR {read_failure})))
+        ))"""
+        return sql, [int(enabled), now - max(int(ttl), 0), now, int(echo),
+                     now - min(max(int(ttl), 0), EXCLUSIVE_PROBE_RETRY_SECONDS)]
+
+    async def health_ready_credential_names(self, policy):
+        self._ensure_initialized()
+        where, params = self._health_ready_filter(policy, time.time())
+        async with sqlite_connect(self._db_path, single_select=True) as db:
+            async with db.execute(
+                f"SELECT filename FROM antigravity_credentials WHERE disabled = 0 AND ({where})", params,
+            ) as cursor:
+                return {row[0] for row in await cursor.fetchall()}
+
+    async def health_refresh_candidates(self, policy, *, limit=256, credential_name=None):
+        """Persisted timestamps are the durable queue; oldest checks run first."""
+        self._ensure_initialized()
+        enabled, ttl, echo = policy
+        # No echo endpoint can establish health; don't repeatedly hit upstream.
+        if not echo:
+            return []
+        now = time.time()
+        # Reserve a third of the TTL (up to ten minutes) for rate-limited probes.
+        interval = max(1, int(ttl) - min(600, max(1, int(ttl) // 3)))
+        name_filter = " AND a.filename = ?" if credential_name is not None else ""
+        params = [int(enabled), now, now, min(interval, EXCLUSIVE_PROBE_RETRY_SECONDS), interval]
+        if credential_name is not None:
+            params.append(credential_name)
+        params.append(limit)
+        async with sqlite_connect(self._db_path, single_select=True) as db:
+            async with db.execute(f"""
+                SELECT a.filename FROM antigravity_credentials a
+                LEFT JOIN antigravity_account_health h ON h.credential_name = a.filename
+                LEFT JOIN proxy_groups g ON g.id = a.proxy_group_id
+                WHERE a.disabled = 0
+                  AND (? = 1 OR a.fixed_proxy_ip IS NOT NULL OR g.exclusive_assignment = 1)
+                  AND NOT EXISTS (SELECT 1 FROM antigravity_warmup_accounts w
+                      WHERE w.credential_name = a.filename AND w.status IN ('paused', 'account_forbidden'))
+                  AND (h.eligibility_checked_at IS NULL OR h.eligibility_checked_at > ?
+                       OR h.eligibility_checked_at <= ? - CASE
+                           WHEN h.eligibility_status IN ('geo_blocked', 'error')
+                             OR h.binding_status <> 'healthy'
+                           THEN ? ELSE ? END)
+                {name_filter}
+                ORDER BY COALESCE(h.eligibility_checked_at, 0), a.filename LIMIT ?
+            """, params) as cursor:
+                return [row[0] for row in await cursor.fetchall()]
+
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]:
         """Return persisted network/eligibility state for one Antigravity account."""
         self._ensure_initialized()
         filename = os.path.basename(filename)
+        async with sqlite_connect(self._db_path, single_select=True) as db:
+            return await self._read_account_health(db, filename)
+
+    @staticmethod
+    async def _read_account_health(db, filename):
         columns = (
             "credential_name", "egress_ip", "egress_country", "binding_status",
             "eligibility_status", "eligibility_reason", "eligibility_checked_at",
             "last_403_category", "last_403_reason", "last_403_at", "updated_at",
         )
-        async with sqlite_connect(self._db_path, single_select=True) as db:
-            async with db.execute(
-                f"SELECT {', '.join(columns)} FROM antigravity_account_health WHERE credential_name = ?",
-                (filename,),
-            ) as cursor:
-                row = await cursor.fetchone()
+        async with db.execute(
+            f"SELECT {', '.join(columns)} FROM antigravity_account_health WHERE credential_name = ?",
+            (filename,),
+        ) as cursor:
+            row = await cursor.fetchone()
         if row:
             return dict(zip(columns, row))
         return {
@@ -2082,7 +2171,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             return await cursor.fetchone() is not None
 
     async def update_antigravity_account_health(
-        self, filename: str, **updates: Any
+        self, filename: str, *, expected_network=None, expected_revision=None,
+        check_started_at=None, **updates: Any
     ) -> Dict[str, Any]:
         """Persist selected health fields without storing credentials or proxy secrets."""
         self._ensure_initialized()
@@ -2105,17 +2195,42 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         }:
             raise ValueError("Invalid eligibility_status")
 
-        current = await self.get_antigravity_account_health(filename)
-        values = {key: current.get(key) for key in allowed}
-        values.update(updates)
         now = time.time()
         async with sqlite_connect(self._db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row_lock = " FOR UPDATE" if getattr(self, "main_postgres", False) or getattr(self, "main_mysql", False) else ""
             async with db.execute(
-                "SELECT 1 FROM antigravity_credentials WHERE filename = ?",
+                "SELECT 1 FROM antigravity_credentials WHERE filename = ?" + row_lock,
                 (filename,),
             ) as cursor:
                 if not await cursor.fetchone():
                     raise ValueError(f"Antigravity credential not found: {filename}")
+            current = await self._read_account_health(db, filename)
+            if expected_network is not None:
+                from src.credential_revision import REVISION_KEY
+                async with db.execute(
+                    f"SELECT a.credential_data, {self._NETWORK_COLUMNS} "
+                    f"FROM antigravity_credentials a {self._NETWORK_JOINS} WHERE a.filename = ?",
+                    (filename,),
+                ) as cursor:
+                    snapshot = await cursor.fetchone()
+                live = self._resolved_network(self._network_from_row(snapshot[1:]))
+                route_fields = ("proxy_mode", "proxy_url", "proxy_group_id",
+                                "bound_proxy_node_id", "fixed_proxy_ip", "exclusive_assignment")
+                changed = (
+                    live is None
+                    or any(live.get(field) != expected_network.get(field) for field in route_fields)
+                    or json.loads(snapshot[0]).get(REVISION_KEY) != expected_revision
+                    or (check_started_at is not None and any(
+                        (current.get(field) or 0) > check_started_at
+                        for field in ("eligibility_checked_at", "last_403_at")
+                    ))
+                )
+                if changed:
+                    log.info(f"[HEALTH REFRESH] discarded superseded check: credential={filename}")
+                    return current
+            values = {key: current.get(key) for key in allowed}
+            values.update(updates)
             await db.execute(
                 """INSERT INTO antigravity_account_health(
                        credential_name, egress_ip, egress_country, binding_status,

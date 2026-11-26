@@ -253,6 +253,10 @@ class StorageAdapter:
         self._ensure_initialized()
         return await self._backend.get_all_credential_states(mode)
 
+    async def health_ready_credential_names(self, policy):
+        self._ensure_initialized()
+        return await self._backend.health_ready_credential_names(policy)
+
     async def mark_credential_selected(
         self,
         filename: str,

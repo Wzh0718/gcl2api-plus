@@ -242,7 +242,7 @@ async def test_quota_guard_filters_credential_selection(monkeypatch):
 
     class _FakeBackend:
         async def get_next_available_credential(
-            self, mode, model_name, exclude_filenames
+            self, mode, model_name, exclude_filenames, health_policy=None
         ):
             calls.append(set(exclude_filenames))
             if "low-acc.json" in exclude_filenames:

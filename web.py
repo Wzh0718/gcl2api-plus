@@ -143,6 +143,10 @@ async def lifespan(app: FastAPI):
         log.error(f"AGY 原生传输启动失败: {type(e).__name__}")
         raise
 
+    # Health probes run after transport startup and never block inference.
+    from src.antigravity_health_refresh import start_health_refresh
+    await start_health_refresh()
+
     # OAuth回调服务器将在需要时按需启动
 
     # 启动保活服务（未配置URL时自动跳过，零开销）
@@ -205,6 +209,9 @@ async def lifespan(app: FastAPI):
 
     # 清理资源
     log.info("开始关闭 GCLI2API 主服务")
+
+    from src.antigravity_health_refresh import stop_health_refresh
+    await stop_health_refresh()
 
     # 停止保活服务
     from src.dingtalk_alert import flush_status_alerts
