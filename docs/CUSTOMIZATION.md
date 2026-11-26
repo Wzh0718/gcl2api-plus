@@ -180,11 +180,20 @@ Redis 侧状态自愈，没有额外清理任务：
 | --- | --- | --- |
 | `HOST` | 监听地址 | `0.0.0.0` |
 | `PORT` | 监听端口 | `7861` |
-| `WORKERS` | uvicorn worker 进程数（直接运行 `python web.py` 时生效） | `1` |
+| `WORKERS` | Hypercorn worker 进程数（直接运行 `python web.py` 时生效） | `1` |
+| `HTTP_KEEP_ALIVE_TIMEOUT` ★ | HTTP 连接空闲回收秒数；环境变量配置，单/多 worker 均在启动时读取 | `60` |
 | `API_PASSWORD` | 聊天 API 端点密码 | 继承 `PASSWORD`，否则 `pwd` |
 | `PANEL_PASSWORD` | 控制面板登录密码 | 继承 `PASSWORD`，否则 `pwd` |
 | `PASSWORD` | 通用密码，设置后覆盖上面两个专用密码 | `pwd` |
 | `CREDENTIALS_DIR` | SQLite 数据库与凭证目录 | `./creds` |
+
+`HTTP_KEEP_ALIVE_TIMEOUT` 应高于调用方连接池的空闲保留时间。原先服务端和 HTTPX
+连接池默认都是 5 秒，客户端在回收边界附近复用旧连接时可能收到
+`RemoteProtocolError: Server disconnected without sending a response`。服务端默认延长到
+60 秒，让使用默认 5 秒保留时间的客户端先淘汰旧连接。该设置只影响两次请求之间的
+空闲连接，不改变模型请求总超时或流式读取超时；修改后需重启。空值使用默认值，
+非法值、零、负数及无穷值会阻止启动并报告配置错误。更长的空闲时间会增加暂存连接及
+文件描述符占用；显式设为 `5` 并重启可恢复旧回收策略。客户端仍需处理网络中断等连接错误。
 
 ### 代理与上游端点
 
