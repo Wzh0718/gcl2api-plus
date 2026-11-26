@@ -299,6 +299,10 @@ app.add_middleware(
 
 app.add_middleware(RequestContentMiddleware)
 app.add_middleware(RequestTimingMiddleware)
+# 最外层：让来源 IP 在整个请求（含流式响应）期间可用
+from src.client_ip import ClientIpMiddleware
+
+app.add_middleware(ClientIpMiddleware)
 
 
 @app.exception_handler(RemoteImageError)

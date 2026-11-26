@@ -112,6 +112,11 @@ def remote_image_part(url: Any) -> dict[str, Any]:
 
 async def inline_remote_gemini_images(payload: dict[str, Any]) -> None:
     """Resolve HTTP(S) image parts on a copy of the affected Gemini contents."""
+    from src.image_inline_policy import should_inline_remote_images
+
+    if not await should_inline_remote_images():
+        # 未命中内联策略：保持 fileData 透传，由上游自行抓取
+        return
     contents = payload.get("contents") or []
     urls = []
     locations = []

@@ -6822,6 +6822,15 @@ function populateConfigForm() {
     setConfigField('serviceUsageApiUrl', c.service_usage_api_url || '');
     setConfigField('antigravityApiUrl', c.antigravity_api_url || '');
 
+    setConfigField('remoteImageInlineMode', c.remote_image_inline_mode || 'all');
+    setConfigField('remoteImageInlineIps', (c.remote_image_inline_ips || []).join('\n'));
+    const inlineTrustField = document.getElementById('remoteImageInlineTrustForwarded');
+    if (inlineTrustField) {
+        inlineTrustField.checked = Boolean(c.remote_image_inline_trust_forwarded);
+        inlineTrustField.disabled = AppState.envLockedFields.has('remote_image_inline_trust_forwarded');
+        inlineTrustField.classList.toggle('env-locked', inlineTrustField.disabled);
+    }
+
     document.getElementById('autoBanEnabled').checked = Boolean(c.auto_ban_enabled);
     setConfigField('autoBanErrorCodes', (c.auto_ban_error_codes || []).join(','));
     setConfigField('callsPerRotation', c.calls_per_rotation || 10);
@@ -7079,6 +7088,11 @@ async function saveConfig() {
             resource_manager_api_url: getValue('resourceManagerApiUrl'),
             service_usage_api_url: getValue('serviceUsageApiUrl'),
             antigravity_api_url: getValue('antigravityApiUrl'),
+            remote_image_inline_mode: getValue('remoteImageInlineMode') || 'all',
+            remote_image_inline_ips: getValue('remoteImageInlineIps')
+                .split(/[\n,]/).map(line => line.trim()).filter(line => line && !line.startsWith('#')),
+            remote_image_inline_trust_forwarded:
+                document.getElementById('remoteImageInlineTrustForwarded')?.checked ?? false,
             auto_ban_enabled: getChecked('autoBanEnabled'),
             auto_ban_error_codes: getValue('autoBanErrorCodes').split(',')
                 .map(c => parseInt(c.trim())).filter(c => !isNaN(c)),

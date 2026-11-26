@@ -87,9 +87,20 @@ ENV_MAPPINGS = {
     "KEEPALIVE_URL": "keepalive_url",
     "KEEPALIVE_INTERVAL": "keepalive_interval",
     "CALL_RECORDS_RETENTION_DAYS": "call_records_retention_days",
+    "REMOTE_IMAGE_INLINE_MODE": "remote_image_inline_mode",
+    "REMOTE_IMAGE_INLINE_IPS": "remote_image_inline_ips",
+    "REMOTE_IMAGE_INLINE_TRUST_FORWARDED": "remote_image_inline_trust_forwarded",
 }
 
 ENV_MAPPINGS["CALL_CONTENT_CAPTURE_ENABLED"] = "call_content_capture_enabled"
+
+# ====================== 远程图片内联策略 ======================
+# all: 所有第三方 http(s) 图片一律下载后内联（历史默认）
+# ip_list: 仅当请求来源 IP 命中白名单时内联，其余原样透传 fileData
+# off: 一律不内联，全部透传
+REMOTE_IMAGE_INLINE_MODES = ("all", "ip_list", "off")
+DEFAULT_REMOTE_IMAGE_INLINE_MODE = "all"
+MAX_REMOTE_IMAGE_INLINE_IPS = 512
 
 
 # ====================== 配置系统 ======================
@@ -165,6 +176,67 @@ async def get_proxy_config():
     """Get proxy configuration."""
     proxy_url = await get_config_value("proxy", env_var="PROXY")
     return proxy_url if proxy_url else None
+
+
+def _inline_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in REMOTE_IMAGE_INLINE_MODES else DEFAULT_REMOTE_IMAGE_INLINE_MODE
+
+
+def _inline_ips(value: Any) -> list:
+    if isinstance(value, str):
+        items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+    else:
+        return []
+    return [item.strip() for item in items if str(item).strip()]
+
+
+async def get_remote_image_inline_mode() -> str:
+    """Get remote image inline policy mode: all / ip_list / off."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_MODE")
+    if env_value:
+        return _inline_mode(env_value)
+    return _inline_mode(await get_config_value("remote_image_inline_mode"))
+
+
+def get_remote_image_inline_mode_sync() -> str:
+    """Read the inline mode from the loaded config cache (hot path safe)."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_MODE")
+    if env_value:
+        return _inline_mode(env_value)
+    return _inline_mode(_get_cached_config("remote_image_inline_mode"))
+
+
+async def get_remote_image_inline_ips() -> list:
+    """Get the client IP allowlist used by the ip_list inline mode."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_IPS")
+    if env_value:
+        return _inline_ips(env_value)
+    return _inline_ips(await get_config_value("remote_image_inline_ips"))
+
+
+def get_remote_image_inline_ips_sync() -> list:
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_IPS")
+    if env_value:
+        return _inline_ips(env_value)
+    return _inline_ips(_get_cached_config("remote_image_inline_ips"))
+
+
+async def get_remote_image_inline_trust_forwarded() -> bool:
+    """Trust X-Forwarded-For / X-Real-IP when resolving the client IP."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_TRUST_FORWARDED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("remote_image_inline_trust_forwarded", False))
+
+
+def get_remote_image_inline_trust_forwarded_sync() -> bool:
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_TRUST_FORWARDED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(_get_cached_config("remote_image_inline_trust_forwarded", False))
 
 
 async def get_auto_ban_enabled() -> bool:
