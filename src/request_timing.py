@@ -35,6 +35,9 @@ class RequestTiming:
     # 避免「先 INSERT 再 UPDATE 同一行」两次事务（见 src/call_monitor.py）。
     call_row: dict | None = None
     call_details: dict | None = None
+    # 响应体已经发给客户端之后才需要做的收尾工作（计费等），
+    # 由中间件在 send 完成之后执行，避免挡在客户端拿到响应的关键路径上。
+    post_send_callbacks: list = field(default_factory=list)
 
     def details(self):
         details = {"stages": dict(self.stages), "parameters": dict(self.parameters),
@@ -175,6 +178,29 @@ _STAGE_NAMES = frozenset({"body_first_byte", "body_received", "auth_started", "a
                           "billing_started", "billing_saved", "billing_enter", "recorder_lookup",
                           "post_enter", "post_exit", "usage_confirmed", "credential_saved",
                           "monitor_started", "monitor_finished"})
+
+
+def defer_after_send(callback) -> bool:
+    """把一段异步收尾工作推迟到响应发完之后执行。
+
+    返回 False 表示当前没有计时上下文（例如测试直接调用 handler），调用方
+    应自行 await，保持原有语义。
+    """
+    state = request_timing.get()
+    if state is None:
+        return False
+    state.post_send_callbacks.append(callback)
+    return True
+
+
+async def _run_post_send_callbacks(state: RequestTiming) -> None:
+    callbacks = state.post_send_callbacks
+    state.post_send_callbacks = []
+    for callback in callbacks:
+        try:
+            await callback()
+        except Exception as exc:  # noqa: BLE001 - 收尾失败不能影响连接收尾
+            log.warning(f'[REQUEST TIMING] post-send callback failed: {type(exc).__name__}')
 
 
 def mark_stage(name, *, replace=False):
@@ -380,6 +406,7 @@ class RequestTimingMiddleware:
             _inflight_requests -= 1
             if timing_registered:
                 _unregister_timing_state(state)
+            await _run_post_send_callbacks(state)
             request_timing.reset(token)
             _log_slow_request(state)
             # Finish telemetry inline after the response, including on disconnect.

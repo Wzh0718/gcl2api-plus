@@ -46,6 +46,7 @@ from src.antigravity_error_classifier import (
     MODEL_CAPACITY_MARKER,
     Antigravity403Decision,
     classify_antigravity_403,
+    classify_antigravity_503,
     is_model_capacity_exhausted,
 )
 from src.antigravity_model_catalog import UnknownAntigravityModelError
@@ -790,6 +791,28 @@ def _image_capacity_retry_delay_seconds(response: Any) -> float:
     return IMAGE_CAPACITY_DEFAULT_RETRY_DELAY_SECONDS
 
 
+def _should_retry_same_account(
+    *,
+    requested: bool,
+    already_retried: bool,
+    retry_enabled: bool,
+    attempt: int,
+    max_retries: int,
+) -> bool:
+    """本次上游失败是否值得「原号再试一次」。
+
+    ``requested`` 由 503 分类决定（只有模型级容量为 True）。这里再压一层预算：
+    每个请求只给一次。线上实测 536 次容量 503 分布在 536 个请求上，没有请求
+    撞到第二次，第二次之后的尝试救不回任何人，只放大延迟和上游调用。
+    重试不 sleep：下一次尝试的命中率和几秒后一样高，等待只增加延迟。
+    """
+    if not requested or already_retried:
+        return False
+    if not retry_enabled or attempt >= max_retries:
+        return False
+    return True
+
+
 async def _record_image_account_outcome(
     credential_name: str,
     *,
@@ -1426,10 +1449,12 @@ async def _stream_request_inner(
         return True
 
     attempt = 0
+    capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉（每请求一次）
     while attempt <= max_retries:
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
         same_account_retry = False  # 地区拒绝换 IP 后，用同一账号重试
+        capacity_same_account_retry = False  # 本次同号重试是否由容量 503 触发
         usage_attempt = None
         usage_metadata = upstream_model = None
         usage_remainder = ""
@@ -1502,23 +1527,33 @@ async def _stream_request_inner(
                         error_body = ""
                     _mark_upstream_429(chunk, error_body, request_id=request_id, credential_name=current_file,
                                        model=model_name, upstream_request=final_payload)
-                    if status_code == 503 and not is_model_capacity_exhausted(
-                        status_code, error_body
-                    ):
-                        # 只有账号级 503 才冷藏账号；模型级容量耗尽
-                        # （MODEL_CAPACITY_EXHAUSTED）由模型冷却与 retryDelay 处理。
-                        # 不依赖重试开关、重试次数或后续分支，避免「503 了但账号还在轮转」。
+                    # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
+                    upstream_503 = (
+                        classify_antigravity_503(status_code, error_body)
+                        if status_code == 503
+                        else None
+                    )
+                    if upstream_503 is not None and upstream_503.hold_account:
+                        # 账号级/未知 503 才冷藏账号；模型级容量是上游全局窗口，
+                        # 不归咎账号，也不依赖重试开关与后续分支。
                         await hold_transient_account(
                             credential_manager, status_code, current_file
                         )
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                        log.warning(f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}")
+                        log.warning(
+                            f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), "
+                            f"凭证: {current_file}, "
+                            f"分类: {upstream_503.describe() if upstream_503 else '-'}, "
+                            f"traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}"
+                        )
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
-                        if status_code == 429 or status_code == 503:
+                        if status_code == 429 or (
+                            upstream_503 is not None and upstream_503.write_cooldown
+                        ):
                             cooldown_until = await _resolve_error_cooldown(
                                 status_code, error_body, current_file,
                                 headers=getattr(chunk, "headers", None),
@@ -1548,6 +1583,45 @@ async def _stream_request_inner(
                             upstream_seconds=time.monotonic() - attempt_started,
                             gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None
                         )
+
+                        # 只有「模型级容量」这一类允许原号再试一次：
+                        # 不写 model_cooldowns（cooldown_until 保持 None）、不 sleep，
+                        # 再失败就透传上游 503。
+                        if _should_retry_same_account(
+                            requested=(
+                                upstream_503 is not None
+                                and upstream_503.retry_same_account
+                            ),
+                            already_retried=capacity_retry_used,
+                            retry_enabled=retry_config["retry_enabled"],
+                            attempt=attempt,
+                            max_retries=max_retries,
+                        ):
+                            capacity_retry_used = True
+                            log.warning(
+                                "[ANTIGRAVITY STREAM] 503 分类=模型级容量耗尽，"
+                                "立即原号重试一次: "
+                                f"{current_file} / {model_name}, "
+                                f"{upstream_503.describe() if upstream_503 else '-'}"
+                            )
+                            need_retry = True
+                            same_account_retry = True
+                            capacity_same_account_retry = True
+                            break
+
+                        if upstream_503 is not None and upstream_503.retry_same_account:
+                            # 容量型 503 的一次原号重试已经用掉：不再换号重投，
+                            # 直接把上游 503（含 RetryInfo）交给客户端。
+                            log.error(
+                                "[ANTIGRAVITY STREAM] 模型级容量 503 已用掉一次原号重试，"
+                                f"透传上游错误: {current_file} / {model_name}"
+                            )
+                            await record_billing_once(False, response=chunk)
+                            await _alert_all_accounts_unavailable_if_needed(
+                                model_name, attempted_credentials
+                            )
+                            yield chunk
+                            return
 
                         if (
                             classified_403 is not None
@@ -1684,10 +1758,14 @@ async def _stream_request_inner(
             if need_retry:
                 if same_account_retry:
                     same_account_retry = False
-                    log.warning(
-                        "[ANTIGRAVITY STREAM] 代理绑定故障已修复，用同一账号重试: "
-                        f"{current_file} / {model_name}"
-                    )
+                    if capacity_same_account_retry:
+                        # 决策处已打印过原因，这里不再重复。
+                        capacity_same_account_retry = False
+                    else:
+                        log.warning(
+                            "[ANTIGRAVITY STREAM] 代理绑定故障已修复，用同一账号重试: "
+                            f"{current_file} / {model_name}"
+                        )
                     attempt += 1
                     continue
 
@@ -2290,7 +2368,12 @@ async def non_stream_request(
 
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
-    from src.request_timing import database_timing_scope, mark_stage, measure_phase
+    from src.request_timing import (
+        database_timing_scope,
+        defer_after_send,
+        mark_stage,
+        measure_phase,
+    )
     mark_stage("api_started")
     gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
 
@@ -2359,6 +2442,7 @@ async def non_stream_request(
     usage_metadata = None
     upstream_model = None  # 上游响应 modelVersion：真实执行模型
     billing_recorded = False
+    billing_gateway_seconds: Optional[float] = None  # 响应成型时的网关耗时（计费后置仍用它）
 
     async def record_billing_once(
         success: bool,
@@ -2366,13 +2450,20 @@ async def non_stream_request(
         status_code: Optional[int] = None,
         *, response=None,
     ):
-        nonlocal billing_recorded, usage_metadata, upstream_model
+        nonlocal billing_recorded, usage_metadata, upstream_model, billing_gateway_seconds
         if billing_recorded:
             return
         billing_recorded = True
         if response_payload is not None:
             usage_metadata = extract_usage_metadata(response_payload) or usage_metadata
             upstream_model = extract_model_version(response_payload) or upstream_model
+        # 后置执行时（响应已发出）仍按「响应成型那一刻」的网关耗时入账，
+        # 不能把发送与写库的时间算进 gateway_seconds。
+        gateway_elapsed = (
+            billing_gateway_seconds
+            if billing_gateway_seconds is not None
+            else time.monotonic() - gateway_started
+        )
         try:
             recorder = await get_billing_recorder()
             await recorder.record(
@@ -2380,7 +2471,7 @@ async def non_stream_request(
                 usage_metadata=usage_metadata,
                 success=success,
                 api_key_id=api_key_id,
-                gateway_seconds=time.monotonic() - gateway_started,
+                gateway_seconds=gateway_elapsed,
                 upstream_model=upstream_model,
                 request_model=original_model,
             )
@@ -2448,6 +2539,7 @@ async def non_stream_request(
         return True
 
     attempt = 0
+    capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉
     while attempt <= max_retries:
         need_retry = False  # 标记是否需要重试
 
@@ -2545,7 +2637,24 @@ async def non_stream_request(
                     )
                     mark_stage("credential_saved")
                     mark_stage("billing_enter")
-                    await record_billing_once(True, _safe_response_json(response) if response.content else None, status_code=200)
+                    # 计费写库（PG）实测 p50 5.8ms / p90 12.4ms / p99 33ms，
+                    # 原来挡在响应之前：上游末包 1.864s，客户端 1.900s 才收到。
+                    # 改成「响应体发出之后再写」：客户端不再为这笔写库等待，
+                    # gateway_seconds 用冻结值保持原有口径。没有计时上下文时
+                    # （直接调用本函数）退回同步写入。
+                    billing_gateway_seconds = time.monotonic() - gateway_started
+                    billing_payload = (
+                        _safe_response_json(response) if response.content else None
+                    )
+
+                    async def _record_billing_after_send() -> None:
+                        await record_billing_once(True, billing_payload, status_code=200)
+
+                    deferred = defer_after_send(_record_billing_after_send)
+                    if deferred:
+                        mark_stage("billing_deferred")
+                    else:
+                        await record_billing_once(True, billing_payload, status_code=200)
                     downstream = Response(
                         content=response.content,
                         status_code=200,
@@ -2574,20 +2683,31 @@ async def non_stream_request(
                     pass
                 _mark_upstream_429(last_error_response, error_text, request_id=request_id,
                                    credential_name=current_file, model=model_name, upstream_request=final_payload)
-                if status_code == 503 and not is_model_capacity_exhausted(
-                    status_code, error_text
-                ):
-                    # 与流式路径一致：账号级 503 先冷藏，模型级容量耗尽不归咎账号。
+                # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
+                upstream_503 = (
+                    classify_antigravity_503(status_code, error_text)
+                    if status_code == 503
+                    else None
+                )
+                if upstream_503 is not None and upstream_503.hold_account:
+                    # 与流式路径一致：账号级/未知 503 先冷藏，模型级容量不归咎账号。
                     await hold_transient_account(
                         credential_manager, status_code, current_file
                     )
 
                 if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
-                    log.warning(f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), 凭证: {current_file}, traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}")
+                    log.warning(
+                        f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), "
+                        f"凭证: {current_file}, "
+                        f"分类: {upstream_503.describe() if upstream_503 else '-'}, "
+                        f"traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}"
+                    )
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
-                    if status_code == 429 or status_code == 503:
+                    if status_code == 429 or (
+                        upstream_503 is not None and upstream_503.write_cooldown
+                    ):
                         cooldown_until = await _resolve_error_cooldown(
                             status_code, error_text, current_file,
                             headers=getattr(response, "headers", None),
@@ -2617,6 +2737,42 @@ async def non_stream_request(
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None
                     )
+
+                    # 只有「模型级容量」这一类允许原号再试一次：
+                    # 不写 model_cooldowns（cooldown_until 保持 None）、不 sleep，
+                    # 再失败就透传上游 503。
+                    if _should_retry_same_account(
+                        requested=(
+                            upstream_503 is not None
+                            and upstream_503.retry_same_account
+                        ),
+                        already_retried=capacity_retry_used,
+                        retry_enabled=retry_config["retry_enabled"],
+                        attempt=attempt,
+                        max_retries=max_retries,
+                    ):
+                        capacity_retry_used = True
+                        log.warning(
+                            "[ANTIGRAVITY] 503 分类=模型级容量耗尽，"
+                            "立即原号重试一次: "
+                            f"{current_file} / {model_name}, "
+                            f"{upstream_503.describe() if upstream_503 else '-'}"
+                        )
+                        attempt += 1
+                        continue
+
+                    if upstream_503 is not None and upstream_503.retry_same_account:
+                        # 容量型 503 的一次原号重试已经用掉：不再换号重投，
+                        # 直接把上游 503（含 RetryInfo）交给客户端。
+                        log.error(
+                            "[ANTIGRAVITY] 模型级容量 503 已用掉一次原号重试，"
+                            f"透传上游错误: {current_file} / {model_name}"
+                        )
+                        await record_billing_once(False, response=last_error_response)
+                        await _alert_all_accounts_unavailable_if_needed(
+                            model_name, attempted_credentials
+                        )
+                        return last_error_response
 
                     if (
                         classified_403 is not None
