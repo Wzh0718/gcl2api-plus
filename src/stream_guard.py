@@ -8,11 +8,28 @@ body_iterator；消费方 `async for` 提前 break/return 时也不会关闭被�
 本模块提供显式关闭的原语，确保任意一层退出时都能级联关闭整条流式链路。
 """
 
+import asyncio
 from typing import Any, AsyncIterator
 
 from fastapi.responses import StreamingResponse
 
 from log import log
+
+
+async def finish_cleanup(awaitable):
+    """Finish cleanup once, deferring caller cancellation until it has completed."""
+    task = asyncio.ensure_future(awaitable)
+    cancelled = None
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        return task.result()
+    finally:
+        if cancelled is not None:
+            raise cancelled
 
 
 async def aclose_quietly(iterator: Any, context: str = "") -> None:
@@ -21,7 +38,7 @@ async def aclose_quietly(iterator: Any, context: str = "") -> None:
     if not callable(aclose):
         return
     try:
-        await aclose()
+        await finish_cleanup(aclose())
     except Exception as e:
         log.debug(f"关闭流式迭代器失败 {context}: {e}")
 
@@ -41,6 +58,27 @@ class ClosingStreamingResponse(StreamingResponse):
     覆盖正常结束、客户端断连导致的发送异常、任务取消等所有路径，
     保证底层上游连接不依赖 GC 即可释放。
     """
+
+    async def __call__(self, scope, receive, send) -> None:
+        spec_version = tuple(map(int, scope.get('asgi', {}).get('spec_version', '2.0').split('.')))
+        if scope['type'] != 'http' or spec_version >= (2, 4):
+            return await super().__call__(scope, receive, send)
+        # Older ASGI servers need a disconnect listener. Cancel each sibling once:
+        # AnyIO's repeated cancellation can interrupt an upstream iterator's async
+        # finally block before its socket/lease has been released.
+        tasks = [asyncio.create_task(self.stream_response(send)),
+                 asyncio.create_task(self.listen_for_disconnect(receive))]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await finish_cleanup(asyncio.gather(*tasks, return_exceptions=True))
+        if self.background is not None:
+            await self.background()
 
     async def stream_response(self, send) -> None:
         try:

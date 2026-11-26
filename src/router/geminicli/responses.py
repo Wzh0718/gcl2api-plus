@@ -45,7 +45,7 @@ from src.converter.responses_api import (
 from src.router.geminicli.openai import chat_completions
 
 # 本地模块 - 流保护
-from src.stream_guard import aclose_quietly
+from src.stream_guard import ClosingStreamingResponse, aclose_quietly
 
 
 # ==================== 路由器初始化 ====================
@@ -186,7 +186,7 @@ async def responses(
 
     # ========== 流式 ==========
     translator = ResponsesStreamTranslator(model=chat_dict["model"])
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         _translate_chat_stream(result.body_iterator, translator),
         media_type="text/event-stream",
     )

@@ -3,6 +3,7 @@ Vertex AI Router - Handles native Gemini format API requests via anonymous Verte
 通过匿名 Vertex AI 端点处理 Gemini 格式请求
 """
 
+from contextlib import aclosing
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 
@@ -72,12 +73,13 @@ async def stream_generate_content(
             "request": normalized_req,
         }
 
-        async for chunk in stream_request(body=api_request, native=False):
-            if isinstance(chunk, Response):
-                yield chunk
-                return
-            if isinstance(chunk, (str, bytes)):
-                yield chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
+        async with aclosing(stream_request(body=api_request, native=False)) as chunks:
+            async for chunk in chunks:
+                if isinstance(chunk, Response):
+                    yield chunk
+                    return
+                if isinstance(chunk, (str, bytes)):
+                    yield chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
 
     return await build_streaming_response_or_error(stream_generator())
 

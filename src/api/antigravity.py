@@ -39,7 +39,7 @@ from src.httpx_client import (
     stream_post_async,
     post_async,
 )
-from src.stream_guard import aclose_quietly
+from src.stream_guard import aclose_quietly, finish_cleanup
 from src.models import Model, model_to_dict
 from src.redis_config import create_redis_client_from_env, redis_socket_timeouts
 from src.antigravity_error_classifier import (
@@ -1786,16 +1786,20 @@ async def _stream_request_inner(
         finally:
             if admission is not None:
                 admission.close()
-            if usage_attempt:
-                if native and usage_remainder:
-                    consume_usage_chunk("\n")
-                await usage_attempt.confirm(usage_metadata)
-            # 只有实际获取成功才归还，背压异常不能误释放其他请求的槽位
-            if slot_acquired:
-                release_credential_slot(slot_holder)
-                await release_dynamic_warmup_slot(slot_holder)
-            # 无论流被完整消费，还是因重试/返回/异常被中途放弃，都显式关闭上游流
-            await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
+
+            try:
+                if usage_attempt:
+                    if native and usage_remainder:
+                        consume_usage_chunk("\n")
+                    await finish_cleanup(usage_attempt.confirm(usage_metadata))
+            finally:
+                try:
+                    # Release synchronous ownership in the task that acquired it.
+                    if slot_acquired:
+                        release_credential_slot(slot_holder)
+                        await release_dynamic_warmup_slot(slot_holder)
+                finally:
+                    await aclose_quietly(stream, "[ANTIGRAVITY STREAM]")
 
     # 所有重试均已耗尽（while 循环正常结束），返回最后记录的错误
     log.error("[ANTIGRAVITY STREAM] 所有重试均失败")
@@ -1842,9 +1846,9 @@ class _ImageCredentialLeaseTracker:
         self._credential_name = None
         self._lease_id = None
         if credential_name and lease_id:
-            await credential_manager.release_image_credential(
+            await finish_cleanup(credential_manager.release_image_credential(
                 credential_name, lease_id
-            )
+            ))
 
 
 @bind_claude_stream
