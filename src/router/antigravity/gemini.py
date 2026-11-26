@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 # 标准库
 import asyncio
+from contextlib import aclosing
 import json
 
 # 第三方库
@@ -282,6 +283,7 @@ async def stream_generate_content(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(first_attempt_stream, "prefetch-error")
             yield first_chunk
             return
 
@@ -375,56 +377,58 @@ async def stream_generate_content(
             return
 
         if isinstance(first_chunk, Response):
+            await aclose_quietly(stream_gen, "prefetch-error")
             yield first_chunk
             return
 
         # 展开 response 包装
-        async for chunk in prepend_async_item(first_chunk, stream_gen):
-            # 检查是否是Response对象（错误情况）
-            if isinstance(chunk, Response):
-                # 将Response转换为SSE格式的错误消息
-                try:
-                    error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
-                    error_json = json.loads(error_content.decode('utf-8'))
-                except Exception:
-                    error_json = {"error": {"code": chunk.status_code, "message": "upstream error", "status": "ERROR"}}
-                log.error(f"[ANTIGRAVITY STREAM] 返回错误给客户端: status={chunk.status_code}, error={str(error_json)[:200]}")
-                yield f"data: {json.dumps(error_json)}\n\n".encode('utf-8')
-                yield b"data: [DONE]\n\n"
-                return
-
-            # 处理SSE格式的chunk
-            if isinstance(chunk, (str, bytes)):
-                chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
-
-                # 解析并展开 response 包装
-                if chunk_str.startswith("data: "):
-                    json_str = chunk_str[6:].strip()
-
-                    # 跳过 [DONE] 标记
-                    if json_str == "[DONE]":
-                        yield chunk
-                        continue
-
+        async with aclosing(prepend_async_item(first_chunk, stream_gen)) as chunks:
+            async for chunk in chunks:
+                # 检查是否是Response对象（错误情况）
+                if isinstance(chunk, Response):
+                    # 将Response转换为SSE格式的错误消息
                     try:
-                        # 解析JSON
-                        data = json.loads(json_str)
+                        error_content = chunk.body if isinstance(chunk.body, bytes) else (chunk.body or b'').encode('utf-8')
+                        error_json = json.loads(error_content.decode('utf-8'))
+                    except Exception:
+                        error_json = {"error": {"code": chunk.status_code, "message": "upstream error", "status": "ERROR"}}
+                    log.error(f"[ANTIGRAVITY STREAM] 返回错误给客户端: status={chunk.status_code}, error={str(error_json)[:200]}")
+                    yield f"data: {json.dumps(error_json)}\n\n".encode('utf-8')
+                    yield b"data: [DONE]\n\n"
+                    return
 
-                        # 展开 response 包装
-                        if "response" in data and "candidates" not in data:
-                            log.debug(f"[ANTIGRAVITY] 展开response包装")
-                            unwrapped_data = data["response"]
-                            # 重新构建SSE格式
-                            yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
-                        else:
-                            # 已经是展开的格式，直接返回
+                # 处理SSE格式的chunk
+                if isinstance(chunk, (str, bytes)):
+                    chunk_str = chunk.decode('utf-8') if isinstance(chunk, bytes) else chunk
+
+                    # 解析并展开 response 包装
+                    if chunk_str.startswith("data: "):
+                        json_str = chunk_str[6:].strip()
+
+                        # 跳过 [DONE] 标记
+                        if json_str == "[DONE]":
                             yield chunk
-                    except json.JSONDecodeError:
-                        # JSON解析失败，直接返回原始chunk
+                            continue
+
+                        try:
+                            # 解析JSON
+                            data = json.loads(json_str)
+
+                            # 展开 response 包装
+                            if "response" in data and "candidates" not in data:
+                                log.debug(f"[ANTIGRAVITY] 展开response包装")
+                                unwrapped_data = data["response"]
+                                # 重新构建SSE格式
+                                yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
+                            else:
+                                # 已经是展开的格式，直接返回
+                                yield chunk
+                        except json.JSONDecodeError:
+                            # JSON解析失败，直接返回原始chunk
+                            yield chunk
+                    else:
+                        # 不是SSE格式，直接返回
                         yield chunk
-                else:
-                    # 不是SSE格式，直接返回
-                    yield chunk
 
     # ========== 根据模式选择生成器 ==========
     if use_fake_streaming:

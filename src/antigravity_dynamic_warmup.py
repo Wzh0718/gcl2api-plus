@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from typing import Any, Mapping
 
 from src.storage_adapter import get_storage_adapter
+from src.stream_guard import finish_cleanup
 
 
 DEFAULT_WARMUP_CONFIG: dict[str, Any] = {
@@ -191,7 +192,12 @@ async def release_dynamic_warmup_slot(credential_name: str) -> bool:
     _WARMUP_OUTCOME.set(None)
     if not lease_id:
         return True
-    storage = await get_storage_adapter()
-    if outcome:
-        return await storage._backend.record_antigravity_warmup_result(lease_id, outcome)
-    return await storage._backend.release_antigravity_warmup_lease(lease_id)
+
+    async def release():
+        storage = await get_storage_adapter()
+        if outcome:
+            return await storage._backend.record_antigravity_warmup_result(lease_id, outcome)
+        return await storage._backend.release_antigravity_warmup_lease(lease_id)
+
+    # Clear the caller's context before protecting the asynchronous DB release.
+    return await finish_cleanup(release())

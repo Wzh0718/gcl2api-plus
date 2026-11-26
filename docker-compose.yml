@@ -22,6 +22,7 @@ services:
       # Server configuration
       - PORT=${PORT:-7861}
       - HOST=${HOST:-0.0.0.0}
+      - HTTP_KEEP_ALIVE_TIMEOUT=${HTTP_KEEP_ALIVE_TIMEOUT:-60}
 
       # Optional: Google credentials from environment
       # - GOOGLE_CREDENTIALS=${GOOGLE_CREDENTIALS}
