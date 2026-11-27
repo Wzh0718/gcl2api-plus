@@ -3871,6 +3871,7 @@ function onCallMonitorRangeChange(select) {
 function toggleCallMonitorMask() {
     callMonitorState.mask = !callMonitorState.mask;
     document.getElementById('cmTelemetryDialog')?.close();
+    document.getElementById('cmRequestContentDialog')?.close();
     renderCallMonitor(); // 脱敏是纯前端渲染，直接用缓存数据重绘
 }
 
@@ -4247,9 +4248,35 @@ function _cmRenderGrouped(rows, view) {
     </table></div>`;
 }
 
+function _cmTextRetryCells(row) {
+    const retry = row.request_features?.text_account_retry;
+    if (!retry?.attempts?.length) return null;
+    const labels = {sent: '换号 1 次', no_candidate: '无备选账号', not_sent: '未发送', selection_failed: '选取账号失败'};
+    const label = labels[retry.state] || '未记录';
+    const account = attempt => _cmMask(attempt.user_email || attempt.credential_name);
+    const status = (attempt, index) => index > 0 && retry.state === 'not_sent' ? '未发送'
+        : attempt.status_code == null ? '未收到响应' : _cmStatusCodeChip(attempt.status_code, attempt.rate_limit);
+    const rows = retry.attempts.map((attempt, index) => {
+        const fields = [index ? '备选账号' : '原账号', account(attempt), status(attempt, index)];
+        if (attempt.model) fields.push(`请求模型 ${_cmEscape(attempt.model)}`);
+        if (index > 0 && retry.state === 'sent' && row.upstream_model) fields.push(`响应模型 ${_cmEscape(row.upstream_model)}`);
+        if (attempt.elapsed_ms != null) fields.push(`${_cmEscape(attempt.elapsed_ms)} ms`);
+        if (attempt.rate_limit) fields.push(_cmEscape(_cmRateLimitText(attempt.rate_limit).detail));
+        if (attempt.retry_after) fields.push(`Retry-After: ${_cmEscape(attempt.retry_after)}`);
+        return `<li>${fields.join(' · ')}</li>`;
+    });
+    return {
+        status: retry.attempts.map(status).join(' → '),
+        accounts: retry.state === 'not_sent' && retry.attempts.length > 1
+            ? `${account(retry.attempts[0])} <small>备选 ${account(retry.attempts[1])} 未发送</small>`
+            : `${retry.attempts.map(account).join(' → ')} <small>${label}</small>`,
+        details: `<h4>文本换号 · ${label}</h4><ol>${rows.join('')}</ol>`,
+    };
+}
+
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
-    const available = features.capture_id || features.client || features.upstream || features.rate_limit;
+    const available = features.capture_id || features.client || features.upstream || features.rate_limit || features.text_account_retry;
     if (!available) return '<span class="cm-muted">未采集</span>';
     return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">查看详情</button>`;
 }
@@ -4267,6 +4294,7 @@ async function showCallMonitorContent(index) {
     dialog.innerHTML = `<div class="proxy-dialog-head"><h3 id="cmRequestContentTitle">请求详情</h3><button type="button" data-close class="proxy-dialog-close" aria-label="关闭">×</button></div>
         <p data-request class="telemetry-account"></p>
         <p data-rate-limit class="telemetry-account" hidden></p>
+        <section data-text-retry hidden></section>
         <div data-content aria-live="polite"><p>正在加载请求详情…</p></div>
         <div class="proxy-dialog-actions"><button type="button" data-close class="secondary">关闭</button></div>`;
     const content = dialog.querySelector('[data-content]');
@@ -4275,6 +4303,12 @@ async function showCallMonitorContent(index) {
     dialog.addEventListener('close', () => { controller.abort(); dialog.remove(); }, { once: true });
     document.body.append(dialog);
     dialog.showModal();
+    const retry = record && _cmTextRetryCells(record);
+    if (retry) {
+        const section = dialog.querySelector('[data-text-retry]');
+        section.innerHTML = retry.details;
+        section.hidden = false;
+    }
     if (Number(record?.status_code) === 429) {
         const note = dialog.querySelector('[data-rate-limit]');
         note.textContent = `HTTP 429 · ${_cmRateLimitText(record.request_features?.rate_limit).detail}`;
@@ -4488,6 +4522,7 @@ async function showCallMonitorTelemetry(index) {
 
 function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
+        const retry = _cmTextRetryCells(row);
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         const statusCell = row.success
@@ -4498,13 +4533,13 @@ function _cmRenderRealtime(records) {
             ${_cmModelCell(row)}
             <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
-            <td>${_cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
+            <td>${retry?.status ?? _cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
             <td>${statusCell}</td>
             <td>${_cmLatencyCell(row)}</td>
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${_cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${retry?.accounts ?? _cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
             <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
         </tr>`;
@@ -4553,7 +4588,6 @@ function _cmPaginationBar(total, totalPages, infoText) {
 
 function renderCallMonitor() {
     closeCallMonitorLatency();
-    if (callMonitorState.mask) document.getElementById('cmRequestContentDialog')?.remove();
     const content = document.getElementById('callMonitorContent');
     const data = callMonitorState.lastData;
     if (!content || !data) return;
@@ -6846,7 +6880,8 @@ function populateConfigForm() {
     setConfigField('callsPerRotation', c.calls_per_rotation || 10);
 
     document.getElementById('retry429Enabled').checked = Boolean(c.retry_429_enabled);
-    setConfigField('retry429MaxRetries', c.retry_429_max_retries || 20);
+    setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502]).join(','));
+    setConfigField('retry429MaxRetries', c.retry_429_max_retries ?? 5);
     setConfigField('retry429Interval', c.retry_429_interval || 0.1);
 
     document.getElementById('compatibilityModeEnabled').checked = Boolean(c.compatibility_mode_enabled);
@@ -7115,8 +7150,9 @@ async function saveConfig() {
             auto_ban_error_codes: getValue('autoBanErrorCodes').split(',')
                 .map(c => parseInt(c.trim())).filter(c => !isNaN(c)),
             calls_per_rotation: getInt('callsPerRotation', 10),
+            text_account_retry_status_codes: getValue('textAccountRetryStatusCodes'),
             retry_429_enabled: getChecked('retry429Enabled'),
-            retry_429_max_retries: getInt('retry429MaxRetries', 20),
+            retry_429_max_retries: Number(getValue('retry429MaxRetries', '5')),
             retry_429_interval: getFloat('retry429Interval', 0.1),
             compatibility_mode_enabled: getChecked('compatibilityModeEnabled'),
             return_thoughts_to_frontend: getChecked('returnThoughtsToFrontend'),

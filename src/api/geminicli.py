@@ -30,6 +30,7 @@ from src.httpx_client import (
 from src.stream_guard import aclose_quietly
 
 # 导入共同的基础功能
+from src.api.text_retry import alternate_account, is_image_request, text_retry_decision
 from src.api.utils import (
     handle_error_with_retry,
     get_retry_config,
@@ -180,6 +181,7 @@ async def stream_request(
     retry_config = await get_retry_config()
     max_retries = retry_config["max_retries"]
     retry_interval = retry_config["retry_interval"]
+    text_request = not is_image_request(model_name, body.get("request"))
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
@@ -220,6 +222,9 @@ async def stream_request(
         return True
 
     for attempt in range(max_retries + 1):
+        if attempt > max_retries:
+            break
+        alternate_ready = False
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
 
@@ -235,6 +240,8 @@ async def stream_request(
             async for chunk in stream:
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
+                    if success_recorded and text_request:
+                        max_retries = attempt
                     status_code = chunk.status_code
                     last_error_response = chunk  # 记录最后一次错误
 
@@ -246,7 +253,10 @@ async def stream_request(
                         error_body = ""
 
                     # 如果错误码是429、503或者在禁用码当中，做好记录后进行重试
-                    if _is_retryable_status(status_code, DISABLE_ERROR_CODES):
+                    allow_alternate = text_retry_decision(
+                        retry_config, status_code, image=not text_request
+                    )
+                    if allow_alternate is not None or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                         log.warning(f"[GEMINICLI STREAM] 流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_body[:500] if error_body else '无'}")
 
                         # 解析冷却时间
@@ -258,7 +268,7 @@ async def stream_request(
                                 pass
 
                         # 预热下一个凭证
-                        if next_cred_task is None and attempt < max_retries:
+                        if allow_alternate is None and next_cred_task is None and attempt < max_retries:
                             next_cred_task = asyncio.create_task(
                                 credential_manager.get_valid_credential(
                                     mode="geminicli", model_name=model_name
@@ -275,9 +285,24 @@ async def stream_request(
                         # 检查是否应该重试
                         should_retry = await handle_error_with_retry(
                             credential_manager, status_code, current_file,
-                            retry_config["retry_enabled"], attempt, max_retries,
+                            retry_config["retry_enabled"] and allow_alternate is None, attempt, max_retries,
                             mode="geminicli"
                         )
+
+                        if allow_alternate is not None:
+                            if allow_alternate and attempt == 0 and attempt < max_retries:
+                                max_retries = attempt
+                                candidate = await alternate_account(
+                                    credential_manager, "geminicli", model_name, current_file,
+                                    credential_data, retry_interval,
+                                )
+                                if candidate and apply_cred_result(candidate):
+                                    last_error_response = None
+                                    max_retries = attempt + 1
+                                    alternate_ready = True
+                                    break
+                            yield chunk
+                            return
 
                         if should_retry and attempt < max_retries:
                             need_retry = True
@@ -308,6 +333,9 @@ async def stream_request(
                         log.debug(f"[GEMINICLI STREAM] 开始接收流式响应，模型: {model_name}")
 
                     yield chunk
+
+            if alternate_ready:
+                continue
 
             # 流式请求完成，检查结果
             if success_recorded:
@@ -349,6 +377,8 @@ async def stream_request(
                 continue  # 重试
 
         except Exception as e:
+            if success_recorded and text_request:
+                max_retries = attempt
             log.error(f"[GEMINICLI STREAM] 流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[GEMINICLI STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
@@ -439,6 +469,7 @@ async def non_stream_request(
     retry_config = await get_retry_config()
     max_retries = retry_config["max_retries"]
     retry_interval = retry_config["retry_interval"]
+    text_request = not is_image_request(model_name, body.get("request"))
 
     DISABLE_ERROR_CODES = await get_auto_ban_error_codes()  # 禁用凭证的错误码
     last_error_response = None  # 记录最后一次的错误响应
@@ -479,6 +510,8 @@ async def non_stream_request(
         return True
 
     for attempt in range(max_retries + 1):
+        if attempt > max_retries:
+            break
         try:
             from src.request_capture import bind_capture_credential
             bind_capture_credential(current_file, final_payload, credential_data)
@@ -517,7 +550,10 @@ async def non_stream_request(
                 pass
 
             # 统一处理所有需要重试的错误码（429、503、禁用码）
-            if _is_retryable_status(status_code, DISABLE_ERROR_CODES):
+            allow_alternate = text_retry_decision(
+                retry_config, status_code, image=not text_request
+            )
+            if allow_alternate is not None or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
                 log.warning(f"[NON-STREAM] 非流式请求失败 (status={status_code}), 凭证: {current_file}, 响应: {error_text[:500] if error_text else '无'}")
 
                 # 解析冷却时间
@@ -529,7 +565,7 @@ async def non_stream_request(
                         pass
 
                 # 并行预热下一个凭证,不阻塞当前处理
-                if next_cred_task is None and attempt < max_retries:
+                if allow_alternate is None and next_cred_task is None and attempt < max_retries:
                     next_cred_task = asyncio.create_task(
                         credential_manager.get_valid_credential(
                             mode="geminicli", model_name=model_name
@@ -546,9 +582,22 @@ async def non_stream_request(
                 # 检查是否应该重试（会自动处理禁用逻辑）
                 should_retry = await handle_error_with_retry(
                     credential_manager, status_code, current_file,
-                    retry_config["retry_enabled"], attempt, max_retries,
+                    retry_config["retry_enabled"] and allow_alternate is None, attempt, max_retries,
                     mode="geminicli"
                 )
+
+                if allow_alternate is not None:
+                    if allow_alternate and attempt == 0 and attempt < max_retries:
+                        max_retries = attempt
+                        candidate = await alternate_account(
+                            credential_manager, "geminicli", model_name, current_file,
+                            credential_data, retry_interval,
+                        )
+                        if candidate and apply_cred_result(candidate):
+                            last_error_response = None
+                            max_retries = attempt + 1
+                            continue
+                    return last_error_response
 
                 if should_retry and attempt < max_retries:
                     # 重新获取凭证并重试
