@@ -1329,10 +1329,17 @@
         .api-key-readonly { margin: 12px 0 0; color: #687386; font-size: 11px; }
         .api-key-empty { padding: 24px 12px; border: 1px dashed #cfd8e5; border-radius: 9px; color: #7a8494; background: #f7f9fc; text-align: center; font-size: 12px; }
     </style>
-    <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=config-actions-20261127">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
     <link rel="stylesheet" href="./front/warmup.css?v=warmup-dashboard">
+    <link rel="stylesheet" href="./front/api_keys.css?v=20261127-4">
+    <link rel="stylesheet" href="./front/header.css?v=update-dot-20261127">
+    <link rel="stylesheet" href="./front/billing.css?v=20261127">
+    <link rel="stylesheet" href="./front/studio.css?v=20261127-buttons">
+    <link rel="stylesheet" href="./front/theme.css?v=20261127-dark-audit">
+    <script src="./front/theme.js?v=20261127"></script>
+<link rel="stylesheet" href="./front/daily_trend.css?v=20261127-dialogs">
 </head>
 
 <body>
@@ -1349,49 +1356,46 @@
 
         <!-- 主界面 -->
         <div id="mainSection" class="hidden">
-            <div
-                style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; flex-wrap: wrap; gap: 10px;">
-                <div style="display: flex; flex-direction: column; gap: 6px; flex: 1;">
-                    <h1 style="margin: 0; font-size: 20px;">GCLI2API 移动端控制面板</h1>
-                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                        <span id="versionInfo" style="font-size: 11px; color: #666;">
-                            <span id="versionText">加载中...</span>
-                        </span>
-                        <button onclick="checkForUpdates()" id="checkUpdateBtn"
-                            style="padding: 2px 8px; background-color: #17a2b8; color: white; border: none; border-radius: 3px; font-size: 10px; cursor: pointer; white-space: nowrap;">
-                            检查更新
-                        </button>
-                    </div>
+            <header class="app-header console-header">
+                <div class="app-brand">
+                    <span class="app-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M22 8H12a5 5 0 0 0-5 5v7a5 5 0 0 0 5 5h8a5 5 0 0 0 5-5v-4h-9" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m21 5 4 3-4 3" stroke="#91d9ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <div class="app-brand-wordmark"><h1>GCLI2API <span class="app-brand-tag">PLUS</span></h1><span>API GATEWAY</span></div>
+                    <div class="app-header-context"><span>Antigravity</span><strong>服务控制台</strong></div>
                 </div>
-                <button onclick="logout()"
-                    style="padding: 6px 15px; background-color: #dc3545; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap;">
-                    退出登录
-                </button>
-            </div>
+                <div class="app-header-actions">
+                    <div class="theme-switch" role="group" aria-label="界面主题"><button type="button" class="header-button" data-theme-choice="light" aria-pressed="false" aria-label="浅色主题" title="浅色主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button><button type="button" class="header-button" data-theme-choice="dark" aria-pressed="false" aria-label="深色主题" title="深色主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></svg></button></div>
+                    <a id="versionInfo" class="version-info" href="https://github.com/Wzh0718/gcl2api-plus/packages" target="_blank" rel="noopener noreferrer" aria-label="查看 gcl2api-plus 的 GitHub Packages（新窗口打开）" title="查看仓库 Packages"><span class="version-label">版本</span><span id="versionText">加载中...</span><span aria-hidden="true">↗</span></a>
+                    <button type="button" onclick="checkForUpdates()" id="checkUpdateBtn" class="header-button">检查更新</button>
+                    <span class="header-action-divider" aria-hidden="true"></span>
+                    <button type="button" onclick="logout()" class="header-button header-button-danger"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 4H4v12h4m4-10 4 4-4 4m-5-4h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>退出登录</button>
+                </div>
+            </header>
 
             <!-- 移动端优化的标签页 -->
             <!-- 移动端优化的标签页 -->
             <nav class="tabs" aria-label="控制台导航">
                 <div class="tab-slider"></div>
-                <button type="button" class="tab active" aria-current="page" onclick="switchTab('api-keys', this)">密钥分发</button>
-                <button type="button" class="tab" onclick="switchTab('antigravity', this)">Antigravity认证</button>
-                <button type="button" class="tab" onclick="switchTab('upload', this)">凭证上传</button>
-                <button type="button" class="tab" onclick="switchTab('antigravity-manage', this)">AG凭证</button>
-                <button type="button" class="tab" onclick="switchTab('model-stats', this)">调用统计</button>
-                <button type="button" class="tab" onclick="switchTab('call-monitor', this)">调用监控</button>
-                <button type="button" class="tab" onclick="switchTab('billing', this)">Token计费</button>
-                <button type="button" class="tab" onclick="switchTab('config', this)">配置管理</button>
-                <button type="button" class="tab" onclick="switchTab('logs', this)">实时日志</button>
+                <button type="button" class="tab active" aria-current="page" onclick="switchTab('api-keys', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM10 12l-7 7v2h3v-3h3v-3m6-8h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>密钥分发</button>
+                <button type="button" class="tab" onclick="switchTab('antigravity', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Zm-4 9 3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Antigravity认证</button>
+                <button type="button" class="tab" onclick="switchTab('upload', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v6h16v-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>凭证上传</button>
+                <button type="button" class="tab" onclick="switchTab('antigravity-manage', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h3m-3 5h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>AG凭证</button>
+                <button type="button" class="tab" onclick="switchTab('model-stats', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h17M7 16V9m5 7V4m5 12v-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>调用统计</button>
+                <button type="button" class="tab" onclick="switchTab('call-monitor', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>调用监控</button>
+                <button type="button" class="tab" onclick="switchTab('billing', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Zm4 5h6m-6 4h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Token计费</button>
+                <button type="button" class="tab" onclick="switchTab('config', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-5 0v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>配置管理</button>
+                <button type="button" class="tab" onclick="switchTab('logs', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 6 5 5-5 5m9 1h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>实时日志</button>
                 <button type="button" class="tab" onclick="switchTab('about', this)">项目信息</button>
             </nav>
 
             <div id="api-keysTab" class="tab-content active">
                 <div class="api-key-shell">
                     <header class="api-key-header">
-                        <p class="api-key-kicker">KEY DISTRIBUTION</p>
-                        <h2>密钥分发管理</h2>
-                        <p>创建仅用于 Antigravity 的独立密钥，按金额限制额度，并选择手动或每月自动重置。</p>
+                        <div><p class="api-key-kicker">访问控制 / API KEYS</p><h2>密钥分发</h2>
+                        <p>管理调用方的访问权限、额度与使用策略。</p></div>
+                        <button type="button" class="api-key-primary" onclick="openApiKeyCreate()">＋ 创建密钥</button>
                     </header>
+                    <div id="apiKeyOverview" class="api-key-overview" aria-live="polite"></div>
+                    <div id="apiKeyEndpointsPanel" class="api-key-endpoints">
                 <div
                     style="background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;">
                     <strong>📡 API地址（点击复制）：</strong>
@@ -1419,6 +1423,18 @@
                         (function () { var mo2 = window.location.origin; document.getElementById('mAntOpenaiUrl').textContent = mo2 + '/antigravity/v1'; document.getElementById('mAntClaudeUrl').textContent = mo2 + '/antigravity/v1'; document.getElementById('mAntGeminiUrl').textContent = mo2 + '/antigravity'; })();
                     </script>
                 </div>
+                    </div>
+                    <section class="api-key-directory" aria-label="密钥列表">
+                        <div class="api-key-directory-heading"><h3>全部密钥</h3><button type="button" class="api-key-refresh" onclick="loadApiKeys()">刷新列表</button></div>
+                        <div class="api-key-toolbar">
+                            <label class="api-key-search">搜索密钥<input id="apiKeySearch" type="search" autocomplete="off" spellcheck="false" placeholder="粘贴完整密钥，或搜索名称、前缀、账号、模型…" oninput="filterApiKeys()"></label>
+                            <label>状态<select id="apiKeyStatusFilter" onchange="filterApiKeys()"><option value="">全部状态</option><option value="active">可用</option><option value="disabled">已停用</option><option value="expired">已过期</option><option value="quota_exhausted">额度已用尽</option><option value="revoked">已吊销</option></select></label>
+                            <button type="button" class="api-key-refresh" onclick="clearApiKeyFilters()">清除筛选</button>
+                        </div>
+                        <p id="apiKeyResultCount" class="api-key-result-count" role="status"></p>
+                    <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
+                    </section>
+                    <dialog id="apiKeyCreatePanel" class="api-key-disclosure" aria-label="创建新密钥"><div class="api-key-panel-heading"><h3>创建新密钥</h3><button type="button" class="api-key-refresh" onclick="document.getElementById('apiKeyCreatePanel').close()">关闭</button></div>
                     <form id="apiKeyCreateForm" class="api-key-create" onsubmit="return createApiKey(event)">
                         <label>密钥名称<input id="apiKeyCreateName" type="text" maxlength="100" required placeholder="例如：研发团队"></label>
                         <label>金额额度<input id="apiKeyCreateQuota" type="number" min="0" step="0.01" placeholder="留空为不限额"></label>
@@ -1431,7 +1447,8 @@
                     </form>
                     <p id="apiKeyAccountStatus" role="status" aria-live="polite">Gemini / Claude 共用所选账号。</p>
                     <p id="apiKeyModelPolicyStatus" role="status" aria-live="polite">Key 融合设置优先于账号和全局；模型不限时沿用原有路由。</p>
-                    <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
+                    <p id="apiKeyCreateFeedback" role="alert"></p></dialog>
+
                 </div>
             </div>
 
@@ -1552,6 +1569,7 @@
 
             <!-- Antigravity 认证标签页 -->
             <div id="antigravityTab" class="tab-content">
+                <header class="page-intro"><span class="module-eyebrow">AUTHORIZATION</span><h2>Antigravity 认证</h2><p>完成 Google 授权，连接服务账号。</p></header>
                 <div class="status info" style="margin-bottom: 20px;">
                     <strong>🚀 Antigravity 认证模式</strong>
                     <p style="margin: 10px 0; font-size: 13px;">
@@ -1649,8 +1667,7 @@
 
             <!-- 批量上传标签页 -->
             <div id="uploadTab" class="tab-content">
-                <h3>上传 Antigravity 认证文件</h3>
-                <p>支持批量上传 Antigravity JSON 或 ZIP 凭证文件</p>
+                <header class="page-intro"><span class="module-eyebrow">CREDENTIAL IMPORT</span><h2>凭证上传</h2><p>批量导入 Antigravity JSON 或 ZIP 凭证文件。</p></header>
 
                 <!-- GCLI凭证上传区域 -->
                 <div class="hidden"
@@ -1904,8 +1921,7 @@
 
             <!-- Antigravity凭证管理标签页 -->
             <div id="antigravity-manageTab" class="tab-content">
-                <h3>Antigravity凭证文件管理</h3>
-                <p>管理所有Antigravity认证文件，查看状态和执行操作</p>
+                <header class="page-intro"><span class="module-eyebrow">ACCOUNT POOL</span><h2>凭证管理</h2><p>查看账号状态、额度与网络策略。</p></header>
                 <!-- 检验功能说明 -->
                 <div class="status info" style="margin-bottom: 15px;">
                     <strong>💡 检验功能说明：</strong>
@@ -2085,6 +2101,7 @@
             </div>
 
             <div id="model-statsTab" class="tab-content">
+                <header class="page-intro"><span class="module-eyebrow">ANALYTICS</span><h2>调用统计</h2><p>从调用量、成功率与耗时了解服务使用情况。</p></header>
                 <div class="status info" style="margin-bottom: 15px;">
                     <strong>📊 调用统计：</strong>按账号（邮箱，含套餐级别）和模型统计 Antigravity 调用量与成功率，支持按日期（北京时间）、账号、模型、套餐筛选，图表联动刷新。
                 </div>
@@ -2094,6 +2111,7 @@
             </div>
 
             <div id="call-monitorTab" class="tab-content">
+                <header class="page-intro"><span class="module-eyebrow">OBSERVABILITY</span><h2>调用监控</h2><p>追踪每次请求，查看账号、密钥与模型的实时表现。</p></header>
                 <div class="cm-toolbar">
                     <div class="cm-views" role="tablist" aria-label="调用监控视图切换">
                         <button type="button" class="cm-chip active" data-view="account"
@@ -2152,10 +2170,11 @@
                     <div class="loading" id="configLoading" role="status">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
-                        <div class="card">
+                        <div class="card server-settings">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">服务器配置</h4>
-
-                            <div class="form-group">
+<div class="server-settings-grid">
+<div>
+<div class="form-group">
                                 <label for="host">服务器主机地址:</label>
                                 <input type="text" id="host" placeholder="例如: 0.0.0.0, 127.0.0.1" />
                                 <small
@@ -2190,58 +2209,16 @@
                                 <small
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">（兼容性保留）仅在对应的独立密码未设置时使用；留空表示不设置通用密码</small>
                             </div>
-                        </div>
-                        <div class="card">
-                            <h4 style="margin-top: 0; margin-bottom: 15px;">凭证目录</h4>
-
-                            <div class="form-group">
+<div class="form-group">
                                 <label for="credentialsDir">凭证目录路径:</label>
                                 <input type="text" id="credentialsDir" />
                                 <small
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">存储认证文件的目录路径</small>
                             </div>
-
-
-                        </div>
-                        <div class="card">
-                            <h4 style="margin-top: 0; margin-bottom: 15px;">配置热更新说明</h4>
-
-                            <div
-                                style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 6px; padding: 12px; font-size: 13px; color: #155724; margin-bottom: 10px;">
-                                <strong>🔥 热更新配置（立即生效）：</strong>
-                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                    <li><strong>网络配置：</strong>代理、端点配置、超时、连接数</li>
-                                    <li><strong>API配置：</strong>轮换次数、重试设置、自动封禁</li>
-                                    <li><strong>密码配置：</strong>API密码、面板密码</li>
-                                    <li><strong>功能配置：</strong>抗截断重试次数</li>
-                                </ul>
-                            </div>
-
-                            <div
-                                style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; font-size: 13px; color: #856404; margin-bottom: 10px;">
-                                <strong>🔄 需要重启的配置：</strong>
-                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                    <li><strong>服务器配置：</strong>主机地址、端口号</li>
-                                    <li><strong>文件路径：</strong>凭证目录</li>
-                                </ul>
-                            </div>
-
-                        </div>
-                        </section>
-                        <section id="config-panel-network" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-network" tabindex="0" hidden>
-                        <div class="card">
-                            <h4>全局代理</h4>
-                            <div class="form-group">
-                                <label for="proxy">代理设置:</label>
-                                <input type="text" id="proxy"
-                                    placeholder="例如: http://proxy:11451 或 socks5://proxy:1080" />
-                                <small
-                                    style="display: block; color: #666; font-size: 12px; margin-top: 5px;">HTTP/HTTPS/SOCKS5Endpoint，留空表示不使用代理</small>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <h4>远程图片内联</h4>
-                            <div class="form-group">
+</div>
+<section class="server-image-settings" aria-label="远程图片内联">
+<h5>远程图片内联</h5>
+<div class="form-group">
                                 <label for="remoteImageInlineMode">内联模式:</label>
                                 <select id="remoteImageInlineMode">
                                     <option value="all">全部内联（默认）：所有第三方图片先下载再转发</option>
@@ -2271,45 +2248,34 @@
                                     仅在可信反向代理之后开启；直连暴露时开启会让白名单可被伪造。
                                 </small>
                             </div>
+</section>
+</div>
+</div>
+
+                        <div class="card">
+                            <h4 style="margin-top: 0; margin-bottom: 15px;">配置热更新说明</h4>
+
+                            <div
+                                style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 6px; padding: 12px; font-size: 13px; color: #155724; margin-bottom: 10px;">
+                                <strong>🔥 热更新配置（立即生效）：</strong>
+                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                    <li><strong>网络配置：</strong>代理、端点配置、超时、连接数</li>
+                                    <li><strong>API配置：</strong>轮换次数、重试设置、自动封禁</li>
+                                    <li><strong>密码配置：</strong>API密码、面板密码</li>
+                                    <li><strong>功能配置：</strong>抗截断重试次数</li>
+                                </ul>
+                            </div>
+
+                            <div
+                                style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 12px; font-size: 13px; color: #856404; margin-bottom: 10px;">
+                                <strong>🔄 需要重启的配置：</strong>
+                                <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                    <li><strong>服务器配置：</strong>主机地址、端口号</li>
+                                    <li><strong>文件路径：</strong>凭证目录</li>
+                                </ul>
+                            </div>
+
                         </div>
-<section class="card proxy-console" aria-labelledby="proxyConsoleTitle">
-                            <div class="proxy-console-head">
-                                <div>
-                                    <span class="proxy-kicker">LIVE NETWORK</span>
-                                    <h4 id="proxyConsoleTitle">代理组与实时导入</h4>
-                                    <p>节点保存到 主数据库 后立即用于下一次 Antigravity 请求，无需重启。</p>
-                                </div>
-                                <strong id="proxyGroupSummary" class="proxy-summary">正在读取代理组…</strong>
-                            </div>
-                            <div class="proxy-console-grid">
-                                <div class="proxy-editor-card">
-                                    <h5>创建代理组</h5>
-                                    <label>组名称<input id="proxyGroupName" class="config-input" placeholder="例如：香港主线路"></label>
-                                    <label>说明<input id="proxyGroupDescription" class="config-input" placeholder="可选"></label>
-                                    <label>策略<select id="proxyGroupStrategy" class="config-input"><option value="round_robin">轮询</option><option value="failover">故障优先</option><option value="random">随机</option></select></label>
-                                    <label class="proxy-check"><input id="proxyGroupExclusive" type="checkbox" checked> 一账号一节点，强制独立出口</label>
-                                    <button type="button" class="proxy-primary-action" onclick="createProxyGroup()">创建代理组</button>
-                                </div>
-                                <div class="proxy-editor-card">
-                                    <h5>实时导入节点</h5>
-                                    <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
-                                    <details>
-                                        <summary>从 PX6 API Key 获取已有代理</summary>
-                                        <p class="config-note">填写 PX6 API Key 读取并导入已有代理。保存到期时间后，请求前会检查并在到期前 24 小时切换到有效备用 IP；没有备用时保留当前 IP 至到期，请及时续费或补充节点。续费或购买后需重新导入。Key 仅用于本次读取，不保存。</p>
-                                        <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
-                                        <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
-                                        <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
-                                        <button id="proxyPX6PreviewButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies()">验证并查看已有 IP</button>
-                                        <button id="proxyPX6ImportButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies(true)">导入目标代理组</button>
-                                        <div id="proxyPX6Result" role="status" aria-live="polite"></div>
-                                    </details>
-                                    <label>代理列表<textarea id="proxyImportContent" class="proxy-textarea" placeholder="可粘贴 Clash YAML、ss:// URI 或每行一个代理 URL"></textarea></label>
-                                    <label class="proxy-check"><input id="proxyImportReplace" type="checkbox"> 替换已有节点</label>
-                                    <button type="button" class="proxy-secondary-action" onclick="importProxyGroupNodes()">导入并立即生效</button>
-                                </div>
-                            </div>
-                            <div id="proxyGroupList" class="proxy-group-list" role="list" aria-live="polite"></div>
-                        </section>
                         <div class="card">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">端点配置</h4>
 
@@ -2375,6 +2341,50 @@
                                     Antigravity API端点地址，用于反重力模式</small>
                             </div>
                         </div>
+
+                        </section>
+                        <section id="config-panel-network" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-network" tabindex="0" hidden>
+
+
+<section class="card proxy-console" aria-labelledby="proxyConsoleTitle">
+                            <div class="proxy-console-head">
+                                <div>
+                                    <span class="proxy-kicker">LIVE NETWORK</span>
+                                    <h4 id="proxyConsoleTitle">代理组与实时导入</h4>
+                                    <p>节点保存到 主数据库 后立即用于下一次 Antigravity 请求，无需重启。</p>
+                                </div>
+                                <strong id="proxyGroupSummary" class="proxy-summary">正在读取代理组…</strong>
+                            </div>
+                            <div class="proxy-console-grid">
+                                <div class="proxy-editor-card">
+                                    <h5>创建代理组</h5>
+                                    <label>组名称<input id="proxyGroupName" class="config-input" placeholder="例如：香港主线路"></label>
+                                    <label>说明<input id="proxyGroupDescription" class="config-input" placeholder="可选"></label>
+                                    <label>策略<select id="proxyGroupStrategy" class="config-input"><option value="round_robin">轮询</option><option value="failover">故障优先</option><option value="random">随机</option></select></label>
+                                    <label class="proxy-check"><input id="proxyGroupExclusive" type="checkbox" checked> 一账号一节点，强制独立出口</label>
+                                    <button type="button" class="proxy-primary-action" onclick="createProxyGroup()">创建代理组</button>
+                                </div>
+                                <div class="proxy-editor-card">
+                                    <h5>实时导入节点</h5>
+                                    <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
+                                    <details>
+                                        <summary>从 PX6 API Key 获取已有代理</summary>
+                                        <p class="config-note">填写 PX6 API Key 读取并导入已有代理。保存到期时间后，请求前会检查并在到期前 24 小时切换到有效备用 IP；没有备用时保留当前 IP 至到期，请及时续费或补充节点。续费或购买后需重新导入。Key 仅用于本次读取，不保存。</p>
+                                        <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
+                                        <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
+                                        <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
+                                        <button id="proxyPX6PreviewButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies()">验证并查看已有 IP</button>
+                                        <button id="proxyPX6ImportButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies(true)">导入目标代理组</button>
+                                        <div id="proxyPX6Result" role="status" aria-live="polite"></div>
+                                    </details>
+                                    <label>代理列表<textarea id="proxyImportContent" class="proxy-textarea" placeholder="可粘贴 Clash YAML、ss:// URI 或每行一个代理 URL"></textarea></label>
+                                    <label class="proxy-check"><input id="proxyImportReplace" type="checkbox"> 替换已有节点</label>
+                                    <button type="button" class="proxy-secondary-action" onclick="importProxyGroupNodes()">导入并立即生效</button>
+                                </div>
+                            </div>
+                            <div id="proxyGroupList" class="proxy-group-list" role="list" aria-live="polite"></div>
+                        </section>
+
                         </section>
                         <section id="config-panel-credentials" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-credentials" tabindex="0" hidden>
                         <div class="card">
@@ -2429,8 +2439,9 @@
                         </div>
                         </section>
                         <section id="config-panel-models" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-models" tabindex="0" hidden>
-                        <div class="card">
+                        <div class="card compatibility-settings">
                             <h4 style="margin-top: 0; margin-bottom: 15px;">兼容性配置</h4>
+<div class="compatibility-grid">
 
                             <div class="form-group">
                                 <label style="display: flex; align-items: center; gap: 8px;">
@@ -2671,9 +2682,8 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">默认 0.05 = 5%</small>
                             </div>
 
-                        </div>
-                        <div class="card">
-                            <h4 style="margin-top: 0; margin-bottom: 15px;">抗截断配置</h4>
+                        <div class="form-group compatibility-truncation">
+                            <h5>输出抗截断</h5>
 
                             <div class="form-group">
                                 <label for="antiTruncationMaxAttempts">抗截断最大重试次数:</label>
@@ -2692,6 +2702,9 @@
                                 </ul>
                             </div>
                         </div>
+</div>
+</div>
+
                         </section>
                         <section id="config-panel-content" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-content" tabindex="0" hidden>
                         <div class="card">
@@ -2796,8 +2809,7 @@
                                     placeholder="留空则不启用，例如: https://your-app.example.com/keepalive" />
                                 <small style="display: block; color: #666; font-size: 12px; margin-top: 5px;">配置后服务会定期向该
                                     URL 发送 GET 请求以保持在线；留空则禁用保活 ✓ 支持热更新</small>
-                                <button type="button" onclick="autoSetKeepaliveUrl()"
-                                    style="margin-top:6px; padding:4px 12px; font-size:13px; cursor:pointer;">一键设置保活</button>
+                                <button type="button" class="config-action-button" onclick="autoSetKeepaliveUrl()">一键设置保活</button>
                             </div>
 
                             <div class="form-group">
@@ -2851,19 +2863,90 @@
             </div>
 
             <div id="billingTab" class="tab-content">
-                <h3>Token 计费看板</h3><p>选择密钥后展示当前额度周期；历史范围每 10 秒自动刷新。</p>
-                <select id="billingApiKeyFilter" class="billing-key-filter" onchange="handleBillingApiKeyChange()"><option value="">全部密钥</option></select>
-                <select id="billingRange" onchange="loadBillingDashboard()"><option value="quota">额度周期</option><option value="today">当天</option><option value="7d">7天</option><option value="14d">14天</option><option value="30d">30天</option></select>
-                <button class="refresh-btn" onclick="loadBillingDashboard()">刷新</button>
-                <div class="usage-info" style="margin-top:12px;"><div class="usage-info-item"><span class="usage-info-label">总 Token</span><span id="billingTotalTokens" class="usage-info-value">0.000M</span></div><div class="usage-info-item"><span class="usage-info-label">总费用</span><span id="billingTotalCost" class="usage-info-value">0.00 CNY</span></div><div class="usage-info-item"><span id="billingTokenBreakdownLabel" class="usage-info-label">输入 / 输出 / 缓存 / 思考</span><span id="billingTokenBreakdown" class="usage-info-value">0.000M / 0.000M / 0.000M / 0.000M</span></div><div class="usage-info-item"><span id="billingCostBreakdownLabel" class="usage-info-label">输入 / 输出 / 缓存费用</span><span id="billingCostBreakdown" class="usage-info-value">0.00 CNY / 0.00 CNY / 0.00 CNY</span></div><div class="usage-info-item"><span id="billingRequestCountsLabel" class="usage-info-label">成功 / 失败 / 未知</span><span id="billingRequestCounts" class="usage-info-value">0 / 0 / 0</span></div></div>
-                <h4>每日趋势</h4><div id="billingTrend">暂无数据</div><h4>账号排行</h4><div id="billingAccounts">暂无数据</div><h4>模型排行</h4><div id="billingModels">暂无数据</div><h4>密钥排行</h4><div id="billingKeys">暂无数据</div>
-                <h4>默认价格</h4><input id="billingDefaultInput" type="number" min="0" step="0.01" placeholder="输入价格 0.00"><input id="billingDefaultOutput" type="number" min="0" step="0.01" placeholder="输出价格 0.00"><input id="billingDefaultCache" type="number" min="0" step="0.01" placeholder="缓存价格 0.00"><button class="btn" onclick="saveBillingDefaultPrice()">保存默认价格</button>
-                <h4>模型专属价格</h4><input id="billingModelName" type="text" placeholder="模型名"><input id="billingModelInput" type="number" min="0" step="0.01" placeholder="输入价格 0.00"><input id="billingModelOutput" type="number" min="0" step="0.01" placeholder="输出价格 0.00"><input id="billingModelCache" type="number" min="0" step="0.01" placeholder="缓存价格 0.00"><button class="btn" onclick="saveBillingModelPrice()">保存模型价格</button><div id="billingModelPrices">暂无模型专属价格</div>
+                <div class="billing-shell">
+                    <div class="billing-header">
+                        <div>
+                            <p class="billing-kicker">用量与费用</p>
+                            <h2 class="billing-title">Token 计费</h2>
+                            <p class="billing-subtitle">选择密钥后默认展示与密钥管理一致的当前额度周期；历史范围停留在本页时每 10 秒自动刷新。</p>
+                        </div>
+                        <div class="billing-header-actions">
+                            <select id="billingApiKeyFilter" class="billing-key-filter" onchange="handleBillingApiKeyChange()" aria-label="按密钥筛选账单">
+                                <option value="">全部密钥</option>
+                            </select>
+                            <div class="billing-range-picker" role="tablist" aria-label="账单时间范围">
+                                <button type="button" id="billingQuotaRangeButton" class="billing-range-button" data-range="quota" role="tab" aria-selected="false" onclick="setBillingRange('quota')" hidden disabled>额度周期</button>
+                                <button type="button" class="billing-range-button active" data-range="today" role="tab" aria-selected="true" onclick="setBillingRange('today')">当天</button>
+                                <button type="button" class="billing-range-button" data-range="7d" role="tab" aria-selected="false" onclick="setBillingRange('7d')">7天</button>
+                                <button type="button" class="billing-range-button" data-range="14d" role="tab" aria-selected="false" onclick="setBillingRange('14d')">14天</button>
+                                <button type="button" class="billing-range-button" data-range="30d" role="tab" aria-selected="false" onclick="setBillingRange('30d')">30天</button>
+                            </div>
+                            <button type="button" class="billing-refresh-button" onclick="loadBillingDashboard()">刷新</button>
+                            <select id="billingRange" class="billing-range-native" tabindex="-1" aria-hidden="true" onchange="loadBillingDashboard()">
+                                <option value="quota">额度周期</option>
+                                <option value="today">当天</option>
+                                <option value="7d">7天</option>
+                                <option value="14d">14天</option>
+                                <option value="30d">30天</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <section class="billing-overview" aria-label="计费概览">
+                        <div class="billing-primary-stat">
+                            <div class="billing-label">总 Token</div>
+                            <div id="billingTotalTokens" class="billing-primary-value">0.000M</div>
+                            <div id="billingTotalCost" class="billing-primary-meta">总费用 0.00 CNY</div>
+                        </div>
+                        <div class="billing-stat-list">
+                            <div class="billing-stat-row"><span id="billingTokenBreakdownLabel" class="billing-label">输入 / 输出 / 缓存 / 思考</span><strong id="billingTokenBreakdown" class="billing-stat-value">0.000M / 0.000M / 0.000M / 0.000M</strong></div>
+                            <div class="billing-stat-row"><span id="billingCostBreakdownLabel" class="billing-label">总费用</span><strong id="billingCostBreakdown" class="billing-stat-value">0.00 CNY</strong></div>
+                            <div class="billing-stat-row"><span id="billingRequestCountsLabel" class="billing-label">成功 / 失败 / 未知用量</span><strong id="billingRequestCounts" class="billing-stat-value">0 / 0 / 0</strong></div>
+                            <div class="billing-stat-row"><span class="billing-label">统计范围</span><strong id="billingRangeLabel" class="billing-stat-value">当天</strong></div>
+                        </div>
+                    </section>
+
+                    <div class="billing-report-grid">
+                        <section class="billing-panel">
+                            <div class="billing-panel-heading"><h3 class="billing-panel-title">每日趋势</h3><span id="billingTrendNote" class="billing-panel-note">当天</span></div>
+                            <div id="billingTrend" class="billing-trend-list"><div class="billing-empty">暂无账单数据</div></div>
+                        </section>
+                        <section class="billing-panel">
+                            <div class="billing-panel-heading"><h3 class="billing-panel-title">账号排行</h3><span class="billing-panel-note">按 Token</span></div>
+                            <div id="billingAccounts" class="billing-ranking-list"><div class="billing-empty">暂无账单数据</div></div>
+                        </section>
+                        <section class="billing-panel">
+                            <div class="billing-panel-heading"><h3 class="billing-panel-title">模型排行</h3><span class="billing-panel-note">按 Token</span></div>
+                            <div id="billingModels" class="billing-ranking-list"><div class="billing-empty">暂无账单数据</div></div>
+                        </section>
+                        <section class="billing-panel">
+                            <div class="billing-panel-heading"><h3 class="billing-panel-title">密钥排行</h3><span class="billing-panel-note">按 Token</span></div>
+                            <div id="billingKeys" class="billing-ranking-list"><div class="billing-empty">暂无账单数据</div></div>
+                        </section>
+                    </div>
+
+                    <section class="billing-panel billing-config-panel">
+                        <div class="billing-panel-heading"><h3 class="billing-panel-title">价格配置</h3><span class="billing-panel-note">按每 1M Token 计价，历史账单不重算</span></div>
+                        <div class="billing-form-row">
+                            <div class="billing-field"><label for="billingDefaultInput">输入价格 / 1M</label><input id="billingDefaultInput" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <div class="billing-field"><label for="billingDefaultOutput">输出价格 / 1M</label><input id="billingDefaultOutput" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <div class="billing-field"><label for="billingDefaultCache">缓存价格 / 1M</label><input id="billingDefaultCache" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <button type="button" class="billing-save-button" onclick="saveBillingDefaultPrice()">保存默认价格</button>
+                        </div>
+                        <div class="billing-form-row">
+                            <div class="billing-field"><label for="billingModelName">模型名</label><input id="billingModelName" type="text" placeholder="例如 gemini-2.5-pro"></div>
+                            <div class="billing-field"><label for="billingModelInput">输入价格 / 1M</label><input id="billingModelInput" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <div class="billing-field"><label for="billingModelOutput">输出价格 / 1M</label><input id="billingModelOutput" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <div class="billing-field"><label for="billingModelCache">缓存价格 / 1M</label><input id="billingModelCache" type="number" min="0" step="0.01" placeholder="0.00"></div>
+                            <button type="button" class="billing-save-button" onclick="saveBillingModelPrice()">保存模型价格</button>
+                        </div>
+                        <div id="billingModelPrices" class="billing-model-prices"><div class="billing-empty">暂无模型专属价格</div></div>
+                    </section>
+                </div>
             </div>
 
             <div id="logsTab" class="tab-content">
-                <h3>实时日志</h3>
-                <p>查看系统实时日志输出，支持日志筛选和自动滚动</p>
+                <header class="page-intro"><span class="module-eyebrow">SYSTEM LOGS</span><h2>实时日志</h2><p>查看系统输出，按级别筛选日志。</p></header>
 
                 <div style="display: flex; gap: 8px; margin: 15px 0; flex-wrap: wrap;">
                     <button class="btn btn-small" onclick="connectWebSocket()">连接日志流</button>
@@ -2905,8 +2988,7 @@
 
             <!-- 项目信息标签页 -->
             <div id="aboutTab" class="tab-content">
-                <h3>项目信息</h3>
-                <p>关于GCLI2API项目的详细信息</p>
+                <header class="page-intro"><span class="module-eyebrow">ABOUT</span><h2>项目信息</h2><p>了解 GCLI2API 与服务能力。</p></header>
 
                 <!-- 项目介绍 -->
                 <div class="card">
@@ -2980,7 +3062,8 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=monitor-account-tier"></script>
+    <script src="./front/common.js?v=update-dot-20261127"></script>
+    <script src="./front/config_ui.js?v=20261127-spacing"></script>
 </body>
 
 </html>

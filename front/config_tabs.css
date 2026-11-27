@@ -330,3 +330,127 @@ dialog.telemetry-settings-dialog { width: min(560px, 94vw); max-height: 90vh; ov
 @media (prefers-reduced-motion: reduce) {
     .prompt-settings summary::before { transition: none; }
 }
+
+/* Compatibility controls share one outlined surface, with two columns on desktop. */
+#config-panel-models > .compatibility-settings {
+    grid-column: 1 / -1;
+}
+.compatibility-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 28px;
+}
+.compatibility-grid > .form-group {
+    min-width: 0;
+    margin: 0;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--ui-border, #dbe3ed);
+}
+.compatibility-truncation h5 {
+    margin: 0 0 14px;
+    font-size: 14px;
+    color: var(--ui-ink, #172033);
+}
+@container config-section (max-width: 760px) {
+    .compatibility-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+    .compatibility-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+#config-panel-general > .server-settings { grid-column: 1 / -1; }
+.server-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 28px;
+}
+.server-settings-grid > * { min-width: 0; }
+.server-image-settings {
+    padding-left: 28px;
+    border-left: 1px solid var(--ui-border, #dbe3ed);
+}
+.server-image-settings h5 { margin: 0 0 18px; font-size: 14px; }
+@container config-section (max-width: 760px) {
+    .server-settings-grid { grid-template-columns: minmax(0, 1fr); }
+    .server-image-settings { padding: 20px 0 0; border-left: 0; border-top: 1px solid var(--ui-border, #dbe3ed); }
+}
+@media (max-width: 760px) {
+    .server-settings-grid { grid-template-columns: minmax(0, 1fr); }
+    .server-image-settings { padding: 20px 0 0; border-left: 0; border-top: 1px solid var(--ui-border, #dbe3ed); }
+}
+.compatibility-option { min-width: 0; padding: 18px 0; border-bottom: 1px solid var(--ui-border); }
+.compatibility-option-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.compatibility-option h5 { margin: 0 0 6px; color: var(--ui-ink); font-size: 14px; }
+.compatibility-option-summary { margin: 0; color: var(--ui-muted); font-size: 12px; overflow-wrap: anywhere; }
+.compatibility-option-head button { flex-shrink: 0; padding: 7px 14px; border-radius: 7px; cursor: pointer; }
+.compatibility-option-fields { margin-top: 18px; border-top: 1px solid var(--ui-border); padding-top: 18px; }
+.compatibility-option-fields[hidden] { display: none !important; }
+#configSaveFeedback { max-width: 260px; font-size: 12px; color: var(--ui-muted); overflow-wrap: anywhere; }
+#configSaveFeedback[data-state=success] { color: var(--ui-success); }
+#configSaveFeedback[data-state=error] { color: var(--ui-danger); }
+#configSaveFeedback[data-state=saving]::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--ui-border); border-top-color: var(--ui-accent); border-radius: 50%; animation: config-saving .8s linear infinite; }
+@keyframes config-saving { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #configSaveFeedback[data-state=saving]::before { animation: none; } }
+
+/* Separate category navigation from the page title and save actions. */
+#configSection .config-toolbar {
+    grid-template: "title actions" auto "tabs tabs" auto / minmax(0, 1fr) auto;
+    gap: 18px 24px;
+    margin-bottom: 18px;
+    padding-bottom: 16px;
+}
+#configSection .config-category-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+    min-width: 0;
+}
+#configSection .config-category-tab { padding: 9px 16px; min-height: 40px; font-size: 13px; }
+#configSection .config-toolbar-actions { gap: 10px; }
+#configSection #configSaveFeedback {
+    grid-column: 1 / -1;
+    max-width: none;
+    margin-top: -6px;
+    padding: 8px 12px;
+    border: 1px solid var(--ui-border);
+    border-radius: 7px;
+    background: var(--ui-surface-subtle);
+    line-height: 1.5;
+}
+@container config-section (max-width: 480px) {
+    #configSection .config-toolbar { gap: 14px 10px; }
+    #configSection .config-title { font-size: 20px; }
+    #configSection .config-toolbar-actions { gap: 6px; }
+    #configSection .config-toolbar-actions .btn { padding: 8px 10px; }
+    #configSection .config-category-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    #configSection .config-category-tab { padding: 8px; min-height: 44px; }
+}
+
+#mainSection .config-action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    max-width: 100%;
+    margin: 10px 0 0;
+    padding: 8px 14px;
+    border: 1px solid var(--theme-button-border, #b8bec9);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-button-ink, #424b59);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    box-shadow: none;
+    cursor: pointer;
+}
+#mainSection .config-action-button:not(:disabled):hover {
+    border-color: var(--ui-accent);
+    color: var(--ui-accent-strong);
+    background: var(--ui-surface-hover);
+    box-shadow: none;
+}
+#mainSection .config-action-button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 600px) { #mainSection .config-action-button { min-height: 44px; } }

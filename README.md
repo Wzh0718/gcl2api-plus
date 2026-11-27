@@ -8,6 +8,11 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/Wzh0718/gcl2api-plus/pkgs/container/gcl2api-plus)
 
+[![最近提交](https://img.shields.io/github/last-commit/Wzh0718/gcl2api-plus/dev?label=最近提交)](https://github.com/Wzh0718/gcl2api-plus/commits/dev/)
+[![每月提交活跃度](https://img.shields.io/github/commit-activity/m/Wzh0718/gcl2api-plus/dev?label=每月提交活跃度)](https://github.com/Wzh0718/gcl2api-plus/graphs/commit-activity)
+
+更新活跃度按 `dev` 分支提交统计，徽章可能有缓存延迟；提交次数不等于镜像发布次数。可安装版本以 [Packages](https://github.com/Wzh0718/gcl2api-plus/packages) 为准，项目不承诺固定发布周期。
+
 中文 | [English](docs/README_EN.md)
 
 ---

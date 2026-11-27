@@ -1,0 +1,44 @@
+/* Shared console masthead. IDs and handlers remain compatible with version/auth flows. */
+.console-header.app-header { box-sizing: border-box; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 20px; min-height: 64px; padding: 8px 4px 16px; margin: 0; border: 0; border-bottom: 1px solid #d9e2ee; border-radius: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+.console-header .app-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.console-header .app-brand-mark { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; border-radius: 12px; background: #245fc4; color: #fff; box-shadow: inset 0 1px 0 #ffffff20; }
+.console-header .app-brand-mark svg { width: 29px; height: 29px; }
+.console-header .app-brand h1 { margin: 0; color: #23354d; font-size: 19px; line-height: 1.15; font-weight: 700; letter-spacing: -.6px; text-align: left; }
+.console-header .app-brand-wordmark > span { display: block; margin-top: 5px; color: #75849a; font-size: 9px; font-weight: 600; letter-spacing: 1.7px; }
+.console-header .app-header-context { display: flex; align-items: center; gap: 10px; margin-left: 14px; padding-left: 26px; border-left: 1px solid #cfd9e7; min-height: 26px; font-size: 13px; white-space: nowrap; }
+.console-header .app-header-context > span { color: #64748b; }
+.console-header .app-header-context strong { color: #34465e; font-size: 12px; font-weight: 500; }
+.console-header .app-header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.console-header .version-info { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 10px; border: 0; border-radius: 0; background: transparent; color: #627189; font-size: 11px; white-space: nowrap; }
+.console-header #versionText { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.console-header .version-label { color: #8894a6; }
+.console-header .header-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: auto; min-height: 36px; margin: 0; padding: 0 12px; border: 1px solid #ced9e7; border-radius: 8px; color: #40536c; background: #ffffffa6; font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.console-header #checkUpdateBtn::before { content: '↻'; font-size: 18px; line-height: 1; }
+.console-header .header-button:hover { background: #fff; border-color: #9cb1cc; color: #254d80; }
+.console-header .header-button:focus-visible { outline: 3px solid #91b8ed; outline-offset: 3px; }
+.console-header .header-button:disabled { cursor: wait; opacity: .6; }
+.console-header .header-action-divider { width: 1px; height: 20px; background: #d5deea; margin: 0 5px; }
+.console-header .header-button-danger { border-color: transparent; background: transparent; color: #68758a; }
+.console-header .header-button-danger:hover { color: #a13939; border-color: #ecd0d0; background: #fff4f4; }
+.console-header .header-button svg { width: 17px; height: 17px; }
+@media (max-width: 1050px) {
+    .console-header .app-header-context { display: none; }
+}
+@media (max-width: 600px) {
+    .console-header.app-header { flex-wrap: wrap; gap: 12px; padding: 12px 8px; margin-bottom: 12px; }
+    .console-header .app-brand { gap: 10px; }
+    .console-header .app-header-actions { width: 100%; justify-content: flex-end; gap: 6px; }
+    .console-header .version-info { margin-right: auto; padding: 0; font-size: 10px; }
+    .console-header .header-button { min-height: 36px; padding: 0 9px; }
+    .console-header .header-action-divider { margin: 0; }
+}
+
+.console-header .app-brand h1 { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.console-header .app-brand-tag { display: inline-flex; align-items: center; padding: 4px 7px; border: 1px solid #a99061; border-radius: 4px; background: #29303a; color: #efd6a2; box-shadow: inset 0 1px 0 #ead7ad20; font-size: 9px; line-height: 1; font-weight: 650; letter-spacing: 1.2px; }
+.console-header a.version-info { text-decoration: none; cursor: pointer; border-radius: 6px; }
+.console-header a.version-info:hover { color: var(--ui-accent-strong, #2453a2); text-decoration: underline; text-underline-offset: 4px; }
+
+.console-header .app-brand-wordmark h1 { position:relative; padding-right:40px; }
+.console-header .app-brand-tag { position:absolute; right:0; top:-5px; padding:3px 5px; font-size:8px; letter-spacing:.8px; }
+.console-header .version-info { position:relative; }
+.console-header .version-info.has-update::after { content:""; position:absolute; top:2px; right:1px; width:7px; height:7px; border-radius:50%; background:#e5484d; box-shadow:0 0 0 2px var(--ui-bg); }

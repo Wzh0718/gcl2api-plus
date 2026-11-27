@@ -61,7 +61,7 @@ async def get_version_info(check_update: bool = False):
                 from src.httpx_client import get_async
 
                 # 直接获取GitHub上的version.txt文件
-                github_version_url = "https://raw.githubusercontent.com/su-kaka/gcli2api/refs/heads/master/version.txt"
+                github_version_url = "https://raw.githubusercontent.com/Wzh0718/gcl2api-plus/refs/heads/custom/version.txt"
 
                 # 使用统一的httpx客户端
                 resp = await get_async(github_version_url, timeout=10.0)
