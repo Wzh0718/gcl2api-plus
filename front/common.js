@@ -4725,7 +4725,7 @@ function _aggregateStatsRows(rows, keyFn, initFn) {
 
 // 只统计 Antigravity 模式
 const statsTabState = {
-    mode: 'antigravity', date: '', credential: '', model: '', tier: '', rawStats: [],
+    mode: 'antigravity', date: null, credential: '', model: '', tier: '', rawStats: [],
     autoRefresh: true, detailsOpen: false, lastUpdated: null
 };
 
@@ -4946,6 +4946,10 @@ function renderStatsView() {
 async function loadModelStatsTab(options = {}) {
     const section = document.getElementById('modelStatsTabContent');
     if (!section) return;
+    // 首次打开默认查询北京时间今天；空字符串仍表示用户主动选择“全部”。
+    if (statsTabState.date === null) {
+        statsTabState.date = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    }
     // silent：自动刷新触发时不打断当前视图（不显示加载占位、失败保留旧数据）
     const silent = !!options.silent;
 
