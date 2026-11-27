@@ -394,6 +394,14 @@ async def test_text_retry_waits_once_per_attempt(monkeypatch, streaming, failure
         monkeypatch.setattr(agy, "stream_post_async", stream)
 
     response = await _run_text_request(streaming, model)
+    if failure == "capacity":
+        # 模型级容量 503 只给一次原号重试且不等待（不睡、不换号、不写冷却）；
+        # 第二次仍是容量 503 就透传上游错误。线上实测 536 次容量 503 分布在
+        # 536 个请求上，没有请求需要第二次重试。
+        assert response.status_code == 503
+        assert len(sent) == 2
+        assert [delay for delay in waits if delay > 0] == []
+        return
     expected = 200 if recovers else 503 if failure == "capacity" else int(failure) if failure.isdigit() else 500
     assert response.status_code == expected
     assert len(sent) == 3
@@ -424,7 +432,9 @@ async def test_cancellation_during_retry_delay_releases_slot(monkeypatch, stream
 
     def respond(*args):
         sent.append(args)
-        return _FakeResponse(503, CAPACITY_BODY.encode())
+        # 账号级 503（无容量标记）仍按统一节奏等待，用它验证取消路径；
+        # 容量型 503 不等待，见 test_text_retry_waits_once_per_attempt。
+        return _FakeResponse(503, b'{"error":"unavailable"}')
 
     monkeypatch.setattr(agy.asyncio, "sleep", wait)
     monkeypatch.setattr(pacing, "acquire_credential_slot", lambda name: _awaitable(0))
