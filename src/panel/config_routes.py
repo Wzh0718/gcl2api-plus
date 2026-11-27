@@ -142,9 +142,12 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["antigravity_403_recheck_enabled"] = await config.get_antigravity_403_recheck_enabled()
         current_config["antigravity_403_recheck_interval"] = await config.get_antigravity_403_recheck_interval()
 
-        # Antigravity 模型配额降级链
+        # Antigravity 文本模型降级链
         current_config["antigravity_model_fallback_chain"] = ",".join(
             await config.get_antigravity_model_fallback_chain()
+        )
+        current_config["antigravity_ttft_fallback_seconds"] = (
+            await config.get_antigravity_ttft_fallback_seconds()
         )
 
         # 保活配置
@@ -317,9 +320,7 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             if not isinstance(new_config["return_thoughts_to_frontend"], bool):
                 raise HTTPException(status_code=400, detail="思维链返回开关必须是布尔值")
 
-        if "antigravity_stream2nostream" in new_config:
-            if not isinstance(new_config["antigravity_stream2nostream"], bool):
-                raise HTTPException(status_code=400, detail="Antigravity流式转非流式开关必须是布尔值")
+        new_config.pop("antigravity_stream2nostream", None)
 
         if "antigravity_switch_credential_enabled" in new_config:
             if not isinstance(new_config["antigravity_switch_credential_enabled"], bool):
@@ -456,10 +457,19 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="403复检间隔必须是有效整数")
 
+        if "antigravity_ttft_fallback_seconds" in new_config:
+            try:
+                seconds = int(str(new_config["antigravity_ttft_fallback_seconds"]))
+                if not 0 <= seconds <= 86400:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(400, "首次有效响应降级阈值必须是 0–86400 的整数秒") from exc
+            new_config["antigravity_ttft_fallback_seconds"] = seconds
+
         if "antigravity_model_fallback_chain" in new_config:
             chain_value = new_config["antigravity_model_fallback_chain"]
             if not isinstance(chain_value, str):
-                raise HTTPException(status_code=400, detail="模型配额降级链必须是逗号分隔的字符串")
+                raise HTTPException(status_code=400, detail="模型降级链必须是逗号分隔的字符串")
             # 规范化：去空白、去空项、去重；空串表示关闭降级
             chain_items = []
             for item in chain_value.split(","):

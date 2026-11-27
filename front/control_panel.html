@@ -3268,22 +3268,6 @@
 
                             <div class="form-group">
                                 <label>
-                                    <input type="checkbox" id="antigravityStream2nostream" class="config-checkbox" />
-                                    Antigravity流式转非流式
-                                </label>
-                                <small class="config-note">启用后，非流式请求将使用流式API并收集为完整响应 <span style="color: #28a745;">✓
-                                        支持热更新</span></small>
-                                <div class="config-info"
-                                    style="background-color: #f3e5f5; border: 1px solid #9c27b0; color: #4a148c;">
-                                    <strong>🔄
-                                        说明：</strong>针对Antigravity模式的优化选项。启用后，即使客户端请求非流式响应，后端也会使用流式API获取数据并收集完整后再返回。
-                                    <br><strong>适用场景：</strong>某些情况下流式API比非流式API更稳定，启用此选项可以提高响应质量。
-                                    <br><strong>默认：</strong>已启用
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label>
                                     <input type="checkbox" id="antigravitySwitchCredentialEnabled"
                                         class="config-checkbox" />
                                     Antigravity切换凭证
@@ -3313,10 +3297,15 @@
                             </div>
 
                             <div class="form-group">
-                                <label for="antigravityModelFallbackChain">模型配额降级链:</label>
+                                <label for="antigravityTtftFallbackSeconds">模型首次有效响应降级阈值（秒）:</label>
+                                <input type="number" id="antigravityTtftFallbackSeconds" class="config-input" min="0" max="86400" step="1" />
+                                <small class="config-note">默认 30 秒；仅等待首次有效返回；心跳和用量帧不重置计时，错误或断流按原流程处理。0 关闭延迟降级。</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="antigravityModelFallbackChain">模型降级链:</label>
                                 <input type="text" id="antigravityModelFallbackChain" class="config-input"
                                     placeholder="留空关闭降级，如：gemini-3.8-flash,gemini-3.8-flash-tiered" />
-                                <small class="config-note">逗号分隔；首次发送前没有可用凭证时，依次检查后续模型。默认留空 = 关闭降级 <span
+                                <small class="config-note">逗号分隔；首次有效响应超时或发送前无可用凭证时，只尝试链内后续模型。留空关闭降级 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
                             </div>
 
@@ -3803,7 +3792,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=pacing-intervals"></script>
+    <script src="./front/common.js?v=ttft-fallback"></script>
 
 </body>
 

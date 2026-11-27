@@ -12,7 +12,6 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # 标准库
-import asyncio
 from contextlib import aclosing
 import json
 
@@ -29,16 +28,9 @@ from src.utils import (
     get_base_model_from_feature_model,
     is_anti_truncation_model,
     authenticate_antigravity_key,
-    is_fake_streaming_model
 )
 from src.api_keys import ApiKeyPrincipal
 
-# 本地模块 - 转换器（假流式需要）
-from src.converter.fake_stream import (
-    parse_response_for_fake_stream,
-    build_gemini_fake_stream_chunks,
-    create_gemini_heartbeat_chunk,
-)
 
 # 本地模块 - 基础路由工具
 from src.router.hi_check import is_health_check_request, create_health_check_response
@@ -51,9 +43,6 @@ from src.stream_guard import ClosingStreamingResponse, aclose_quietly
 
 # 本地模块 - 数据模型
 from src.models import GeminiRequest, model_to_dict
-
-# 本地模块 - 任务管理
-from src.task_manager import create_managed_task
 
 
 # ==================== 路由器初始化 ====================
@@ -178,76 +167,11 @@ async def stream_generate_content(
     await filter_request_system_instruction(normalized_dict, mode="antigravity", block_only=True)
 
     # 处理模型名称和功能检测
-    use_fake_streaming = is_fake_streaming_model(model)
     use_anti_truncation = is_anti_truncation_model(model)
     real_model = get_base_model_from_feature_model(model)
 
     # 更新模型名为真实模型名
     normalized_dict["model"] = real_model
-
-    # ========== 假流式生成器 ==========
-    async def fake_stream_generator():
-        from src.converter.gemini_fix import normalize_gemini_request
-        from src.api.antigravity import non_stream_request
-
-        normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="antigravity", api_key_id=principal.api_key_id)
-
-        # 准备API请求格式 - 提取model并将其他字段放入request中
-        api_request = {
-            "model": normalized_req.pop("model"),
-            "request": normalized_req
-        }
-        routing_options = claude_routing_options(model, api_request["model"])
-
-        response = await non_stream_request(
-            body=api_request, api_key_id=principal.api_key_id, **routing_options
-        )
-
-        # 检查响应状态码
-        if hasattr(response, "status_code") and response.status_code != 200:
-            log.error(f"Fake streaming got error response: status={response.status_code}")
-            yield response
-            return
-
-        # 处理成功响应 - 提取响应内容
-        if hasattr(response, "body"):
-            response_body = response.body.decode() if isinstance(response.body, bytes) else response.body
-        elif hasattr(response, "content"):
-            response_body = response.content.decode() if isinstance(response.content, bytes) else response.content
-        else:
-            response_body = str(response)
-
-        try:
-            response_data = json.loads(response_body)
-            log.debug(f"Gemini fake stream response data: {response_data}")
-
-            # 检查是否是错误响应（有些错误可能status_code是200但包含error字段）
-            if "error" in response_data:
-                log.error(f"Fake streaming got error in response body: {response_data['error']}")
-                yield f"data: {json.dumps(response_data)}\n\n".encode()
-                yield "data: [DONE]\n\n".encode()
-                return
-
-            # 使用统一的解析函数
-            content, reasoning_content, finish_reason, images = parse_response_for_fake_stream(response_data)
-
-            log.debug(f"Gemini extracted content: {content}")
-            log.debug(f"Gemini extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}...")
-            log.debug(f"Gemini extracted images count: {len(images)}")
-
-            # 构建响应块
-            chunks = build_gemini_fake_stream_chunks(content, reasoning_content, finish_reason, images)
-            for idx, chunk in enumerate(chunks):
-                chunk_json = json.dumps(chunk)
-                log.debug(f"[FAKE_STREAM] Yielding chunk #{idx+1}: {chunk_json[:200]}")
-                yield f"data: {chunk_json}\n\n".encode()
-
-        except Exception as e:
-            log.error(f"Response parsing failed: {e}, directly yield original response")
-            # 直接yield原始响应,不进行包装
-            yield f"data: {response_body}\n\n".encode()
-
-        yield "data: [DONE]\n\n".encode()
 
     # ========== 流式抗截断生成器 ==========
     async def anti_truncation_generator():
@@ -431,9 +355,7 @@ async def stream_generate_content(
                         yield chunk
 
     # ========== 根据模式选择生成器 ==========
-    if use_fake_streaming:
-        return await build_streaming_response_or_error(fake_stream_generator())
-    elif use_anti_truncation:
+    if use_anti_truncation:
         log.info("启用流式抗截断功能")
         return await build_streaming_response_or_error(anti_truncation_generator())
     else:
