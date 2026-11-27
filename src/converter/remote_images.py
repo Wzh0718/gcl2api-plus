@@ -8,11 +8,17 @@ from typing import Any
 import httpx
 
 
-_MAX_REMOTE_IMAGES = 8
+# 上游（AGY / Gemini 2.5 端点）对“直传 http(s) 图片 URL”限制为每请求 10 张，而内联（inlineData）
+# 只受请求体大小约束（Gemini API 内联上限 20 MB，官方文档给出的单请求图片数上限是数千张）。
+# 本地图片数上限只用于限制并发外抓的范围，真正的成本闸门是请求级 10 MiB 字节预算。
+_MAX_REMOTE_IMAGES = 100
 _MAX_REMOTE_BYTES = 10 * 1024 * 1024
+_MAX_DOWNLOAD_CONCURRENCY = 6
 _MAX_REDIRECTS = 4
 _DOWNLOAD_TIMEOUT = 20
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
+_TOO_LARGE = "Remote images exceed the 10 MiB limit per request"
+_UNREACHABLE = "Could not download image_url. Check that the URL is publicly accessible"
 _PORTS = {"http": 80, "https": 443}
 _GLOBAL_UNICAST_V6 = ipaddress.ip_network("2000::/3")
 HTTP_IMAGE_SCHEMES = ("http://", "https://")
@@ -64,8 +70,27 @@ def _mime_type(data: bytearray, content_type: str) -> str:
     raise RemoteImageError("image_url did not return a supported image")
 
 
+class _ByteBudget:
+    """Share one per-request byte budget across concurrent downloads."""
+
+    def __init__(self, total: int) -> None:
+        self._remaining = total
+        self._lock = asyncio.Lock()
+
+    @property
+    def remaining(self) -> int:
+        return self._remaining
+
+    async def take(self, size: int) -> bool:
+        async with self._lock:
+            if size > self._remaining:
+                return False
+            self._remaining -= size
+            return True
+
+
 async def _download(
-    client: httpx.AsyncClient, url: httpx.URL, max_bytes: int,
+    client: httpx.AsyncClient, url: httpx.URL, budget: _ByteBudget,
 ) -> tuple[dict[str, str], int]:
     for attempt in range(_MAX_REDIRECTS + 1):
         address = await _public_address(url)
@@ -87,13 +112,13 @@ async def _download(
             response.raise_for_status()
             if response.headers.get("content-encoding", "identity").lower() != "identity":
                 raise RemoteImageError("image_url returned an unsupported content encoding")
-            if int(response.headers.get("content-length", "0")) > max_bytes:
-                raise RemoteImageError("Remote images exceed the 10 MiB limit per request")
+            if int(response.headers.get("content-length", "0")) > budget.remaining:
+                raise RemoteImageError(_TOO_LARGE)
 
             data = bytearray()
             async for chunk in response.aiter_raw():
-                if len(data) + len(chunk) > max_bytes:
-                    raise RemoteImageError("Remote images exceed the 10 MiB limit per request")
+                if not await budget.take(len(chunk)):
+                    raise RemoteImageError(_TOO_LARGE)
                 data.extend(chunk)
             content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
             mime_type = _mime_type(data, content_type)
@@ -157,28 +182,44 @@ async def inline_remote_gemini_images(payload: dict[str, Any]) -> None:
 
 
 async def download_remote_images(urls: list[str]) -> list[dict[str, str]]:
-    """Download public images as Gemini inline data within a shared request budget."""
+    """Download public images as Gemini inline data within a shared request budget.
+
+    下载并发进行（上限 :data:`_MAX_DOWNLOAD_CONCURRENCY`），结果顺序与入参一致；
+    任一图片失败或超出共享字节预算时整体失败，避免把半套图片发给上游。
+    """
     if not urls:
         return []
     if len(urls) > _MAX_REMOTE_IMAGES:
         raise RemoteImageError(f"At most {_MAX_REMOTE_IMAGES} remote images are allowed per request")
 
-    images = []
-    remaining_bytes = _MAX_REMOTE_BYTES
+    budget = _ByteBudget(_MAX_REMOTE_BYTES)
+    semaphore = asyncio.Semaphore(_MAX_DOWNLOAD_CONCURRENCY)
+    results: list[dict[str, str] | None] = [None] * len(urls)
+    failures: list[tuple[int, RemoteImageError]] = []
+
+    async def fetch(index: int, url: str, client: httpx.AsyncClient) -> None:
+        async with semaphore:
+            try:
+                image, _size = await _download(client, httpx.URL(url), budget)
+            except RemoteImageError as exc:
+                failures.append((index, exc))
+            except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError):
+                failures.append((index, RemoteImageError(_UNREACHABLE)))
+            else:
+                results[index] = image
+
     try:
         async with asyncio.timeout(_DOWNLOAD_TIMEOUT), httpx.AsyncClient(
             trust_env=False,
             timeout=5,
             limits=httpx.Limits(max_keepalive_connections=0),
         ) as client:
-            for url in urls:
-                image, size = await _download(client, httpx.URL(url), remaining_bytes)
-                images.append(image)
-                remaining_bytes -= size
-    except RemoteImageError:
-        raise
-    except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError):
-        raise RemoteImageError(
-            "Could not download image_url. Check that the URL is publicly accessible"
-        ) from None
-    return images
+            async with asyncio.TaskGroup() as group:
+                for index, url in enumerate(urls):
+                    group.create_task(fetch(index, url, client))
+    except TimeoutError:
+        raise RemoteImageError(_UNREACHABLE) from None
+
+    if failures:
+        raise min(failures, key=lambda failure: failure[0])[1]
+    return [image for image in results if image is not None]
