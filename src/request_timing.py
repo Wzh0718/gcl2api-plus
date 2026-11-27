@@ -21,6 +21,9 @@ class RequestTiming:
     response_total_seconds: float | None = None
     upstream_response_seconds: float | None = None
     downstream_send_seconds: float | None = None
+    # 上游模型调用次数（含重试、换号、容量退避）。同一请求只落一行，
+    # 这个计数让列表能标出「×N」，不必保存逐次重试历史。
+    upstream_attempts: int = 0
     body_first_byte_seconds: float | None = None
     body_receive_seconds: float | None = None
     event_loop_lag_max_seconds: float | None = None
@@ -42,6 +45,9 @@ class RequestTiming:
     def details(self):
         details = {"stages": dict(self.stages), "parameters": dict(self.parameters),
                    "request": dict(self.request_info), "phase_ms": dict(self.phase_ms)}
+        # 只在真的重试过时写，单次请求的行结构与历史记录保持一致。
+        if self.upstream_attempts > 1:
+            details["attempts"] = self.upstream_attempts
         ingress = {}
         if self.body_receive_seconds is not None:
             ingress.update(
@@ -265,6 +271,20 @@ class _TimedStream(httpx.AsyncByteStream):
         await self.stream.aclose()
 
 
+_MODEL_CALL_MARKERS = (':generateContent', ':streamGenerateContent')
+
+
+def is_model_api_call(url) -> bool:
+    """模型推理 URL 过滤，计时钩子与原生传输共用同一判据。
+
+    直接两次 ``in`` 判断，比 any() + 生成器少一次分配；这个函数每次上游
+    尝试都会跑，保持和改动前的内联判断同样的成本。
+    """
+    if not url:
+        return False
+    return _MODEL_CALL_MARKERS[0] in url or _MODEL_CALL_MARKERS[1] in url
+
+
 def timing_hook(url):
     """Measure model inference only; OAuth/credential probes must not overwrite it.
 
@@ -273,8 +293,9 @@ def timing_hook(url):
     the local helper hop, without changing its buffering or protocol.
     """
     state = request_timing.get()
-    if state is None or not any(part in url for part in (':generateContent', ':streamGenerateContent')):
+    if state is None or not is_model_api_call(url):
         return None
+    state.upstream_attempts += 1
     mark_stage("first_upstream_send")
     mark_stage("last_upstream_send", replace=True)
     started = time.monotonic()
