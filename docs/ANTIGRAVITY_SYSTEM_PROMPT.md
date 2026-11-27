@@ -119,15 +119,15 @@ schema 的 `type` 改成大写枚举、数值约束改成字符串（`"minLength
 
 面板键 `antigravity_client_identity_normalization_enabled`，环境变量
 `ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION`。开启后，在敏感词过滤之后、注入写回之前，
-对客户端 system 做三处改写：
+仅改写客户端 system 的开场身份区：
 
 | 原文 | 改写后 |
 | --- | --- |
 | `You are [an] [AI] agent powered by <品牌>.`（part 开头） | `You are a coding assistant.` |
-| `operating inside/within <品牌>` | `operating inside the host application` |
-| `# Runtime Context` / `# Tool Specifications`（同一 part 内） | `# Environment` / `# Tools` |
+| 紧随开场句的 `You are a coding assistant operating inside/within <品牌>.` | 宿主名称改为 `the host application` |
+| 标题、代码块、输出模板和身份区之后的正文 | 原样保留 |
 
-身份句只在 part 开头匹配，正文里引用同句式不改；标题只在命中身份句的 part 内改写。
+身份句只在 part 开头匹配，宿主身份句仅匹配紧随其后的第一条非空行；正文里的同句式、所有标题和代码块均不改写。
 业务正文、工具说明、路径和输出约定逐字节保留；未命中时返回原对象，请求完全不变。
 实现见 `src/converter/client_identity.py`，用例见 `tests/test_client_identity.py`。
 

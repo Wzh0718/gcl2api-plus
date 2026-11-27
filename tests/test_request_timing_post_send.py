@@ -98,3 +98,54 @@ def test_middleware_runs_post_send_work_after_response_body():
     assert response.status_code == 200
     assert response.text == "ok"
     assert events == ["handler_returned", "callback"]
+
+@pytest.mark.parametrize('capture_enabled', [True, False])
+async def test_production_middleware_keeps_capture_context_for_deferred_monitor(monkeypatch, capture_enabled):
+    import asyncio
+    from types import SimpleNamespace
+    import config
+    import web
+    from src import request_capture as capture
+    from src.call_monitor import CallMonitor
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    monkeypatch.setenv('REQUEST_CAPTURE_ENABLED', str(capture_enabled).lower())
+    monkeypatch.setattr(capture, '_capture_queue', asyncio.Queue())
+    monkeypatch.setattr(config, 'get_call_content_capture_enabled_sync', lambda: True)
+    monitor = CallMonitor(SimpleNamespace(_backend=None))
+    rows, events = [], []
+
+    async def enqueue(row, details=None, **kwargs):
+        rows.append((row, details))
+    monkeypatch.setattr(monitor, '_enqueue', enqueue)
+
+    async def handler(request):
+        await request.json()
+        async def bill():
+            events.append('billing')
+            await monitor.record(request_id='test', success=True, upstream_request={
+                'contents': [{'parts': [{'text': 'must not duplicate raw content'}]}],
+            })
+        assert request_timing.defer_after_send(bill)
+        return PlainTextResponse('ok')
+
+    app = Starlette(routes=[Route('/v1/chat/completions', handler, methods=['POST'])],
+                    middleware=web.app.user_middleware)
+    async def receive():
+        return {'type': 'http.request', 'body': b'{"model":"test"}', 'more_body': False}
+    async def send(message):
+        if message['type'] == 'http.response.body':
+            events.append('body')
+    await app({'type': 'http', 'method': 'POST', 'path': '/v1/chat/completions',
+               'headers': [(b'content-type', b'application/json')],
+               'query_string': b'', 'http_version': '1.1', 'client': ('127.0.0.1', 1)},
+              receive, send)
+    assert events == ['body', 'billing']
+    assert len(rows) == 1
+    features = rows[0][0]['request_features']
+    assert bool(features.get('capture_id')) is capture_enabled
+    assert rows[0][1] == {}
+    assert capture.capture_context.get() is None
+    assert capture.capture_managed.get() is False
