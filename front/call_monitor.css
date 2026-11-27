@@ -9,6 +9,32 @@
     margin-top: 4px;
 }
 
+.cm-table .cm-realtime-account {
+    width: 1%;
+}
+
+.cm-account-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cm-account-tier {
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--ui-surface-hover, #eceef2);
+    color: var(--ui-muted, #626a77);
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.cm-account-tier:is([data-tier="pro"], [data-tier="ultra"]) {
+    background: var(--ui-accent-soft, #edf2fb);
+    color: var(--ui-accent-strong, #2453a2);
+    font-weight: 600;
+}
+
 /* 桌面端和移动端共用的耗时提示，独立于表格滚动容器。 */
 .cm-latency-trigger {
     display: inline;

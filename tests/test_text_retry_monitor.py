@@ -39,7 +39,13 @@ async def test_retry_monitor_pages_without_capture(monitor_adapter, monkeypatch)
     )
     monkeypatch.setattr(panel, "get_call_monitor", AsyncMock(return_value=monitor))
     monkeypatch.setattr(panel, "get_storage_adapter", AsyncMock(return_value=adapter))
-    lookup = AsyncMock(return_value={"A": {"user_email": "first@example.test"}})
+    lookup = AsyncMock(
+        return_value={
+            "A": {"user_email": "first@example.test", "tier": "free"},
+            "B": {"tier": "pro"},
+            "C": {"tier": "pro"},
+        }
+    )
     monkeypatch.setattr(adapter._backend, "get_call_monitor_account_metadata", lookup)
     token = capture_managed.set(True)
     try:
@@ -82,6 +88,7 @@ async def test_retry_monitor_pages_without_capture(monitor_adapter, monkeypatch)
             first, second = features["text_account_retry"]["attempts"]
             assert first["user_email"] == "first@example.test"
             assert second["credential_name"] == row["request_id"]
+            assert (first["account_tier"], second["account_tier"]) == ("free", "pro")
             detail = await panel.call_monitor_content(record_id=row["id"])
             attempts = json.loads(detail.body)["request_features"][
                 "text_account_retry"
