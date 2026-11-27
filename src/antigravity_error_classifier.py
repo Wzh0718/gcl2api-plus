@@ -255,28 +255,25 @@ def classify_antigravity_503(
         if not reason:
             reason = str(error.get("reason") or "").upper()
 
-    # 结构化字段优先；正文不可解析（或只有 Python repr）时退回原文关键字，
-    # 避免把真实的 MODEL_CAPACITY_EXHAUSTED 漏判成服务级 503。
+    # Known structured reasons win over numeric hints and message wording.
+    # Use legacy text matching only when no recognized reason is available.
+    known_reason = reason in (_CAPACITY_REASONS | _QUOTA_REASONS | _OVERLOADED_REASONS)
     text_upper = text.upper()
-    capacity_hit = (
-        reason in _CAPACITY_REASONS
-        or any(marker in text_upper for marker in _CAPACITY_REASONS)
-    )
-    quota_hit = (
-        reason in _QUOTA_REASONS
-        or any(marker in text_upper for marker in _QUOTA_REASONS)
-        or _contains_any(lowered, _QUOTA_MESSAGE_MARKERS)
-    )
-    overloaded_hit = (
-        reason in _OVERLOADED_REASONS
-        or any(marker in text_upper for marker in _OVERLOADED_REASONS)
-        or _contains_any(lowered, _OVERLOADED_MESSAGE_MARKERS)
-    )
+    capacity_hit = reason in _CAPACITY_REASONS
+    quota_hit = reason in _QUOTA_REASONS
+    overloaded_hit = reason in _OVERLOADED_REASONS
+    if not known_reason:
+        capacity_hit = (
+            error_number in _CAPACITY_ERROR_NUMBERS
+            or any(marker in text_upper for marker in _CAPACITY_REASONS)
+            or _contains_any(lowered, _CAPACITY_MESSAGE_MARKERS)
+        )
+        quota_hit = (any(marker in text_upper for marker in _QUOTA_REASONS)
+                     or _contains_any(lowered, _QUOTA_MESSAGE_MARKERS))
+        overloaded_hit = (any(marker in text_upper for marker in _OVERLOADED_REASONS)
+                          or _contains_any(lowered, _OVERLOADED_MESSAGE_MARKERS))
 
-    # 1) 模型级容量：reason/error_number 权威，其次消息文本。
-    if capacity_hit or error_number in _CAPACITY_ERROR_NUMBERS or _contains_any(
-        lowered, _CAPACITY_MESSAGE_MARKERS
-    ):
+    if capacity_hit:
         if reason in _CAPACITY_REASONS:
             marker = "reason"
         elif error_number in _CAPACITY_ERROR_NUMBERS:

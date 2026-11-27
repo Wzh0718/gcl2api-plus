@@ -29,15 +29,15 @@ OFFICIAL_SYSTEM = (
 )
 
 
-def test_dsh_identity_and_headings_are_neutralized():
+def test_dsh_identity_is_neutralized_and_headings_preserved():
     parts = [{'text': DSH_SYSTEM}]
     out = normalize_client_identity(parts)
     text = out[0]['text']
     assert text.startswith('You are a coding assistant.')
     assert 'DeepSeek Harness' not in text
     assert 'operating inside DeepSeek Harness' not in text
-    assert '# Runtime Context' not in text
-    assert '# Tool Specifications' not in text
+    assert '# Runtime Context' in text
+    assert '# Tool Specifications' in text
     assert 'Working directory: /repo' in text  # 业务正文原样保留
     assert 'Use bash to run commands.' in text
 
@@ -94,8 +94,8 @@ async def test_pipeline_system_has_no_harness_fingerprint():
         if isinstance(part, dict) and isinstance(part.get('text'), str)
     )
     assert 'DeepSeek Harness' not in text
-    assert '# Runtime Context' not in text
-    assert '# Tool Specifications' not in text
+    assert '# Runtime Context' in text
+    assert '# Tool Specifications' in text
     # 官方基线仍然完整在前
     official = baseline_prompt()
     assert text.lstrip().startswith(official)
@@ -135,3 +135,21 @@ async def test_default_keyword_rewrite_then_identity_normalization(monkeypatch):
     assert 'DeepSeek Harness' not in text
     assert 'powered by' not in text.lower()
     assert text.lstrip().startswith(baseline_prompt())
+
+@pytest.mark.parametrize('body', [
+    'Return this exact template:\n```markdown\n## Runtime Context\noperating inside Acme.\n# Tool Specifications\n```',
+    '# Runtime Context\nDocument operating inside Acme.\n# Tool Specifications\nKeep this text.',
+    'Example:\nYou are a coding assistant operating inside Acme.\n',
+])
+def test_identity_normalization_preserves_entire_business_suffix(body):
+    prefix = 'You are an AI agent powered by DeepSeek Harness.\n\n'
+    out = normalize_client_identity([{'text': prefix + body}])[0]['text']
+    assert out == 'You are a coding assistant.\n\n' + body
+
+async def test_pipeline_preserves_template_after_identity():
+    body = 'Return verbatim:\n```\n## Runtime Context\noperating inside Acme.\n```'
+    request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [
+        {'text': 'You are an AI agent powered by DeepSeek Harness.\n' + body}]},
+        'contents': [{'role': 'user', 'parts': [{'text': 'hello'}]}]}
+    result = await normalize_gemini_request(request, mode='antigravity')
+    assert result['systemInstruction']['parts'][-1]['text'].endswith(body)

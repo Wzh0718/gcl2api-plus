@@ -1645,9 +1645,9 @@ async def get_call_records_retention_days() -> int:
 async def get_antigravity_client_identity_normalization_enabled() -> bool:
     """客户端 harness 身份归一化开关，默认开启。
 
-    只改写 system 里 ``You are an AI agent powered by <品牌>.`` 这类开场句与
-    DSH 专有的 ``# Runtime Context`` / ``# Tool Specifications`` 标题，不触碰
-    业务正文。命中不到时请求完全不变，因此对官方客户端与普通业务请求零影响。
+    只改写 system 开头的 ``You are an AI agent powered by <品牌>.`` 身份句与
+    紧随其后的宿主身份声明；标题、代码块、输出模板和业务正文保留。
+    命中不到时请求完全不变，因此对官方客户端与普通业务请求零影响。
 
     Environment variable: ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION
     """

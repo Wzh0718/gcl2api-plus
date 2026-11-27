@@ -245,3 +245,18 @@ def test_capacity_matched_from_raw_text_is_labelled_text():
     assert decision.marker == "text"
     assert decision.reason == ""
     assert decision.retry_same_account is True
+
+@pytest.mark.parametrize('reason,category,retry,cooldown,hold', [
+    ('QUOTA_EXHAUSTED', 'quota', False, True, False),
+    ('RESOURCE_EXHAUSTED', 'quota', False, True, False),
+    ('MODEL_OVERLOADED', 'model_overloaded', False, True, True),
+    ('MODEL_CAPACITY_EXHAUSTED', 'model_capacity', True, False, False),
+])
+def test_503_structured_reason_wins_over_conflicting_text_and_number(reason, category, retry, cooldown, hold):
+    import json
+    from src.antigravity_error_classifier import classify_antigravity_503
+    body = {'error': {'message': 'No capacity available; quota exhausted and overloaded',
+                     'details': [{'reason': reason, 'metadata': {'error_number': '2010'}}]}}
+    decision = classify_antigravity_503(503, json.dumps(body))
+    assert (decision.category, decision.retry_same_account, decision.write_cooldown,
+            decision.hold_account, decision.marker) == (category, retry, cooldown, hold, 'reason')

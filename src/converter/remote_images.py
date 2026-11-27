@@ -199,12 +199,17 @@ async def download_remote_images(urls: list[str]) -> list[dict[str, str]]:
 
     async def fetch(index: int, url: str, client: httpx.AsyncClient) -> None:
         async with semaphore:
+            if failures:
+                return  # Do not start queued downloads after a sibling failed.
             try:
                 image, _size = await _download(client, httpx.URL(url), budget)
             except RemoteImageError as exc:
                 failures.append((index, exc))
+                raise
             except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError):
-                failures.append((index, RemoteImageError(_UNREACHABLE)))
+                error = RemoteImageError(_UNREACHABLE)
+                failures.append((index, error))
+                raise error from None
             else:
                 results[index] = image
 
@@ -214,9 +219,14 @@ async def download_remote_images(urls: list[str]) -> list[dict[str, str]]:
             timeout=5,
             limits=httpx.Limits(max_keepalive_connections=0),
         ) as client:
-            async with asyncio.TaskGroup() as group:
-                for index, url in enumerate(urls):
-                    group.create_task(fetch(index, url, client))
+            try:
+                async with asyncio.TaskGroup() as group:
+                    for index, url in enumerate(urls):
+                        group.create_task(fetch(index, url, client))
+            except* RemoteImageError:
+                # TaskGroup has cancelled and awaited siblings (including response
+                # cleanup). Unwrap our client-facing error below, never leak a group.
+                pass
     except TimeoutError:
         raise RemoteImageError(_UNREACHABLE) from None
 
