@@ -86,3 +86,48 @@ async def test_unreachable_image_reports_client_visible_error(monkeypatch):
         await remote_images.download_remote_images(["https://images.example/photo.png"])
 
     assert "publicly accessible" in str(excinfo.value)
+
+@pytest.mark.parametrize('error', [remote_images.RemoteImageError('budget exceeded'), httpx.ConnectError('network')])
+async def test_failure_cancels_active_downloads_and_skips_queue(monkeypatch, error):
+    import asyncio
+    started, closed = [], []
+    all_started = asyncio.Event()
+
+    async def download(client, url, budget):
+        index = int(url.path[1:])
+        started.append(index)
+        if len(started) == remote_images._MAX_DOWNLOAD_CONCURRENCY:
+            all_started.set()
+        try:
+            await all_started.wait()
+            if index == 0:
+                raise error
+            await asyncio.Event().wait()
+        finally:
+            closed.append(index)
+
+    monkeypatch.setattr(remote_images, '_download', download)
+    with pytest.raises(remote_images.RemoteImageError) as exc:
+        await asyncio.wait_for(remote_images.download_remote_images(
+            [f'https://images.example/{i}' for i in range(100)]), timeout=1)
+    assert len(started) == remote_images._MAX_DOWNLOAD_CONCURRENCY
+    assert sorted(closed) == sorted(started)
+    assert str(exc.value) == ('budget exceeded' if isinstance(error, remote_images.RemoteImageError)
+                             else remote_images._UNREACHABLE)
+
+async def test_external_cancellation_is_not_converted_to_image_error(monkeypatch):
+    import asyncio
+    started, closed = asyncio.Event(), asyncio.Event()
+    async def download(*args):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+    monkeypatch.setattr(remote_images, '_download', download)
+    task = asyncio.create_task(remote_images.download_remote_images(['https://images.example/0']))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()

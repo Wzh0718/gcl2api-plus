@@ -304,8 +304,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(RequestContentMiddleware)
+# Content/capture must outlive timing's post-send billing and monitor callbacks.
+# Starlette wraps later registrations around earlier registrations.
 app.add_middleware(RequestTimingMiddleware)
+app.add_middleware(RequestContentMiddleware)
 # 最外层：让来源 IP 在整个请求（含流式响应）期间可用
 from src.client_ip import ClientIpMiddleware
 

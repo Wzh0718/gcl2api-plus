@@ -10,8 +10,7 @@
 
 1. **身份开场句**。任何 ``You are [an] [AI] agent powered by <X>.`` 都换成
    中性 persona，去掉品牌声明；
-2. **harness 专有标题**。DSH 的 ``# Runtime Context`` / ``# Tool Specifications``
-   换成通用标题。
+2. **紧随其后的宿主身份句**。仅改写开场身份区的宿主声明；标题与正文保留。
 
 业务正文、工具说明、文件路径、输出约定一律不动，因此不影响指令遵循。
 未命中时返回原对象，调用方可以据此判断是否需要写回。
@@ -33,18 +32,12 @@ _IDENTITY_OPENER = re.compile(
 
 NEUTRAL_PERSONA = 'You are a coding assistant.'
 
-# ``You are a coding assistant operating inside DeepSeek Harness.`` 这类 persona
-# 声明同样带品牌，而且官方文档里从不出现该句式。
-_HOST_APP = re.compile(
-    r'\boperating (?:inside|within) '
-    r'(?P<target>[A-Z][A-Za-z0-9_\-]*(?: [A-Z][A-Za-z0-9_\-]*){0,3})'
-    r'(?=[.,;:!\n]|$)'
-)
-
-# 顺序敏感：先长后短，避免前缀互相吃掉。
-_HARNESS_HEADINGS = (
-    (re.compile(r'(?m)^#+[ \t]+Runtime Context[ \t]*$'), '# Environment'),
-    (re.compile(r'(?m)^#+[ \t]+Tool Specifications[ \t]*$'), '# Tools'),
+# Only the optional persona line immediately following the opener is metadata.
+# Everything after it (including headings and fenced templates) belongs to the caller.
+_HOST_PERSONA = re.compile(
+    r'\A(?P<gap>[ \t\r\n]*)You are a coding assistant operating (?:inside|within) '
+    r'[A-Za-z0-9][A-Za-z0-9 ._\-]{0,60}?\.[ \t]*(?=\r?$)',
+    re.MULTILINE,
 )
 
 
@@ -55,11 +48,12 @@ def _normalize_text(text: str) -> str | None:
     opener = _IDENTITY_OPENER.match(text)
     if opener is None:
         return None
-    replaced = text[: opener.start()] + opener['lead'] + NEUTRAL_PERSONA + text[opener.end():]
-    replaced = _HOST_APP.sub('operating inside the host application', replaced)
-    for pattern, replacement in _HARNESS_HEADINGS:
-        replaced = pattern.sub(replacement, replaced)
-    return replaced
+    tail = text[opener.end():]
+    persona = _HOST_PERSONA.match(tail)
+    if persona is not None:
+        tail = (persona['gap'] + 'You are a coding assistant operating inside the host application.'
+                + tail[persona.end():])
+    return opener['lead'] + NEUTRAL_PERSONA + tail
 
 
 def normalize_client_identity(parts: Iterable[Any]) -> List[Any]:
