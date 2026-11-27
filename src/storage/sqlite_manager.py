@@ -2882,6 +2882,16 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             nodes = await cursor.fetchall()
         if not nodes:
             return None
+        # A deleted account keeps its last observed exit for seven days
+        # (`antigravity_egress_reservations`). Assigning that exit to another
+        # account fails the IP-drift gate on its first health check, leaving the
+        # account enabled yet never selected. The import path already skips
+        # these exits; assignment must agree with the same rule.
+        held_exits = await self._proxy_import_reservation_holds(db)
+        if held_exits:
+            nodes = [n for n in nodes if self._proxy_node_host(n[2]) not in held_exits]
+            if not nodes:
+                return None
         # Prefer nodes outside the expiry window for fresh/hard-failure bindings.
         preferred = [n for n in nodes if n[3] is None or n[3] > current_time + PROXY_EXPIRY_LEAD_SECONDS]
         nodes = preferred or nodes
