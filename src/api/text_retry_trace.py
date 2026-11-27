@@ -35,15 +35,21 @@ class TextRetryTrace:
             self.state = "not_sent"
             self.attempts.append(self._account(account, model))
 
-    def sending(self, account: str, model: str) -> None:
-        """只在准入完成、开始调用上游传输时标记换号。
+    def sending(self, account: str, model: str, *, same_account: bool = False) -> None:
+        """只在准入完成、开始调用上游传输时登记实际尝试。
 
         Args:
             account: 本次发送实际使用的凭证名。
             model: 发往上游的模型名。
+            same_account: 是否为容量型 503 的原号补试。
         """
-        self.state = "sent"
-        self.attempts[-1] = self._account(account, model)
+        attempt = self._account(account, model)
+        if same_account:
+            attempt["kind"] = "same_account"
+            self.attempts.append(attempt)
+        else:
+            self.state = "sent"
+            self.attempts[-1] = attempt
         self.started = time.monotonic()
 
     def respond(

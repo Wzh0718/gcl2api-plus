@@ -1,3 +1,14 @@
+/* 协议与传输方式在上，模型名称在下；桌面和移动端共用。 */
+.cm-mode-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+}
+
+.cm-model-name {
+    margin-top: 4px;
+}
+
 /* 桌面端和移动端共用的耗时提示，独立于表格滚动容器。 */
 .cm-latency-trigger {
     display: inline;
@@ -38,6 +49,10 @@
     font-variant-numeric: tabular-nums;
 }
 
+.cm-latency-trigger[data-tip-multiline] {
+    white-space: nowrap;
+}
+
 .cm-latency-tooltip {
     position: fixed;
     z-index: var(--ui-z-toast, 50);
@@ -68,6 +83,13 @@
 .cm-latency-tooltip-body span {
     display: inline-block;
     white-space: nowrap;
+}
+.cm-retry-tooltip-body span {
+    display: block;
+    white-space: normal;
+}
+.cm-retry-tooltip-body span + span {
+    margin-top: 4px;
 }
 .cm-rate-limit-source {
     display: block;
