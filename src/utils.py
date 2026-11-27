@@ -26,17 +26,19 @@ def get_geminicli_user_agent(model: str = "") -> str:
 # 静态常量
 GEMINICLI_USER_AGENT = get_geminicli_user_agent()
 
-# Antigravity hub 轨迹指纹默认值（2.31.0 / CL 1017595969，官方二进制 --stamp 核验）。
+# Antigravity hub 轨迹指纹默认值（2.35.2 / CL 1029311855，官方二进制实读核验）。
 # 请求信封基线见 docs/AGY-2.25.0-HOOK-封控对比-2026-10-21.md。真实客户端 UA：
-#   antigravity/hub/<ver> (aidev_client; os_type=<os>; arch=<arch>; cl=<CL>)
+#   antigravity/hub/<ver> (aidev_client; os_type=<os>; arch=<arch>; cl=<CL>; datacollection_opt_in=<bool>)
 # 实际生效值优先级：面板配置 > ENV（ANTIGRAVITY_HUB_VERSION/ANTIGRAVITY_HUB_CL）> 这里的默认值。
 # hub 通道周更，CL 只能从新二进制 --stamp 获取；复跑方法见上述文档 §5。
-ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.31.0")
-ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1017595969")
+ANTIGRAVITY_HUB_VERSION = os.getenv("ANTIGRAVITY_HUB_VERSION", "2.35.2")
+ANTIGRAVITY_HUB_CL = os.getenv("ANTIGRAVITY_HUB_CL", "1029311855")
 # 平台字段的部署级默认值。变量名沿用历史命名（容器里已注入），语义是
 # "hub UA 的 os_type/arch 兜底"，与已退役的 CLI 轨迹无关。
 ANTIGRAVITY_PLATFORM_OS_TYPE = os.getenv("ANTIGRAVITY_CLI_OS_TYPE", "linux")
 ANTIGRAVITY_PLATFORM_ARCH = os.getenv("ANTIGRAVITY_CLI_ARCH", "amd64")
+# 2.35.x 起官方 UA 末尾带遥测开关；实抓为 false（--disable_telemetry）。
+DATACOLLECTION_OPT_IN = os.getenv("ANTIGRAVITY_DATACOLLECTION_OPT_IN", "false").strip().lower()
 
 
 def build_antigravity_user_agent(
@@ -56,7 +58,8 @@ def build_antigravity_user_agent(
         cl = cl or get_antigravity_hub_cl_sync()
     return (
         f"antigravity/hub/{version} "
-        f"(aidev_client; os_type={os_type}; arch={arch}; cl={cl})"
+        f"(aidev_client; os_type={os_type}; arch={arch}; cl={cl}; "
+        f"datacollection_opt_in={DATACOLLECTION_OPT_IN})"
     )
 
 

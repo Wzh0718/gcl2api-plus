@@ -29,6 +29,7 @@ DEFAULT_CLIENT_KEYWORDS = (
     "CodeBuddy", "Blackbox AI", "Pieces for Developers", "Qodo", "CodiumAI",
     "Rovo Dev CLI", "Factory Droid", "OpenClaw", "Clawdbot", "Moltbot",
     "Hermes Agent", "Hermes", "WorkBuddy",
+    "DeepSeek Harness", "DSH Agent", "DSH",
 )
 
 

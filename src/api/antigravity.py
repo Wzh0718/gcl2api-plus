@@ -508,6 +508,15 @@ async def wrap_cli_request(
     if not is_gmail:
         inner["metadata"] = {"ideType": "JETSKI"}
 
+    # 工具声明形态对齐（默认开启）：只重排顺序/统一大小写，不改工具名与参数语义。
+    if inner.get("tools"):
+        from config import get_antigravity_official_tool_alignment_enabled
+
+        if await get_antigravity_official_tool_alignment_enabled():
+            from src.converter.tool_alignment import align_tool_declarations
+
+            inner["tools"] = align_tool_declarations(inner["tools"])
+
     payload = {
         "project": project_id,
         "requestId": request_id,

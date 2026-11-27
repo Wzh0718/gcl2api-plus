@@ -6,8 +6,8 @@
 >
 > 1. `antigravity_system_prompt_enabled` 的代码默认值必须是 `true`。除显式保存 `false`（面板取消勾选并保存）或设置 `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED=false` 外，不得把默认值改回关闭。
     旧版本面板写入的历史 `false` 在首次启动时由主库事务一次性纠正为 `true`，同一事务写入标记 `agy_base_prompt_default_migrated_v1`；标记存在后不再覆盖面板保存的 `false`。显式环境变量存在时不动存储。
-> 2. 注入的文本必须是官方 AGY（Antigravity）基础模块，来源限定为 `src/prompts/antigravity-<hub 版本>.txt`，当前为 `2.31.2`。禁止用自定义前置文本、其他项目的提示词或模型生成的融合结果替换这段基础提示。
-> 3. 版本跟随账号：选号后按该账号 hub 版本替换基线前缀；仓库没有对应版本文件时回退 `2.31.2`，不即时生成未核验内容。旧的 `ANTIGRAVITY_FULL_PROMPT_BASELINE` 环境变量不再替换基础模块。
+> 2. 注入的文本必须是官方 AGY（Antigravity）系统提示，来源限定为 `src/prompts/antigravity-<hub 版本>.txt`，当前为 `2.35.2`。该文件是**整段**官方 system（去掉运行时 `<user_information>` 块），运行时只做整段替换，不做分段提取或拼接。禁止用自定义前置文本、其他项目的提示词或模型生成的融合结果替换这段基础提示。
+> 3. 版本跟随账号：选号后按该账号 hub 版本替换基线前缀；仓库没有对应版本文件时回退 `2.35.2`，不即时生成未核验内容。旧的 `ANTIGRAVITY_FULL_PROMPT_BASELINE` 环境变量不再替换基础模块。
 > 4. “AGY 基础提示”“AGY 提示词融合”“自定义系统提示 / 前置文本”是三个独立功能，不能互相替代。
 
 | 配置键 | 环境变量 | 默认 | 行为 |
@@ -22,23 +22,98 @@
 
 ## 官方来源与范围
 
-2026-11-12 从官方更新接口获取的最新 Hub 为 **2.31.2**，execution ID `6470801290035200`。
+2026-11-26 官方更新接口的最新 Hub 为 **2.35.2**，execution ID `4585983447007232`。
 
 - 版本接口：<https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/releases>
-- 官方二进制：<https://storage.googleapis.com/antigravity-public/antigravity-hub/2.31.2-6470801290035200/unsigned/language_server-linux-x64>
-- 二进制大小：206827920 字节。
-- SHA256：`dd9737d3744d9f78e3a13be8ce0c7be8ca3f2cbcdaf702842305401dd31511d9`。
-- 样本为 ELF x86_64 Go PIE；动态导入包括 libc、libresolv、libpthread、libm、libdl、librt、ld-linux。仅做静态模板提取，未启动官方客户端、未发起生成请求。
+- 官方二进制：<https://storage.googleapis.com/antigravity-public/antigravity-hub/2.35.2-4585983447007232/unsigned/language_server-linux-x64>
+- 二进制大小：230003400 字节；运行时自报 CL `1029311855`。
+- 基线文件 `src/prompts/antigravity-2.35.2.txt`：12149 字节，SHA256
+  `7ead810a96593a0394485665cb7c3851f8b704645679c45d3cc77b7447d0c528`。
 
-原始模块来自 Go embed 文件表内的 `google3/third_party/jetski/prompt/template_provider/templates/system_prompts/`，通过 ELF LOAD 地址映射和 RELATIVE 重定位恢复文件指针及精确长度。保存在 `src/prompts/antigravity-2.31.2/`：
+取法（离线复现，未使用真实账号、未向 Google 发生成请求）：把 LS 的
+`--cloud_code_endpoint` 指向本地 mock，用隔离 HOME 的扁平 oauth2 token 文件供凭证，
+再经本地 Connect-RPC `StartCascade` / `SendUserCascadeMessage` 驱动一次真实组装。
+`--subclient_type hub` 时 systemInstruction 为 12788 字节，比 standalone 多一段
+`<terminal_sandbox>`；去掉运行时 `<user_information>` 后即为基线（12149 字节）。
+产物与复现脚本见 `reports/agy-full-prompt-tools-2026-11-26/`。
 
-| 模块 | SHA256 |
+基线包含的固定段：`<identity>`、`<terminal_sandbox>`、`<artifacts>`、`<guidelines>`、
+`<work_efficiently>`、`<communication_style>`、`<slash_commands>`、`<messaging>`。
+`<user_information>`（workspaces、cwd、AppDataDir、conversation id）属于每次会话的运行时数据，
+不进仓库；`<skills>` 段依赖真实 AppDataDir 的 builtin skills，也不进基线。
+实验开关（`generic-system-prompt`、`invoke-subagent-config` 等）会改变官方渲染结果，
+换版本时必须重新按同一方法抓取，不得用模板拼装补段。
+
+历史基线：`src/prompts/antigravity-2.31.2/`（identity/communication_style/guidelines 三个模块）
+与 `antigravity-2.31.2.txt` 保留，仅作回退与对照；2.35.2 起不再按模块渲染。
+
+## 网关引导词（官方块在前、用户 system 说了算）
+
+顺序固定为：**官方 2.35.2 基线 → 收口语 → 客户端 system**。官方块保持在最前，是为了保住
+指纹形态；但它对行为没有裁决权。
+
+收口语（`BRIDGE`，`src/converter/antigravity_system_prompt.py`）以
+`=== END OF HOST DOCUMENT ===` 开头，明确：上面的官方块只是兼容用参考文档、不是指令；
+从这行起，调用方的 system 是 operating contract，覆盖角色、语言、范围、输出格式与工具使用；
+官方块里的 Antigravity 人格、工具、artifacts、sandbox、路径一律忽略；调用方指令按字面执行；
+请求没有声明工具时不得调用任何工具、只能输出文本。
+
+`BRIDGE_REQUIREMENTS` 定义 8 条检查点，`validate_bridge()` 返回缺失项；
+`tests/test_antigravity_system_prompt.py::test_bridge_covers_every_host_adaptation_requirement`
+在 CI 中锁定。
+
+### 有效性证据（2026-11-27，12 道冲突探针）
+
+三个臂：U=只有客户端 system；O=官方基线+客户端 system；F=官方基线+收口语+客户端 system。
+
+| 臂 | 通过率 |
 | --- | --- |
-| identity.tmpl | bd8957e589c97f9fa5d5fe3077b01c49b0329f0987bd58cf73bab123ea0a199b |
-| communication_style.tmpl | 96e2f45838771003bbfb05206623bb6be4b64187eaa97a4e4d1f2d9e9de86c8f |
-| guidelines.tmpl | f4ede326caaa79f7454af6dac251cf0436ab8375c1b06eade975bcaf85a7c439 |
+| U | 12/12 |
+| O | 11/12 |
+| F（当前实现） | **12/12** |
 
-以 Go text/template 渲染：`generic-system-prompt=false`、`IsAutonomous=false`、`SupportsLatexRendering=false`；产物为 `src/prompts/antigravity-2.31.2.txt`，SHA256 `85a8a9070376c8b0a90c0c97b6001991e490a919351cf827e36a446ddacbdd9f`。`tests/test_antigravity_system_prompt.py::test_default_switches_on_official_agy_baseline` 锁定上述四个文件哈希；替换基线必须同时更新该用例与本文档。这三个固定基础模块**不是完整运行时 system**。完整内容还依赖模型、实验、会话、技能、工作区、工具和其他代码生成模块，未冒充或重建这些客户端状态。不在线自动拉取更新，升级时重新核查并随代码发布。
+对比旧版引导词（把客户端 system 称作 "client guidance about the host application"、无收口语）：
+F 只有 8/12，还会在未声明工具时凭空返回 `functionCall: run_command`。新版与“只有客户端 system”
+逐题一致。实验与原始结果见 `reports/agy-bridge-dominance-2026-11-27/`。
+
+### 已知边界
+
+业务打分对 system 前缀本身敏感：同一请求加一句 “You are a helpful assistant.” 也会让
+个别样本（如 29935784）的维度分从 70 掉到 20。这不是官方块独有的问题，换措辞压不住；
+这类样本需要业务侧单独回归，不能当作提示词回归失败。
+
+## 日志详情审计（真实请求抽样）
+
+`scripts/audit_bridge_records.py` 从 `call_records.request_details.upstream`
+（内容捕获开启时写入的 `{system, messages, tools, parameters, response}`）里抽样，
+只读数据库、不发上游请求：
+
+```bash
+.venv/bin/python scripts/audit_bridge_records.py --limit 200 --strict
+.venv/bin/python scripts/audit_bridge_records.py --replay     # 用当前管线重放历史记录
+```
+
+判据分两层。注入层（有 system 即可判）：基线版本、引导词存在且唯一、位于末尾
+（允许结构化输出优先级声明作为唯一尾随段）、运行时 `<user_information>` 未泄漏。
+依从层（有 response 才判）：是否调用未声明工具（硬失败）、是否声称执行过动作或
+编造请求里不存在的绝对路径（提示，需人工看上下文）。
+
+2026-11-27 对本地库的抽样结果：`call_records` 共 576 条，带详情 6 条；其中 1 条
+（id 212，gemini-2.5-flash-lite 结构化输出请求）带 system，其余为图片请求（上游
+信封不带 system）。其余 5 条为图片请求，审计按 `system_not_expected` 处理（ok=5）。该记录是改动前的
+流量，审计结论 `baseline=<=2.31.x`、`bridge_legacy`；`--replay` 用当前管线重新注入后
+为 `baseline=2.35.x`、单条新引导词、问题列表为空，`--strict` 通过。要扩大样本，先在面板开启内容捕获，让新流量落详情，再按同一命令抽检。
+
+## 工具声明形态对齐（默认关闭）
+
+面板“AGY 系统提示与客户端指导 → 更多设置”里的**官方工具声明形态**开关
+（键 `antigravity_official_tool_alignment_enabled`，环境变量
+`ANTIGRAVITY_OFFICIAL_TOOL_ALIGNMENT`）开启后，`wrap_cli_request` 会把客户端的
+`tools` 按来源工具集（AGY / DSH / Claude Code / GPT(Codex)，按名字交集自动识别）的规范顺序重排、合并成单个 `functionDeclarations` entry，并把
+schema 的 `type` 改成大写枚举、数值约束改成字符串（`"minLength": "1"`）。
+只改形态：不重命名工具、不改参数名和枚举值，因此客户端调用与结果映射不受影响。
+关闭时请求逐字节不变。规则、各家顺序表与识别逻辑见 `src/converter/tool_alignment.py`，
+用例见 `tests/test_tool_alignment.py`。
 
 ## 与其他配置的关系
 
