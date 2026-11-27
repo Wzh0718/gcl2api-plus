@@ -797,9 +797,10 @@ def _should_retry_same_account(
 ) -> bool:
     """本次上游失败是否值得「原号再试一次」。
 
-    ``requested`` 由 503 分类决定（只有模型级容量为 True）。这里再压一层预算：
-    每个请求只给一次。线上实测 536 次容量 503 分布在 536 个请求上，没有请求
-    撞到第二次，第二次之后的尝试救不回任何人，只放大延迟和上游调用。
+    ``requested`` 由调用方结合 503 分类给出：只有模型级容量为 True，且必须还没
+    换过号——换过的号在同一个容量窗口里同样是 503，再补一次只多一次往返。
+    这里再压一层预算：每个请求最多一次。线上实测 536 次容量 503 分布在 536 个
+    请求上，没有请求撞到第二次，第二次之后的尝试救不回任何人。
     重试不 sleep：下一次尝试的命中率和几秒后一样高，等待只增加延迟。
     """
     if not requested or already_retried:
@@ -1476,7 +1477,6 @@ async def _stream_request_inner(
 
     retry_trace = None
     used_alternate = False
-    capacity_after_switch = False
     sent_attempts = 0
     attempt = 0
     capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉（每请求一次）
@@ -1618,6 +1618,11 @@ async def _stream_request_inner(
                                 headers=getattr(chunk, "headers", None),
                             )
 
+                        if upstream_503 is not None and upstream_503.retry_same_account:
+                            # 容量 503 归咎不到账号，但同一个号在窗口里会被反复撞上：
+                            # 把它在轮转队列里往后挪几步（软降权），不写冷却、不禁用。
+                            await _demote_capacity_account(current_file)
+
                         classified_403 = None
                         if status_code == 403:
                             classified_403 = await _handle_antigravity_403(
@@ -1638,15 +1643,17 @@ async def _stream_request_inner(
                         # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
                         capacity_error = upstream_503 is not None and upstream_503.retry_same_account
                         retry_capacity_here = _should_retry_same_account(
+                            # 换号已经用过就不再补试：同一容量窗口里换过的号也在 503，
+                            # 再打一次注定失败，只多一次上游往返和延迟。
                             requested=(
                                 capacity_error
-                                and (not used_alternate or capacity_after_switch)
+                                and not used_alternate
                                 and not success_recorded
                             ),
                             already_retried=capacity_retry_used,
                             retry_enabled=retry_config["retry_enabled"],
                             attempt=attempt,
-                            max_retries=max_retries + int(capacity_after_switch),
+                            max_retries=max_retries,
                         )
                         stream_final_failure = (
                             (attempt >= max_retries and not retry_capacity_here)
@@ -1693,7 +1700,6 @@ async def _stream_request_inner(
                                     retry_trace.selected(candidate[0] if candidate else None, model_name)
                                 if candidate and await apply_cred_result(candidate):
                                     used_alternate = True
-                                    capacity_after_switch = status_code == 503
                                     max_retries = attempt + 1
                                     alternate_ready = True
                                     break
@@ -1720,7 +1726,7 @@ async def _stream_request_inner(
                             # 容量型 503 的一次原号重试已经用掉：不再换号重投，
                             # 直接把上游 503（含 RetryInfo）交给客户端。
                             log.error(
-                                "[ANTIGRAVITY STREAM] 模型级容量 503 已用掉一次原号重试，"
+                                "[ANTIGRAVITY STREAM] 模型级容量 503 不再重试，"
                                 f"透传上游错误: {current_file} / {model_name}"
                             )
                             await record_billing_once(False, response=chunk)
@@ -2738,7 +2744,6 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
 
     retry_trace = None
     used_alternate = False
-    capacity_after_switch = False
     sent_attempts = 0
     attempt = 0
     capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉
@@ -2949,6 +2954,11 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                             headers=getattr(response, "headers", None),
                         )
 
+                    if upstream_503 is not None and upstream_503.retry_same_account:
+                        # 容量 503 归咎不到账号，但同一个号在窗口里会被反复撞上：
+                        # 把它在轮转队列里往后挪几步（软降权），不写冷却、不禁用。
+                        await _demote_capacity_account(current_file)
+
                     classified_403 = None
                     if status_code == 403:
                         classified_403 = await _handle_antigravity_403(
@@ -2969,11 +2979,12 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
                     capacity_error = upstream_503 is not None and upstream_503.retry_same_account
                     retry_capacity_here = _should_retry_same_account(
-                        requested=capacity_error and (not used_alternate or capacity_after_switch),
+                        # 换号已经用过就不再补试：同一容量窗口里换过的号也在 503。
+                        requested=capacity_error and not used_alternate,
                         already_retried=capacity_retry_used,
                         retry_enabled=retry_config["retry_enabled"],
                         attempt=attempt,
-                        max_retries=max_retries + int(capacity_after_switch),
+                        max_retries=max_retries,
                     )
                     ns_final_failure = (
                         (attempt >= max_retries and not retry_capacity_here)
@@ -3019,7 +3030,6 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                                 retry_trace.selected(candidate[0] if candidate else None, model_name)
                             if candidate and await apply_cred_result(candidate):
                                 used_alternate = True
-                                capacity_after_switch = status_code == 503
                                 max_retries = attempt + 1
                                 attempt += 1
                                 continue
@@ -3044,7 +3054,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         # 容量型 503 的一次原号重试已经用掉：不再换号重投，
                         # 直接把上游 503（含 RetryInfo）交给客户端。
                         log.error(
-                            "[ANTIGRAVITY] 模型级容量 503 已用掉一次原号重试，"
+                            "[ANTIGRAVITY] 模型级容量 503 不再重试，"
                             f"透传上游错误: {current_file} / {model_name}"
                         )
                         await record_billing_once(False, response=last_error_response)
@@ -3764,6 +3774,26 @@ async def _fetch_quota_summary_groups(
 
 # 瞬时限流（429 但未携带配额重置时间）的默认短冷却秒数
 RATE_LIMIT_DEFAULT_COOLDOWN_SECONDS = 60
+# 容量型 503 的软降权：把这个号在轮转队列里往后挪几步，不做冷却、不禁用。
+# 账号仍会被选中，只是不会再连着被同一个号反复撞上容量窗口。
+ANTIGRAVITY_CAPACITY_DEMOTE_STEPS = 2
+
+async def _demote_capacity_account(credential_name: str) -> None:
+    """容量型 503 的软降权：让这个号在轮转队列里排到后面几位。
+
+    不写冷却、不禁用、不动其他模型；失败也绝不能影响当前请求。
+    """
+    demote = getattr(credential_manager, "demote_antigravity_rotation", None)
+    if demote is None or not credential_name:
+        return
+    try:
+        await demote(credential_name, steps=ANTIGRAVITY_CAPACITY_DEMOTE_STEPS)
+    except Exception as exc:  # noqa: BLE001 - 降权失败不能打断重试路径
+        log.warning(
+            f"[ANTIGRAVITY] 容量 503 降权失败 {credential_name}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
 
 async def _resolve_error_cooldown(
     status_code: int,

@@ -236,3 +236,32 @@ async def test_76_concurrent_claims_split_evenly_across_38_accounts(manager):
         await manager.store_credential(name, {"access_token": "test"}, mode="antigravity")
     selected = await asyncio.gather(*(select(manager) for _ in range(76)))
     assert Counter(selected) == dict.fromkeys(names, 2)
+
+
+@pytest.mark.asyncio
+async def test_capacity_demote_moves_account_to_queue_tail(manager):
+    """容量型 503 的软降权：账号不冷却，只是排到轮转队列后面。"""
+    for _ in range(len(NAMES)):
+        await select(manager)
+
+    async with aiosqlite.connect(manager._db_path) as db:
+        cursor = await db.execute(
+            "SELECT filename, COALESCE(routing_turn, 0) FROM antigravity_credentials"
+        )
+        before = dict(await cursor.fetchall())
+
+    steps = 2
+    await manager.demote_antigravity_rotation("account-0.json", steps=steps)
+
+    async with aiosqlite.connect(manager._db_path) as db:
+        cursor = await db.execute(
+            "SELECT filename, COALESCE(routing_turn, 0) FROM antigravity_credentials"
+        )
+        after = dict(await cursor.fetchall())
+
+    others = max(turn for name, turn in after.items() if name != "account-0.json")
+    assert after["account-0.json"] > others
+    assert after["account-0.json"] >= before["account-0.json"] + steps
+    # 软降权不动可用性：账号仍然会被轮转到，只是排在后面
+    picked = [await select(manager) for _ in range(len(NAMES) * 2)]
+    assert "account-0.json" in picked

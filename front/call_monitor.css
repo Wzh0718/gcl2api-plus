@@ -9,6 +9,32 @@
     margin-top: 4px;
 }
 
+.cm-table .cm-realtime-account {
+    width: 1%;
+}
+
+.cm-account-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cm-account-tier {
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--ui-surface-hover, #eceef2);
+    color: var(--ui-muted, #626a77);
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.cm-account-tier:is([data-tier="pro"], [data-tier="ultra"]) {
+    background: var(--ui-accent-soft, #edf2fb);
+    color: var(--ui-accent-strong, #2453a2);
+    font-weight: 600;
+}
+
 /* 桌面端和移动端共用的耗时提示，独立于表格滚动容器。 */
 .cm-latency-trigger {
     display: inline;
@@ -98,3 +124,85 @@
     font-size: 11px;
     white-space: nowrap;
 }
+
+/* 「模型 / 协议 / 推理 / 服务」合成一列：模型名主行，协议与差异项做次行小字。
+   次行只出现偏离默认的项（非「对话」任务、非 Antigravity 上游），不再写「对话 / antigravity」。 */
+.cm-table td.cm-model-cell {
+    min-width: 168px;
+    padding-left: 14px;
+    vertical-align: top;
+    /* 只用一条 2px 色条表达任务类型：对话蓝、生图琥珀、嵌入青绿；不铺底色、不做色块。 */
+    box-shadow: inset 2px 0 hsl(var(--cm-task-hue, 220) 64% 60%);
+}
+.cm-model-cell .cm-model-meta .cm-tone-task {
+    color: hsl(var(--cm-task-hue, 220) 58% 40%);
+    font-weight: 500;
+}
+.cm-model-cell .cm-model-meta .cm-tone-channel {
+    color: hsl(var(--cm-channel-hue, 220) 55% 42%);
+    font-weight: 500;
+}
+.cm-model-cell .cm-model-name {
+    font-weight: 500;
+    line-height: 1.5;
+}
+.cm-model-cell .cm-model-meta {
+    margin-top: 3px;
+    color: var(--ui-muted, #6b7684);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.cm-model-cell .cm-model-meta span + span::before {
+    content: "·";
+    margin: 0 5px;
+    opacity: .55;
+}
+/* 降级链里被切换的那一段仍单独着色，和次行的小字区分开。 */
+.cm-model-cell .cm-upstream-model {
+    color: var(--ui-accent, #2764ce);
+}
+html[data-theme="dark"] .cm-table td.cm-model-cell {
+    box-shadow: inset 2px 0 hsl(var(--cm-task-hue, 220) 50% 60%);
+}
+html[data-theme="dark"] .cm-model-cell .cm-model-meta .cm-tone-task {
+    color: hsl(var(--cm-task-hue, 220) 45% 70%);
+}
+html[data-theme="dark"] .cm-model-cell .cm-model-meta .cm-tone-channel {
+    color: hsl(var(--cm-channel-hue, 220) 45% 70%);
+}
+
+/* 遥测与请求详情合成一列：两个入口用细竖线隔开，列名只写「详情」。 */
+.cm-table td.cm-detail-cell {
+    white-space: nowrap;
+}
+.cm-detail-cell .cm-detail-sep {
+    display: inline-block;
+    width: 1px;
+    height: 11px;
+    margin: 0 8px;
+    background: var(--ui-border, #dbe3ed);
+    vertical-align: -1px;
+}
+@media (max-width: 720px) {
+    .cm-table td.cm-model-cell { min-width: 0; }
+    .cm-model-cell .cm-model-meta { font-size: 10px; }
+    .cm-detail-cell .cm-detail-sep { margin: 0 6px; }
+}
+
+/* 「最近状态」+「状态」合成「结果」列：状态码与判定放在一起，重试链压缩成 503×3。 */
+.cm-table td.cm-result-cell {
+    white-space: nowrap;
+}
+.cm-result-cell .cm-verdict {
+    margin-left: 6px;
+    font-size: 12px;
+    font-weight: 500;
+}
+/* theme.css 只覆盖了 .cm-code-ok，失败/告警码在暗色下仍是浅底红字，这里补齐。 */
+html[data-theme="dark"] .cm-table .cm-code-fail { background: #3c282d; color: #e06c75; }
+html[data-theme="dark"] .cm-table .cm-code-warn { background: #3a3120; color: #e5c07b; }
+.cm-result-cell .cm-verdict.is-ok { color: #28a745; }
+.cm-result-cell .cm-verdict.is-fail { color: #dc3545; }
+html[data-theme="dark"] .cm-result-cell .cm-verdict.is-ok { color: #98c379; }
+html[data-theme="dark"] .cm-result-cell .cm-verdict.is-fail { color: #e06c75; }
