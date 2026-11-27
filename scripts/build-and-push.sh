@@ -147,6 +147,7 @@ run_quality_gates() {
         printf '\n[4/5] JavaScript 语法检查与监控刷新回归\n'
         node --check front/common.js
         node tests/call_monitor_loading.test.cjs
+        node tests/refresh_token_input.test.cjs
 
         printf '\n[5/5] 导出源码合并标记检查\n'
         ! grep -rn --include='*.py' --include='*.js' --include='*.html' --include='*.css' \
