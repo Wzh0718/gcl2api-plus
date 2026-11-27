@@ -1,3 +1,5 @@
+"""验证调用监控的记录、聚合和面板 API。"""
+
 import time
 
 import pytest
@@ -649,3 +651,69 @@ async def test_call_monitor_exposes_warmup_status(tmp_path, monkeypatch):
     assert realtime["records"][0]["warmup_status"] == "warming"
     assert realtime["records"][0]["warmup_level"] == 0
     await adapter.close()
+
+
+async def test_call_monitor_exposes_current_account_tier_in_all_views(tmp_path, monkeypatch):
+    """账号聚合、密钥明细和逐条记录都按凭证匹配已保存的档位。"""
+    from unittest.mock import AsyncMock
+
+    from src.panel import call_monitor as routes
+
+    adapter = await _make_adapter(tmp_path, monkeypatch)
+    backend = adapter._backend
+    monkeypatch.setattr(routes, "get_storage_adapter", AsyncMock(return_value=adapter))
+    expected = {
+        "acc-free.json": "free",
+        "acc-pro.json": "pro",
+        "acc-ultra.json": "ultra",
+    }
+
+    try:
+        for name, tier in expected.items():
+            assert await backend.store_credential(name, {}, mode="antigravity")
+            await backend.insert_call_record(
+                **_record_kwargs(name, credential_name=name)
+            )
+            assert await backend.update_credential_state(
+                name, {"tier": tier}, mode="antigravity"
+            )
+
+        for view in ("account", "key"):
+            overview = await routes.call_monitor_overview(
+                view=view, range="all", _token=None
+            )
+            actual = {
+                row["credential_name"]: row["account_tier"] for row in overview["rows"]
+            }
+            assert actual == expected
+
+        realtime = await routes.call_monitor_realtime(range="recent", _token=None)
+        actual = {
+            row["credential_name"]: row["account_tier"] for row in realtime["records"]
+        }
+        assert actual == expected
+    finally:
+        await adapter.close()
+
+
+async def test_account_tier_ignores_vertex_and_missing_credentials():
+    """兜底查询不把同名 Antigravity 凭证的档位显示在 Vertex 记录上。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.panel.call_monitor import _attach_account_metadata
+
+    getter = AsyncMock(return_value={"account": {"tier": "pro"}})
+    rows = [
+        {"credential_name": "account", "channel": "vertex"},
+        {"credential_name": "account", "channel": "antigravity"},
+        {"credential_name": "missing"},
+        {"credential_name": "", "group_key": "account"},
+    ]
+
+    await _attach_account_metadata(
+        rows, SimpleNamespace(get_all_credential_states=getter)
+    )
+
+    getter.assert_awaited_once_with(mode="antigravity")
+    assert [row["account_tier"] for row in rows] == [None, "pro", None, None]

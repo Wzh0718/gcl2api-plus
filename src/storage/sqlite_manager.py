@@ -4407,19 +4407,21 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         ))
 
     async def get_call_monitor_account_metadata(self, names: List[str]) -> Dict[str, Any]:
+        """批量读取调用监控所需的账号邮箱、档位和预热状态。"""
         rows = await self._monitor_lookup(
-            """SELECT c.filename, c.user_email, w.status, w.level, w.success_count, w.config_json
+            """SELECT c.filename, c.user_email, c.tier,
+                      w.status, w.level, w.success_count, w.config_json
                  FROM antigravity_credentials c
                  LEFT JOIN antigravity_warmup_accounts w ON w.credential_name = c.filename
                 WHERE c.filename IN ({keys})""", names
         )
         return {
             name: {
-                "user_email": email or "", "warmup_status": status or "off",
+                "user_email": email or "", "tier": tier, "warmup_status": status or "off",
                 "warmup_level": int(level or 0), "warmup_success_count": int(successes or 0),
                 "warmup_max_level": int(json.loads(config or "{}").get("max_level") or 3),
             }
-            for name, email, status, level, successes, config in rows
+            for name, email, tier, status, level, successes, config in rows
         }
 
     async def recent_monitor_snapshot(self, limit: int) -> List[Dict[str, Any]]:

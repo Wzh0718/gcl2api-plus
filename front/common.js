@@ -4068,6 +4068,12 @@ function _cmRequestModeCell(row) {
 
 // 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
 const CM_KEY_ACCOUNT_LIMIT = 50;
+const CM_ACCOUNT_TIER_HEADER = '<th title="凭证库最近保存的档位，不是调用发生时的快照">账号档位</th>';
+const CM_ACCOUNT_TIER_LABELS = new Map([['free', 'Free'], ['pro', 'Pro'], ['ultra', 'Ultra']]);
+
+function _cmAccountTierCell(row) {
+    return `<td>${CM_ACCOUNT_TIER_LABELS.get(row?.account_tier) || '—'}</td>`;
+}
 
 function _cmKeyModelHtml(row) {
     const model = String(row.top_model || row.model_name || '').trim();
@@ -4161,6 +4167,7 @@ function _cmRenderKeyGroups(groups) {
                     <span class="cm-group-accounts">${accountCount} 个账号</span>
                 </button>
             </td>
+            ${_cmAccountTierCell()}
             <td>${_cmKeyModelHtml(group.leader)}</td>
             <td>${_cmTaskLabel(group.taskType)} / ${_cmEscape(group.channel || 'antigravity')}</td>
             <td>${_cmStatusCodeChip(group.lastStatusCode)}</td>
@@ -4180,6 +4187,7 @@ function _cmRenderKeyGroups(groups) {
             const accountTokensTip = `输入 ${_cmFormatTokens(account.input_tokens)} / 输出 ${_cmFormatTokens(account.output_tokens)} / 缓存 ${_cmFormatTokens(account.cache_tokens)} / 思考 ${_cmFormatTokens(account.thought_tokens)}`;
             rowsHtml.push(`<tr class="cm-child-row">
                 <td class="cm-key-cell cm-child-cell" title="账号: ${_cmMask(account.user_email || account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.user_email || account.credential_name || '-')}${_cmWarmupBadge(account)}</td>
+                ${_cmAccountTierCell(account)}
                 <td>${_cmKeyModelHtml(account)}</td>
                 <td>${_cmTaskLabel(account.task_type)} / ${_cmEscape(account.channel || 'antigravity')}</td>
                 <td>${_cmStatusCodeChip(account.last_status_code)}</td>
@@ -4194,12 +4202,12 @@ function _cmRenderKeyGroups(groups) {
             </tr>`);
         }
         if (accountCount > visible.length) {
-            rowsHtml.push(`<tr class="cm-group-more"><td colspan="12">还有 ${accountCount - visible.length} 个账号未显示（按调用量降序，仅展示前 ${CM_KEY_ACCOUNT_LIMIT} 个）</td></tr>`);
+            rowsHtml.push(`<tr class="cm-group-more"><td colspan="13">还有 ${accountCount - visible.length} 个账号未显示（按调用量降序，仅展示前 ${CM_KEY_ACCOUNT_LIMIT} 个）</td></tr>`);
         }
     }
     return `<div class="cm-table-wrap"><table class="cm-table cm-table-key">
         <thead><tr>
-            <th>密钥 / 账号</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥 / 账号</th>${CM_ACCOUNT_TIER_HEADER}<th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
         </tr></thead>
         <tbody>${rowsHtml.join('')}</tbody>
@@ -4225,6 +4233,7 @@ function _cmRenderGrouped(rows, view) {
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         return `<tr>
             <td class="cm-key-cell" title="${title}: ${_cmMask(name)}">${_cmMask(name)}${_cmWarmupBadge(row)}</td>
+            ${_cmAccountTierCell(row)}
             <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
             <td>${taskService}</td>
             <td>${_cmStatusCodeChip(row.last_status_code)}</td>
@@ -4240,7 +4249,7 @@ function _cmRenderGrouped(rows, view) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>${firstHead}</th><th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>${firstHead}</th>${CM_ACCOUNT_TIER_HEADER}<th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -4505,6 +4514,7 @@ function _cmRenderRealtime(records) {
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
             <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${_cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            ${_cmAccountTierCell(row)}
             <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
         </tr>`;
@@ -4512,7 +4522,7 @@ function _cmRenderRealtime(records) {
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th><th>遥测</th><th>请求详情</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>遥测</th><th>请求详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
