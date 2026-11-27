@@ -19,7 +19,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-NEW_BRIDGE_MARKER = '=== END OF HOST DOCUMENT ==='
+NEW_BRIDGE_MARKER = '=== SESSION MODE: CALLER-MANAGED ==='
 LEGACY_BRIDGE_MARKER = 'Execution environment adapter'
 RUNTIME_BLOCK_MARKER = '<user_information>'
 

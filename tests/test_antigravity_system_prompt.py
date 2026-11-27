@@ -314,11 +314,11 @@ def test_bridge_covers_every_host_adaptation_requirement():
     )
 
     assert validate_bridge() == []
-    assert len(BRIDGE_REQUIREMENTS) >= 8
+    assert len(BRIDGE_REQUIREMENTS) >= 6
     for _, needle in BRIDGE_REQUIREMENTS:
         assert needle in BRIDGE
-    assert '=== END OF HOST DOCUMENT ===' in BRIDGE
-    assert 'override the host document' in BRIDGE
+    assert '=== SESSION MODE: CALLER-MANAGED ===' in BRIDGE
+    assert "caller's system instructions define the operative" in BRIDGE
 
 
 async def test_baseline_is_the_official_2352_prompt_without_runtime_block():

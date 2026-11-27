@@ -45,7 +45,7 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 向 Antigravity 通道注入 system 时，**AGY 基础提示默认开启，且注入内容必须是官方 Antigravity 基础模块**。这两点是明确的交付约束，不是可选项：
 
 1. **默认开启**：`antigravity_system_prompt_enabled` 的代码默认值为 `true`。未保存过该配置的部署，第一个 Antigravity 请求即注入基础提示；面板「内容与提示 → AGY 基础提示」默认勾选。
-2. **提示词必须是 AGY 的**：注入文本取自 `src/prompts/antigravity-2.35.2.txt`，即官方 hub 2.35.2 的完整 system（identity / terminal_sandbox / artifacts / guidelines / work_efficiently / communication_style / slash_commands / messaging），去掉运行时 `<user_information>` 块后整段落盘（SHA256 见 [AGY system 注入说明](docs/ANTIGRAVITY_SYSTEM_PROMPT.md)），后接收口语（`=== END OF HOST DOCUMENT ===`：官方块仅作参考，客户端 system 优先），再跟客户端 system。不做分段提取或拼接；禁止用自定义前置文本、其他模型或产品的提示词、提示词融合结果替代这段基线。
+2. **提示词必须是 AGY 的**：注入文本取自 `src/prompts/antigravity-2.35.2.txt`，即官方 hub 2.35.2 的完整 system（identity / terminal_sandbox / artifacts / guidelines / work_efficiently / communication_style / slash_commands / messaging），去掉运行时 `<user_information>` 块后整段落盘（SHA256 见 [AGY system 注入说明](docs/ANTIGRAVITY_SYSTEM_PROMPT.md)），后接收口语（`=== SESSION MODE: CALLER-MANAGED ===`：官方块仅作参考，客户端 system 优先），再跟客户端 system。不做分段提取或拼接；禁止用自定义前置文本、其他模型或产品的提示词、提示词融合结果替代这段基线。
 3. **版本跟随账号**：选号后按该账号 hub 版本整段替换基线；仓库缺少对应版本文件时回退 2.35.2，不在线生成未核验内容。
 4. **历史配置迁移**：旧版本只保存开关值，无法区分默认写入与手动关闭。升级时，主库在同一事务内把历史 `false` 一次性改为 `true`，并写入标记 `agy_base_prompt_default_migrated_v1`。升级后在面板关闭并保存，后续正常重启或多个实例同时启动都会保留 `false`。如需在首次升级时也保持关闭，请提前设置 `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED=false`。
 5. **关闭方式**：面板取消勾选并保存，或设置 `ANTIGRAVITY_SYSTEM_PROMPT_ENABLED=false`（环境变量优先并锁定面板）。显式设置该环境变量的部署不改动存储，由环境变量决定开关状态。
