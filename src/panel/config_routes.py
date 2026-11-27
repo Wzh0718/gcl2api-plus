@@ -84,6 +84,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["auto_ban_error_codes"] = await config.get_auto_ban_error_codes()
 
         # 429重试配置
+        current_config["text_account_retry_status_codes"] = await config.get_text_account_retry_status_codes()
         current_config["retry_429_max_retries"] = await config.get_retry_429_max_retries()
         current_config["retry_429_enabled"] = await config.get_retry_429_enabled()
         current_config["retry_429_interval"] = await config.get_retry_429_interval()
@@ -241,6 +242,16 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
 
         # 验证配置项
+        if "text_account_retry_status_codes" in new_config:
+            from src.api.text_retry import parse_status_codes
+
+            try:
+                new_config["text_account_retry_status_codes"] = parse_status_codes(
+                    new_config["text_account_retry_status_codes"]
+                )
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, str(exc)) from exc
+
         if "retry_429_max_retries" in new_config:
             if (
                 not isinstance(new_config["retry_429_max_retries"], int)

@@ -15,6 +15,7 @@ from config import (
     get_auto_ban_enabled,
     get_auto_ban_error_codes,
     get_retry_429_enabled,
+    get_text_account_retry_status_codes,
     get_retry_429_interval,
     get_retry_429_max_retries,
     get_max_non_stream_buffer_bytes,
@@ -181,6 +182,7 @@ async def get_retry_config() -> Dict[str, Any]:
         包含重试配置的字典
     """
     return {
+        "text_codes": await get_text_account_retry_status_codes(),
         "retry_enabled": await get_retry_429_enabled(),
         "max_retries": await get_retry_429_max_retries(),
         "retry_interval": await get_retry_429_interval(),

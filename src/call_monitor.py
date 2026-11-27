@@ -95,6 +95,7 @@ class CallMonitor:
         currency: str = "CNY",
         created_at: Optional[float] = None,
         upstream_request: Optional[dict] = None,
+        text_account_retry: Optional[dict] = None,
     ) -> None:
         """记录一次调用。任何持久化失败都不影响请求主流程。"""
         from src.request_features import build_request_features
@@ -114,6 +115,8 @@ class CallMonitor:
                 capture.api_key_id = api_key_id
         else:
             features, details = build_request_features(upstream_request)
+        if text_account_retry is not None:
+            features["text_account_retry"] = text_account_retry
         if status_code == 429 and rate_limit is not None:
             features["rate_limit"] = rate_limit.as_dict()
         row: Dict[str, Any] = {

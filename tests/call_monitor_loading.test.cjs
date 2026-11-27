@@ -4,6 +4,37 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('retry monitoring shows both identities, distinct outcomes and masked details', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
+    const context = vm.createContext({callMonitorState: {mask: false}});
+    for (const name of ['_cmEscape', '_cmMask', '_cmRateLimitText', '_cmStatusCodeChip', '_cmTextRetryCells', '_cmRequestFeatureCell']) {
+        const start = source.indexOf(`function ${name}(`);
+        vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    }
+    const retry = {state: 'sent', attempts: [
+        {user_email: 'first@example.test', status_code: 429, elapsed_ms: 17, model: '<test>', retry_after: '12', rate_limit: {source: 'upstream', reason: 'quota_exhausted'}},
+        {credential_name: 'backup@example.test', status_code: 200, elapsed_ms: 27},
+    ]};
+    const row = {request_features: {text_account_retry: retry}};
+    const cells = context._cmTextRetryCells(row);
+    assert.match(cells.accounts, /first@example.test → backup@example.test/);
+    assert.match(cells.status, /429.* → .*200/);
+    assert.match(cells.details, /配额耗尽.*Retry-After: 12/);
+    assert.match(cells.details, /&lt;test&gt;/);
+    assert.match(context._cmRequestFeatureCell(row, 0), /查看详情/);
+    context.callMonitorState.mask = true;
+    assert.doesNotMatch(JSON.stringify(context._cmTextRetryCells(row)), /first@example|backup@example/);
+    delete retry.attempts[1].status_code;
+    assert.match(context._cmTextRetryCells(row).status, /未收到响应/);
+    retry.state = 'not_sent';
+    assert.match(context._cmTextRetryCells(row).status, /未发送/);
+    assert.doesNotMatch(context._cmTextRetryCells(row).accounts, /→|换号 1 次/);
+    retry.state = 'no_candidate';
+    retry.attempts.pop();
+    assert.match(context._cmTextRetryCells(row).accounts, /无备选账号/);
+    assert.equal(context._cmTextRetryCells({}), null);
+});
+
 function setup() {
     const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
     const body = source.slice(source.indexOf('async function loadCallMonitor('), source.indexOf('function _cmUpdateChrome('));
@@ -37,6 +68,33 @@ test('repeated refresh does not overlap the same monitor query', async () => {
     requests.forEach(request => request.resolve('result'));
     await Promise.all([first, second]);
     assert.equal(count, 1);
+});
+
+test('refresh preserves masked details while enabling masking closes cleartext details', async () => {
+    const {context, requests, content} = setup();
+    const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
+    for (const name of ['renderCallMonitor', 'toggleCallMonitorMask']) {
+        const start = source.indexOf(`function ${name}(`);
+        vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    }
+    const dialog = {open: true, close() { this.open = false; }, remove() { this.open = false; }};
+    context.document.getElementById = id => ({callMonitorContent: content, cmRequestContentDialog: dialog})[id];
+    Object.assign(context, {_cmUpdateChrome() {}, _cmEmptyState: () => 'empty', _cmPaginationBar: () => ''});
+    Object.assign(context.callMonitorState, {mask: true, view: 'realtime', range: 'recent'});
+    for (const silent of [true, false]) {
+        const load = context.loadCallMonitor({silent});
+        requests.at(-1).resolve('refreshed');
+        await load;
+        assert.equal(content.innerHTML, 'empty');
+        assert.equal(dialog.open, true);
+    }
+    context.toggleCallMonitorMask();
+    assert.equal(context.callMonitorState.mask, false);
+    assert.equal(dialog.open, false);
+    dialog.open = true;
+    context.toggleCallMonitorMask();
+    assert.equal(context.callMonitorState.mask, true);
+    assert.equal(dialog.open, false);
 });
 
 test('switching views cancels old query and stale results cannot replace new data', async () => {

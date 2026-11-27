@@ -283,6 +283,17 @@ async def get_retry_429_max_retries() -> int:
     return int(await get_config_value("retry_429_max_retries", 5))
 
 
+async def get_text_account_retry_status_codes() -> list[int]:
+    """读取当前文本换号规则，保留显式配置的空列表。
+
+    Returns:
+        可触发一次换号的上游 HTTP 状态码。
+    """
+    from src.api.text_retry import DEFAULT_STATUS_CODES, parse_status_codes
+
+    return parse_status_codes(await get_config_value("text_account_retry_status_codes", DEFAULT_STATUS_CODES))
+
+
 async def get_retry_429_enabled() -> bool:
     """Get 429 retry enabled setting."""
     env_value = os.getenv("RETRY_429_ENABLED")

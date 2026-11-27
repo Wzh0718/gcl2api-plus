@@ -3217,13 +3217,18 @@
                                     <input type="checkbox" id="retry429Enabled" class="config-checkbox" />
                                     启用错误重试
                                 </label>
-                                <small class="config-note">可恢复错误按配置重试；Antigravity 上游 403 和 429 直接返回</small>
+                                <small class="config-note">总开关关闭时不执行文本换号重试。</small>
                             </div>
 
                             <div class="form-group">
+                                <label for="textAccountRetryStatusCodes">文本换号重试状态码:</label>
+                                <input type="text" id="textAccountRetryStatusCodes" class="config-input" placeholder="429,502" />
+                                <small>英文逗号分隔；清空停用此规则。仅在文本尚未输出时换一个账号重试一次，不影响图片。</small>
+                            </div>
+                            <div class="form-group">
                                 <label for="retry429MaxRetries">错误重试次数:</label>
-                                <input type="number" id="retry429MaxRetries" class="config-input" min="1" max="50" />
-                                <small class="config-note">遇到错误时的最大重试次数</small>
+                                <input type="number" id="retry429MaxRetries" class="config-input" min="0" max="50" />
+                                <small class="config-note">0 表示不重试；命中文本换号规则时最多重试一次</small>
                             </div>
 
                             <div class="form-group">
@@ -3803,7 +3808,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=pacing-intervals"></script>
+    <script src="./front/common.js?v=text-retry-monitor"></script>
 
 </body>
 

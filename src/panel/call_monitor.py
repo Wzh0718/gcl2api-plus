@@ -371,7 +371,28 @@ async def call_monitor_realtime(
                     and event["filename"] == row.get("credential_name")]
         row["telemetry"] = {"count": len(matching), "outcomes": list(dict.fromkeys(event["outcome"] for event in matching))}
     await _attach_api_key_names(paged["records"], storage._backend)
-    await _attach_account_metadata(paged["records"], storage._backend)
+    records = [dict(row) for row in paged["records"]]
+    retry_accounts = {}
+    for row in records:
+        retry = (row.get("request_features") or {}).get("text_account_retry")
+        if retry:
+            for attempt in retry["attempts"]:
+                name = attempt["credential_name"]
+                retry_accounts.setdefault(name, {"credential_name": name, "channel": "antigravity"})
+    await _attach_account_metadata([*records, *retry_accounts.values()], storage._backend)
+    for row in records:
+        features = row.get("request_features") or {}
+        if retry := features.get("text_account_retry"):
+            attempts = [
+                {
+                    **attempt,
+                    "user_email": retry_accounts[attempt["credential_name"]].get("user_email", ""),
+                }
+                for attempt in retry["attempts"]
+            ]
+            row["request_features"] = {
+                **features, "text_account_retry": {**retry, "attempts": attempts}
+            }
     total = int(paged["total"])
     page_size = int(paged["page_size"])
     total_pages = max(1, -(-total // page_size))
@@ -392,7 +413,7 @@ async def call_monitor_realtime(
             "realtime": counters.get("logs", 0),
             "inflight": get_inflight_requests(),
         },
-        "records": paged["records"],
+        "records": records,
     }
 
 
