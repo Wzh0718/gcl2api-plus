@@ -291,6 +291,8 @@ def classify_antigravity_503(
             upstream_delay_seconds=delay,
             retry_same_account=True,
             hold_account=False,
+            # 不写冷却、不锁账号：只由调用方把这个号在轮转队列里往后挪，
+            # 软降权到「仍可能被选中，但不频繁」，而不是整段跳过。
             write_cooldown=False,
         )
 
