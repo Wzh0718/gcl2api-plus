@@ -71,3 +71,31 @@ async def test_partial_updates_validate_against_retained_bound(storage):
     # A zero upper bound disables dynamic pacing, even if the lower bound is retained.
     await config_routes.save_config(ConfigSaveRequest(config={HIGH: 0}), token="test")
     assert config.get_antigravity_pacing_max_interval_seconds_sync() == 0
+
+
+async def test_ttft_panel_hot_reload_and_validation(storage, monkeypatch):
+    key = "antigravity_ttft_fallback_seconds"
+    monkeypatch.delenv(key.upper(), raising=False)
+    assert await config.get_antigravity_ttft_fallback_seconds() == 30
+    for seconds in (10, 0):
+        await config_routes.save_config(ConfigSaveRequest(config={key: seconds}), token="test")
+        assert await config.get_antigravity_ttft_fallback_seconds() == seconds
+        assert json.loads((await config_routes.get_config(token="test")).body)["config"][key] == seconds
+    for invalid in (-1, 86401, "1.2", True, None, ""):
+        with pytest.raises(HTTPException) as error:
+            await config_routes.save_config(ConfigSaveRequest(config={key: invalid}), token="test")
+        assert error.value.status_code == 400
+    assert await storage.get_config(key) == 0
+    monkeypatch.setenv(key.upper(), "9")
+    assert await config.get_antigravity_ttft_fallback_seconds() == 9
+
+
+async def test_explicit_empty_environment_chain_matches_panel(storage, monkeypatch):
+    key = "antigravity_model_fallback_chain"
+    monkeypatch.delenv(key.upper(), raising=False)
+    await config_routes.save_config(ConfigSaveRequest(config={key: "model-b,model-a"}), token="test")
+    assert await config.get_antigravity_model_fallback_chain() == ["model-b", "model-a"]
+    monkeypatch.setenv(key.upper(), "")
+    data = json.loads((await config_routes.get_config(token="test")).body)
+    assert key in data["env_locked"] and data["config"][key] == ""
+    assert await config.get_antigravity_model_fallback_chain() == []

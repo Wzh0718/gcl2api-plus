@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
@@ -16,6 +16,7 @@ from config import (
     get_stream_idle_timeout,
 )
 from log import log
+from src.antigravity_ttft import buffered_post
 from src.agy_native_transport import agy_native_transport, antigravity_profile_for_url
 from src.shadowsocks import shadowsocks_proxy_context
 from src.request_timing import add_timing_hook
@@ -120,6 +121,7 @@ async def post_async(
     **kwargs,
 ) -> httpx.Response:
     """通用异步POST请求"""
+    deadline = kwargs.pop("first_output_deadline", None)
     transport = kwargs.pop("transport", None)
     proxy_url = kwargs.pop("proxy_url", ...)
     if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
@@ -131,9 +133,12 @@ async def post_async(
             json=json,
             proxy_url=proxy_url,
             timeout=timeout,
+            **({"first_output_deadline": deadline} if deadline else {}),
         )
     add_timing_hook(kwargs, url)
     async with http_client.get_client(timeout=timeout, proxy_url=proxy_url, **kwargs) as client:
+        if deadline:
+            return await buffered_post(client, "POST", url, deadline, data=data, json=json, headers=headers)
         return await client.post(url, data=data, json=json, headers=headers)
 
 
@@ -181,53 +186,39 @@ async def stream_post_async(
         )
         return
 
+    deadline = kwargs.pop("first_output_deadline", None)
     transport = kwargs.pop("transport", None)
     proxy_url = kwargs.pop("proxy_url", ...)
-    if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
-        async with agy_native_transport.stream(
-            "POST", url, headers=headers, json=body, proxy_url=proxy_url
-        ) as r:
-            observe_stream_headers(r)
-            if r.status_code != 200:
-                from fastapi import Response
-                yield Response(
-                    await r.aread(),
-                    r.status_code,
-                    get_decoded_response_headers(r.headers),
+    async with AsyncExitStack() as stack:
+        try:
+            if transport == "antigravity" and get_antigravity_native_transport_enabled_sync():
+                context = agy_native_transport.stream(
+                    "POST", url, headers=headers, json=body, proxy_url=proxy_url,
+                    **({"on_send": deadline.start} if deadline else {}),
                 )
-                return
-            chunk_iter = r.aiter_bytes() if native else r.aiter_lines()
-            idle_timeout = await get_stream_idle_timeout()
-            if idle_timeout > 0:
-                chunk_iter = _idle_watch(chunk_iter, idle_timeout, url)
-            async for chunk in chunk_iter:
-                yield chunk
-        return
-
-    add_timing_hook(kwargs, url)
-    async with http_client.get_streaming_client(proxy_url=proxy_url, **kwargs) as client:
-        async with client.stream("POST", url, json=body, headers=headers) as r:
-            observe_stream_headers(r)
-            # 错误直接返回
-            if r.status_code != 200:
-                from fastapi import Response
-                yield Response(
-                    await r.aread(),
-                    r.status_code,
-                    get_decoded_response_headers(r.headers),
-                )
-                return
-
-            # 如果native=True，直接返回bytes流
-            if native:
-                chunk_iter = r.aiter_bytes()
             else:
-                # 通过aiter_lines转化成str流返回
-                chunk_iter = r.aiter_lines()
-
+                add_timing_hook(kwargs, url)
+                client = await stack.enter_async_context(
+                    http_client.get_streaming_client(proxy_url=proxy_url, **kwargs)
+                )
+                context = client.stream("POST", url, json=body, headers=headers)
+                if deadline:
+                    deadline.start()
+            response = await stack.enter_async_context(context)
+            observe_stream_headers(response)
+            if response.status_code != 200:
+                if deadline:
+                    deadline.stop()
+                from fastapi import Response
+                yield Response(await response.aread(), response.status_code,
+                               get_decoded_response_headers(response.headers))
+                return
+            chunks = response.aiter_bytes() if native else response.aiter_lines()
             idle_timeout = await get_stream_idle_timeout()
             if idle_timeout > 0:
-                chunk_iter = _idle_watch(chunk_iter, idle_timeout, url)
-
-            async for chunk in chunk_iter:
+                chunks = _idle_watch(chunks, idle_timeout, url)
+            async for chunk in chunks:
                 yield chunk
+        finally:
+            if deadline:
+                deadline.stop()

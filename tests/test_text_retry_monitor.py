@@ -98,13 +98,16 @@ async def test_retry_monitor_pages_without_capture(monitor_adapter, monkeypatch)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("first_status", [429, 502, 504])
 @pytest.mark.parametrize(
-    "alternate", ["cooldown", "slot_busy", "usage_limit", "connect_error"]
+    "alternate",
+    ["cooldown", "slot_busy", "usage_limit", "connect_error", "ttft_timeout"],
 )
 async def test_alternate_without_response(
     monitor_adapter, monkeypatch, streaming, first_status, alternate
 ):
     """区分备选被本地拒绝与备选已发送但没有 HTTP 响应。"""
-    _patch_common(monkeypatch, [])
+    model = "gemini-2.5-flash"
+    chain = [model, "gemini-3.1-flash-lite"] if alternate == "ttft_timeout" else []
+    _patch_common(monkeypatch, chain, ttft_seconds=0.025 if chain else 0)
     monkeypatch.setattr(
         antigravity, "get_antigravity_stream2nostream", AsyncMock(return_value=False)
     )
@@ -159,6 +162,9 @@ async def test_alternate_without_response(
     async def post(**kwargs):
         name = kwargs["headers"]["Authorization"].split()[-1]
         sent.append((name, kwargs.get("body", kwargs.get("json"))))
+        if name == "B" and alternate == "ttft_timeout":
+            kwargs["first_output_deadline"].start()
+            await asyncio.Event().wait()
         if name == "B":
             raise httpx.ConnectError("no response")
         return httpx.Response(
@@ -171,7 +177,7 @@ async def test_alternate_without_response(
 
     monkeypatch.setattr(antigravity, "post_async", post)
     monkeypatch.setattr(antigravity, "stream_post_async", stream)
-    body = {"model": "gemini-2.5-flash", "request": {"contents": []}}
+    body = {"model": model, "request": {"contents": []}}
     if streaming:
         chunks = antigravity.stream_request(body)
         try:
@@ -181,8 +187,9 @@ async def test_alternate_without_response(
             await chunks.aclose()
     else:
         result = await antigravity.non_stream_request(body)
-    can_send = alternate == "connect_error"
-    assert result.status_code == (500 if can_send else first_status)
+    final_status = {"connect_error": 500, "ttft_timeout": 504}.get(alternate)
+    can_send = final_status is not None
+    assert result.status_code == (final_status if can_send else first_status)
     if not can_send:
         assert json.loads(result.body) == {"error": "from A"}
         assert result.headers["Retry-After"] == "30"
@@ -193,7 +200,7 @@ async def test_alternate_without_response(
     assert billed["credential_name"] == account
     assert billed["request_id"] == payload["requestId"]
     assert billed["upstream_request"] == payload
-    assert billed["model"] == body["model"]
+    assert billed["model"] == model
     assert billed["success"] is False
     assert billed["status_code"] == result.status_code
     if not can_send and first_status == 429:

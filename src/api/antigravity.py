@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 
 from src.antigravity_400_classifier import upstream_error_log_detail
+from src.antigravity_ttft import FirstOutputDeadline, FirstOutputTimeoutError, gate_first_output
 from src.request_capture import record_local_capture, bind_capture_credential
 from src.antigravity_usage import AccountUsageLimitReached, begin_account_usage
 from src.rate_limits import (
@@ -35,6 +36,7 @@ from config import (
     get_antigravity_model_fallback_chain,
     get_antigravity_network_check_enabled,
     get_antigravity_stream2nostream,
+    get_antigravity_ttft_fallback_seconds,
     get_auto_ban_error_codes,
 )
 from log import log
@@ -931,6 +933,14 @@ def _billing_response_fields(response, status_code, request_id, credential_name,
     return fields
 
 
+def _alternate_first_output_timeout() -> Response:
+    return Response(
+        content=json.dumps({"error": "换号重试等待上游首次响应超时"}),
+        status_code=504,
+        media_type="application/json",
+    )
+
+
 def _upstream_403_to_503(response: Any) -> Any:
     """上游 403 返回给客户端时改写为 503（响应体保留）。
 
@@ -1190,12 +1200,11 @@ def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
     return None
 
 
-async def _select_text_credential(model_name):
+async def _select_text_credential(model_name, chain=None):
     """Try the configured suffix in order, retaining the earliest known recovery."""
     from src.rate_limits import selection_retry_at, selection_usage_resume_at
     from src.request_timing import database_timing_scope, measure_phase
 
-    chain = None
     earliest = None
     while True:
         with measure_phase("credential_lookup"), database_timing_scope("credential"):
@@ -1237,6 +1246,9 @@ async def _stream_request_inner(
     api_key_id: str = "env",
     lease_tracker=None,
     request_model: Optional[str] = None,
+    *,
+    fallback_settings: tuple[list[str], int],
+    gateway_started: float,
 ):
     """
     流式请求函数
@@ -1255,7 +1267,8 @@ async def _stream_request_inner(
     image_request = is_antigravity_image_request(model_name, inner_request)
     from src.request_timing import mark_stage
     mark_stage("api_started")
-    gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
+    chain, seconds = fallback_settings
+    next_model = None
 
     # 1. 获取有效凭证
     if image_request:
@@ -1263,7 +1276,8 @@ async def _stream_request_inner(
             mode="antigravity", model_name=model_name, image_request=True
         )
     else:
-        model_name, cred_result = await _select_text_credential(model_name)
+        model_name, cred_result = await _select_text_credential(model_name, chain)
+        next_model = _next_fallback_model(chain, model_name) if seconds else None
 
     if not cred_result:
         # 文本号池暂时不可用返回429，图片保留原有语义。
@@ -1338,7 +1352,7 @@ async def _stream_request_inner(
     usage_remainder = ""
     billing_recorded = False
 
-    def consume_usage_chunk(chunk: Any) -> None:
+    def consume_usage_chunk(chunk: Any) -> bool:
         """Parse only complete SSE lines; retain at most one small partial line."""
         nonlocal usage_metadata, upstream_model, usage_remainder
         if isinstance(chunk, bytes):
@@ -1346,16 +1360,20 @@ async def _stream_request_inner(
         elif isinstance(chunk, str):
             text = chunk
         else:
-            return
+            return False
         if native:
             text = usage_remainder + text
             lines = text.split("\n")
             usage_remainder = lines.pop()[-1_048_576:]
         else:
             lines = [text]
+        done = False
         for line in lines:
             raw = line[5:].strip() if line.startswith("data:") else ""
-            if not raw or raw == "[DONE]":
+            if raw == "[DONE]":
+                done = True
+                continue
+            if not raw:
                 continue
             try:
                 payload = json.loads(raw)
@@ -1363,6 +1381,7 @@ async def _stream_request_inner(
                 continue
             usage_metadata = extract_usage_metadata(payload) or usage_metadata
             upstream_model = extract_model_version(payload) or upstream_model
+        return done
 
     async def record_billing_once(success: bool, status_code: Optional[int] = None, *, response=None):
         nonlocal billing_recorded
@@ -1486,6 +1505,7 @@ async def _stream_request_inner(
         slot_holder = current_file  # 槽位归属固定为本轮尝试的账号，重试换号不影响释放
         pacing_waited = 0.0
 
+        deadline = FirstOutputDeadline(seconds) if next_model else None
         stream = stream_post_async(
             url=target_url,
             body=final_payload,
@@ -1493,6 +1513,7 @@ async def _stream_request_inner(
             headers=auth_headers,
             proxy_url=proxy_url,
             transport="antigravity",
+            **({"first_output_deadline": deadline} if deadline else {}),
         )
         slot_acquired = False
         admission = None
@@ -1529,7 +1550,10 @@ async def _stream_request_inner(
             admission.started()
             if used_alternate:
                 retry_trace.sending(current_file, final_payload.get("model") or model_name)
-            async for chunk in stream:
+            output = stream
+            if deadline is not None:
+                output = gate_first_output(stream, deadline.timer, next_model)
+            async for chunk in output:
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
                     if success_recorded and not image_request:
@@ -1779,7 +1803,8 @@ async def _stream_request_inner(
                     # 不是Response，说明是真流，直接yield返回
                     if used_alternate and not success_recorded:
                         retry_trace.respond(200, time.monotonic() - attempt_started)
-                    consume_usage_chunk(chunk)
+                    done = consume_usage_chunk(chunk)
+                    next_model = None
                     # 只在第一个chunk时记录成功
                     if not success_recorded:
                         from src.antigravity_pacing import note_success
@@ -1793,6 +1818,8 @@ async def _stream_request_inner(
                         success_recorded = True
                         log.debug(f"[ANTIGRAVITY STREAM] 开始接收流式响应，模型: {model_name}")
 
+                    if done and not image_request:
+                        await record_billing_once(True, status_code=200)
                     yield chunk
 
             if alternate_ready:
@@ -1889,6 +1916,13 @@ async def _stream_request_inner(
                 attempt += 1
                 continue  # 重试
 
+        except FirstOutputTimeoutError:
+            if used_alternate:
+                await record_billing_once(False, status_code=504)
+                yield _alternate_first_output_timeout()
+                return
+            log.info(f"[ANTIGRAVITY] {model_name} 首字等待超过 {seconds} 秒，切换到 {next_model}")
+            raise
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
             if admission is not None:
                 admission.close()
@@ -2015,6 +2049,32 @@ class _ImageCredentialLeaseTracker:
             ))
 
 
+async def _model_attempts(body, native, headers, api_key_id, lease_tracker, request_model, settings):
+    original = request_model or body.get("model", "")
+    started = time.monotonic()
+    while True:
+        inner = _stream_request_inner(
+            body=body, native=native, headers=headers, api_key_id=api_key_id,
+            lease_tracker=lease_tracker, request_model=original, fallback_settings=settings,
+            gateway_started=started,
+        )
+        try:
+            async for item in inner:
+                yield item
+            return
+        except FirstOutputTimeoutError as exc:
+            body = {**body, "model": exc.next_model}
+        finally:
+            await aclose_quietly(inner, "[ANTIGRAVITY TTFT]")
+
+
+async def _fallback_settings() -> tuple[list[str], int]:
+    return (
+        await get_antigravity_model_fallback_chain(),
+        await get_antigravity_ttft_fallback_seconds(),
+    )
+
+
 @bind_claude_stream
 async def stream_request(
     body: Dict[str, Any],
@@ -2022,15 +2082,27 @@ async def stream_request(
     headers: Optional[Dict[str, str]] = None,
     api_key_id: str = "env",
     request_model: Optional[str] = None,
+    fallback_settings: tuple[list[str], int] | None = None,
 ):
+    """转发单次逻辑请求，只在提交首个有效输出前允许延迟降级。
+
+    Args:
+        body: 模型及 Gemini 请求体。
+        native: 是否保留上游原始字节块。
+        headers: 附加请求头。
+        api_key_id: 用于权限与计费的调用方标识。
+        request_model: 客户端最初请求的模型名。
+        fallback_settings: 非流式入口已读取的降级链及秒数，避免中途重新读配置。
+
+    Yields:
+        上游响应块或协议错误响应。
+    """
     lease_tracker = _ImageCredentialLeaseTracker()
-    inner = _stream_request_inner(
-        body=body,
-        native=native,
-        headers=headers,
-        api_key_id=api_key_id,
-        lease_tracker=lease_tracker,
-        request_model=request_model,
+    if fallback_settings is None:
+        image = is_antigravity_image_request(body.get("model", ""), body.get("request", body))
+        fallback_settings = ([], 0) if image else await _fallback_settings()
+    inner = _model_attempts(
+        body, native, headers, api_key_id, lease_tracker, request_model, fallback_settings,
     )
     try:
         workflow = getattr(body.get('request', body), 'workflow_contract', None)
@@ -2461,21 +2533,19 @@ async def non_stream_request(
     if is_antigravity_image_request(model_name, inner_request):
         return await _non_stream_image_request(body, headers, api_key_id, request_model=original_model)
 
-    # 检查是否启用流式收集模式
-    if await get_antigravity_stream2nostream():
-        log.debug("[ANTIGRAVITY] 使用流式收集模式实现非流式请求")
+    settings = await _fallback_settings()
+    gateway_started = time.monotonic()
+    while True:
+        try:
+            return await _non_stream_text_attempt(
+                body, headers, api_key_id, original_model, settings, gateway_started
+            )
+        except FirstOutputTimeoutError as exc:
+            body = {**body, "model": exc.next_model}
 
-        # 调用stream_request获取流
-        stream = stream_request(
-            body=body, native=False, headers=headers, api_key_id=api_key_id,
-            request_model=original_model,
-        )
 
-        # 收集流式响应
-        # stream_request是一个异步生成器，可能yield Response（错误）或流数据
-        # collect_streaming_response会自动处理这两种情况
-        return await collect_streaming_response(stream)
-
+async def _non_stream_text_attempt(body, headers, api_key_id, original_model, settings, gateway_started):
+    model_name = body["model"] if "model" in body else ""
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
     from src.request_timing import (
@@ -2485,10 +2555,9 @@ async def non_stream_request(
         measure_phase,
     )
     mark_stage("api_started")
-    gateway_started = time.monotonic()  # 网关处理起点（时效性统计口径 A）
-
     # 1. 获取有效凭证
-    model_name, cred_result = await _select_text_credential(model_name)
+    model_name, cred_result = await _select_text_credential(model_name, settings[0])
+    next_model = _next_fallback_model(settings[0], model_name) if settings[1] else None
 
     if not cred_result:
         # 文本号池暂时不可用返回429，不作为内部故障。
@@ -2702,14 +2771,26 @@ async def non_stream_request(
             admission.started()
             if used_alternate:
                 retry_trace.sending(current_file, final_payload.get("model") or model_name)
-            response = await post_async(
+            deadline = FirstOutputDeadline(settings[1]) if next_model else None
+            post = post_async(
                 url=target_url,
                 json=final_payload,
                 headers=auth_headers,
                 proxy_url=proxy_url,
                 transport="antigravity",
-                timeout=300.0
+                timeout=300.0,
+                **({"first_output_deadline": deadline} if deadline else {}),
             )
+            if deadline:
+                try:
+                    async with deadline.timer:
+                        response = await post
+                except TimeoutError as exc:
+                    if deadline.timer.expired():
+                        raise FirstOutputTimeoutError(next_model) from exc
+                    raise
+            else:
+                response = await post
             mark_stage("post_exit")
             upstream_elapsed = time.monotonic() - attempt_started
             if used_alternate:
@@ -3077,6 +3158,11 @@ async def non_stream_request(
             )
             await record_billing_once(False, response=response)
             return response
+        except FirstOutputTimeoutError:
+            if used_alternate:
+                await record_billing_once(False, status_code=504)
+                return _alternate_first_output_timeout()
+            raise
         except Exception as e:
             if last_error_response is not None and last_error_response.status_code in (403, 429):
                 await record_billing_once(False, response=last_error_response)

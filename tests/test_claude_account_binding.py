@@ -137,7 +137,7 @@ async def test_stream_binding_survives_task_handoff_and_cancellation(setup):
 
 
 @pytest.mark.parametrize('stream', [False, True])
-@pytest.mark.parametrize('model', ['claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-2.5-flash'])
+@pytest.mark.parametrize('model', ['claude-sonnet-4-6', 'claude-haiku-4-5', 'gemini-2.5-flash', '假流式/gemini-2.5-flash'])
 async def test_openai_route_keeps_bound_account_through_public_api(setup, monkeypatch, stream, model):
     import json
     from types import SimpleNamespace
@@ -148,12 +148,19 @@ async def test_openai_route_keeps_bound_account_through_public_api(setup, monkey
     key = (await service.create_key(name='route', claude_credential_name='b.json'))['item']['id']
     selected = []
     async def fake_inner(body, **kwargs):
+        assert stream
         account = await manager.get_valid_credential(mode='antigravity', model_name=body['model'])
         selected.append(account[0])
         data = {'response': {'candidates': [{'content': {'role': 'model', 'parts': [{'text': 'ok'}]}, 'finishReason': 'STOP'}]}}
         yield ('data: '+json.dumps(data)+'\n\n').encode()
     monkeypatch.setattr(api, '_stream_request_inner', fake_inner)
-    monkeypatch.setattr(api, 'get_antigravity_stream2nostream', AsyncMock(return_value=True))
+    async def non_stream(body, *args):
+        from fastapi.responses import JSONResponse
+        assert not stream
+        account = await manager.get_valid_credential(mode='antigravity', model_name=body['model'])
+        selected.append(account[0])
+        return JSONResponse({'response': {'candidates': [{'content': {'parts': [{'text': 'ok'}]}, 'finishReason': 'STOP'}]}})
+    monkeypatch.setattr(api, '_non_stream_text_attempt', non_stream)
     result = await route.chat_completions(OpenAIChatCompletionRequest(model=model, stream=stream,
         messages=[{'role': 'user', 'content': 'Task'}]), principal=SimpleNamespace(api_key_id=key))
     if stream:

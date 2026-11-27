@@ -69,9 +69,9 @@ ENV_MAPPINGS = {
     "SENSITIVE_WORD_USE_DEFAULT_KEYWORDS": "sensitive_word_use_default_keywords",
     "COMPATIBILITY_MODE": "compatibility_mode_enabled",
     "RETURN_THOUGHTS_TO_FRONTEND": "return_thoughts_to_frontend",
-    "ANTIGRAVITY_STREAM2NOSTREAM": "antigravity_stream2nostream",
     "ANTIGRAVITY_SWITCH_CREDENTIAL": "antigravity_switch_credential_enabled",
     "ANTIGRAVITY_MODEL_FALLBACK_CHAIN": "antigravity_model_fallback_chain",
+    "ANTIGRAVITY_TTFT_FALLBACK_SECONDS": "antigravity_ttft_fallback_seconds",
     "ENABLE_GEMINICLI": "enable_geminicli",
     "BILLING_CURRENCY": "billing_currency",
     "BILLING_DEDUPE_TTL_DAYS": "billing_dedupe_ttl_days",
@@ -555,25 +555,8 @@ async def get_return_thoughts_to_frontend() -> bool:
 
 
 async def get_antigravity_stream2nostream() -> bool:
-    """
-    Get use stream for non-stream setting.
-
-    控制antigravity非流式请求是否使用流式API并收集为完整响应。
-    启用后，非流式请求将在后端使用流式API，然后收集所有块后再返回完整响应。
-
-    **保持不变式**：本开关必须保持 False。约定是「客户端流式→上游流式、
-    客户端非流式→上游非流式」端到端一致；开启后非流客户端会在上游表现为
-    流式请求，属于形态失真，排查封号时会干扰判断。
-
-    Environment variable: ANTIGRAVITY_STREAM2NOSTREAM
-    Database config key: antigravity_stream2nostream
-    Default: False
-    """
-    env_value = os.getenv("ANTIGRAVITY_STREAM2NOSTREAM")
-    if env_value:
-        return env_value.lower() in ("true", "1", "yes", "on")
-
-    return bool(await get_config_value("antigravity_stream2nostream", False))
+    """兼容旧调用方；上游协议始终跟随客户端。"""
+    return False
 
 
 # Antigravity hub 轨迹指纹（2.35.2 / CL 1029311855，官方二进制实读核验，2026-11-26）
@@ -1211,16 +1194,31 @@ async def get_antigravity_switch_credential_enabled() -> bool:
     return bool(await get_config_value("antigravity_switch_credential_enabled", False))
 
 
-# 配额耗尽时的默认模型降级链（逗号分隔），默认空 = 关闭自动降级
+# 发送前无凭证和首次有效响应超时共用的模型链，默认留空关闭。
 DEFAULT_ANTIGRAVITY_MODEL_FALLBACK_CHAIN = ""
+
+
+async def get_antigravity_ttft_fallback_seconds() -> int:
+    """返回首次有效响应等待秒数；0 只关闭首次有效响应超时降级。
+
+    Returns:
+        当前阈值，无效配置使用默认值 30。
+    """
+    value = await get_config_value(
+        "antigravity_ttft_fallback_seconds", 30, "ANTIGRAVITY_TTFT_FALLBACK_SECONDS"
+    )
+    try:
+        seconds = int(str(value))
+        return seconds if 0 <= seconds <= 86400 else 30
+    except ValueError:
+        return 30
 
 
 async def get_antigravity_model_fallback_chain() -> list:
     """
     Get antigravity model fallback chain.
 
-    模型配额耗尽（429 且带明确配额重置信息）且号池无可用凭证时，
-    按链顺序降级到下一个模型重试。逗号分隔，留空关闭。
+    无可用凭证或首次有效响应超时时，只能切到链内下一项。逗号分隔，留空关闭。
 
     Environment variable: ANTIGRAVITY_MODEL_FALLBACK_CHAIN
     Database config key: antigravity_model_fallback_chain

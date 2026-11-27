@@ -396,6 +396,12 @@ async def collect_streaming_response(
                     log.debug("[STREAM COLLECTOR] No 'response' key in chunk, trying direct access")
                     response_obj = chunk  # 尝试直接使用chunk
 
+                for key in ("modelVersion", "responseId", "createTime", "promptFeedback"):
+                    if key in response_obj:
+                        merged_response["response"][key] = response_obj[key]
+                usage = response_obj.get("usageMetadata", {})
+                if usage:
+                    merged_response["response"]["usageMetadata"].update(usage)
                 candidates = response_obj.get("candidates", [])
                 log.debug(f"[STREAM COLLECTOR] Found {len(candidates)} candidates")
                 if not candidates:
@@ -458,11 +464,6 @@ async def collect_streaming_response(
                 if candidate.get("citationMetadata"):
                     merged_response["response"]["candidates"][0]["citationMetadata"] = candidate["citationMetadata"]
 
-                # 更新使用元数据
-                usage = response_obj.get("usageMetadata", {})
-                if usage:
-                    merged_response["response"]["usageMetadata"].update(usage)
-
             except json.JSONDecodeError as e:
                 log.debug(f"[STREAM COLLECTOR] Failed to parse JSON chunk: {e}")
                 continue
@@ -516,6 +517,9 @@ async def collect_streaming_response(
         final_parts.append({"text": ""})
 
     merged_response["response"]["candidates"][0]["content"]["parts"] = final_parts
+    if (not collected_text and not collected_thought_text and not collected_other_parts
+            and (merged_response["response"].get("promptFeedback") or {}).get("blockReason")):
+        merged_response["response"]["candidates"] = []
 
     log.info(
         f"[STREAM COLLECTOR] Collected {len(collected_text)} text chunks, "
