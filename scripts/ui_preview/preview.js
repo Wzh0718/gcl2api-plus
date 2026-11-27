@@ -11,6 +11,10 @@
  const stats = accounts.flatMap((a,i)=>models.map((model,j)=>({...a,credential_name:a.filename,model_name:model,model,success_count:1327-i*216-j*139,failed_count:7+i+j,upstream_total_seconds:1926,upstream_timed_count:713,gateway_total_seconds:2337,gateway_timed_count:713})));
  const rows = accounts.flatMap((a,i)=>models.slice(0,3).map((model,j)=>({...a,group_key:a.filename,credential_name:a.filename,model_name:model,top_model:model,api_key_name:keys[i].name,api_key_id:keys[i].id,total:713-i*121-j*83,success_count:706-i*121-j*83,failed_count:7,success_rate:99.1,avg_gateway_seconds:3.28,avg_upstream_seconds:2.7,tps:42.7,input_tokens:483260,output_tokens:132470,total_tokens:615730,total_cost:'3.72',currency:'CNY',last_called_at:now-i*23,last_success:true,last_status_code:200,task_type:'chat',channel:'antigravity'})));
  const records = rows.map((r,i)=>({...r,id:i+1,request_id:`demo-request-${i}`,created_at:now-i*37,success:i!==3,status_code:i===3?429:200,gateway_response_seconds:3.28,upstream_response_seconds:2.7,protocol:'openai',transport:'stream'}));
+ records.forEach(record => {
+  record.account_tier = record.tier;
+  if (record.tier === 'ultra') record.warmup_status = 'active';
+ });
  let config = {host:'127.0.0.1',port:7861,credentials_dir:'./creds',log_level:'INFO',retry_times:3,request_timeout:120,antigravity_request_concurrency:3};
  const json = (data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
  window.fetch = async (input,options={}) => {
