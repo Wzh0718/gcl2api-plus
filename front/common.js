@@ -4043,7 +4043,7 @@ function _cmModelCell(row) {
     const tips = [`原始请求: ${requested || '-'}`];
     if (fellBack) {
         segments.push(`<span class="cm-upstream-model">${_cmEscape(executed) || '-'}</span>`);
-        tips.push(`网关执行: ${executed || '-'}（配额降级链切换后的实际请求模型）`);
+        tips.push(`网关执行: ${executed || '-'}（降级链切换后的实际请求模型）`);
     }
     if (normalized) {
         segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
@@ -6851,7 +6851,6 @@ function populateConfigForm() {
 
     document.getElementById('compatibilityModeEnabled').checked = Boolean(c.compatibility_mode_enabled);
     document.getElementById('returnThoughtsToFrontend').checked = Boolean(c.return_thoughts_to_frontend !== false);
-    document.getElementById('antigravityStream2nostream').checked = Boolean(c.antigravity_stream2nostream !== false);
     document.getElementById('antigravitySwitchCredentialEnabled').checked = Boolean(c.antigravity_switch_credential_enabled);
     document.getElementById('antigravity403RecheckEnabled').checked = Boolean(c.antigravity_403_recheck_enabled !== false);
     document.getElementById('sensitiveWordReplaceEnabled').checked = Boolean(c.sensitive_word_replace_enabled);
@@ -6886,6 +6885,7 @@ function populateConfigForm() {
     setConfigField('antiTruncationMaxAttempts', c.anti_truncation_max_attempts || 3);
     setConfigField('antigravity403RecheckInterval', c.antigravity_403_recheck_interval || 3600);
     setConfigField('antigravityModelFallbackChain', c.antigravity_model_fallback_chain || '');
+    setConfigField('antigravityTtftFallbackSeconds', c.antigravity_ttft_fallback_seconds ?? 30);
     setConfigField('antigravityHubVersion', c.antigravity_hub_version || '');
     setConfigField('antigravityHubCl', c.antigravity_hub_cl || '');
     document.getElementById('antigravityPacingEnabled').checked = Boolean(c.antigravity_pacing_enabled !== false);
@@ -7055,6 +7055,13 @@ async function saveConfig() {
         const getFloat = (id, def = 0.0) => parseFloat(document.getElementById(id)?.value) || def;
         const getChecked = (id, def = false) => document.getElementById(id)?.checked || def;
 
+        const ttftField = document.getElementById('antigravityTtftFallbackSeconds');
+        const ttftSeconds = ttftField.valueAsNumber;
+        if (!Number.isInteger(ttftSeconds) || ttftSeconds < 0 || ttftSeconds > 86400) {
+            ttftField.focus();
+            showStatus('模型首次有效响应降级阈值须填写 0–86400 的整数秒', 'error');
+            return;
+        }
         const accountUsage = { enabled: getChecked('antigravityAccountUsageEnabled') };
         for (const [key, id] of Object.entries(accountUsageFields)) {
             const field = document.getElementById(id);
@@ -7113,11 +7120,11 @@ async function saveConfig() {
             retry_429_interval: getFloat('retry429Interval', 0.1),
             compatibility_mode_enabled: getChecked('compatibilityModeEnabled'),
             return_thoughts_to_frontend: getChecked('returnThoughtsToFrontend'),
-            antigravity_stream2nostream: getChecked('antigravityStream2nostream'),
             antigravity_switch_credential_enabled: getChecked('antigravitySwitchCredentialEnabled'),
             antigravity_403_recheck_enabled: getChecked('antigravity403RecheckEnabled'),
             antigravity_403_recheck_interval: getInt('antigravity403RecheckInterval', 3600),
             antigravity_model_fallback_chain: getValue('antigravityModelFallbackChain'),
+            antigravity_ttft_fallback_seconds: ttftSeconds,
             antigravity_hub_version: getValue('antigravityHubVersion'),
             antigravity_hub_cl: getValue('antigravityHubCl'),
             antigravity_pacing_enabled: getChecked('antigravityPacingEnabled'),

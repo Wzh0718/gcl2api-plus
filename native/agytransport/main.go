@@ -209,6 +209,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	flusher, _ := w.(http.Flusher)
+	if flusher != nil && response.StatusCode != http.StatusOK {
+		flusher.Flush()
+	}
 	buffer := make([]byte, 32*1024)
 	for {
 		read, readErr := response.Body.Read(buffer)
