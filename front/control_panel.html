@@ -1934,13 +1934,20 @@
                     style="margin: 20px 0; padding: 15px; border: 2px solid #e8f4fd; border-radius: 8px; background: #f8fcff;">
                     <div style="font-weight: bold; color: #0066cc; margin-bottom: 10px;">🔑 Refresh Token 导入</div>
                     <div style="color: #666; font-size: 13px; margin-bottom: 12px; line-height: 1.6;">
-                        支持批量粘贴凭证 JSON。选择代理组时，每个账号固定绑定一个空闲出口。出口探测被上游限流或超时时会自动延后重试；只有确实没有空闲出口的条目才会标为「已禁用」，可在巡查时检查并启用。
+                        每行粘贴一个 refresh_token，一次最多 100 条，空行和重复项自动跳过；也兼容整段凭证 JSON 数组或逐行 JSON。
+                        选择代理组时，每个账号固定绑定一个空闲出口。出口探测被上游限流或超时时会自动延后重试；只有确实没有空闲出口的条目才会标为「已禁用」，可在巡查时检查并启用。
                     </div>
                     <div class="input-group">
-                        <textarea id="antigravityRefreshTokenInput" rows="5" spellcheck="false" autocomplete="off"
+                        <textarea id="antigravityRefreshTokenInput" rows="8" spellcheck="false" autocomplete="off"
                             aria-label="Refresh Token 或凭证 JSON"
-                            placeholder='[{"refresh_token":"…"}, {"refresh_token":"…"}]'
-                            style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px;"></textarea>
+                            aria-describedby="antigravityRefreshTokenCount"
+                            oninput="updateAntigravityRefreshTokenInputState()"
+                            placeholder="每行一个 refresh_token：&#10;1//0gAbc…&#10;1//0gDef…"
+                            style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 4px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical;"></textarea>
+                    </div>
+                    <div id="antigravityRefreshTokenCount" aria-live="polite"
+                        style="margin-top: 6px; font-size: 12px; color: #666;">
+                        每行一个 refresh_token，也支持粘贴凭证 JSON
                     </div>
                     <div class="input-group" style="margin-top: 10px;">
                         <select id="antigravityRefreshTokenProxySelect"
@@ -3359,7 +3366,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=update-dot-20261127"></script>
+    <script src="./front/common.js?v=rt-multiline-20261127"></script>
 
     <script src="./front/config_ui.js?v=20261127-spacing"></script>
 </body>

@@ -3309,28 +3309,92 @@ function onAntigravityRefreshTokenProxyModeChange() {
     customGroup.style.display = select.value === 'custom' ? 'block' : 'none';
 }
 
+// 多行输入：每行一个 refresh_token；同时兼容 JSON 数组 / 单个 JSON 对象 /
+// 逐行 JSON（NDJSON）/ 逗号或分号分隔。空行、注释行、重复项和字段名会被跳过。
 function parseAntigravityRefreshTokens(text) {
-    let entries;
-    if (['{', '[', '"'].includes(text[0])) {
+    const isPlaceholder = token =>
+        /^(refresh_token|access_token|token|rt)$/i.test(token) ||
+        /^[xX*.\-…·]+$/.test(token) ||
+        /^<[^<>]*>$/.test(token) ||
+        /(?:…|\.\.\.)$/.test(token);
+
+    const collected = [];
+    const push = value => {
+        if (typeof value !== 'string') return;
+        const token = value.trim();
+        if (!token || isPlaceholder(token)) return;
+        collected.push(token);
+    };
+    const pushEntry = entry => {
+        if (typeof entry === 'string') push(entry);
+        else if (entry && typeof entry === 'object') push(entry.refresh_token);
+        else throw new Error('凭证 JSON 的每一项需要是 refresh_token 字符串或带 refresh_token 字段的对象');
+    };
+    const pushParsed = parsed => {
+        (Array.isArray(parsed) ? parsed : [parsed]).forEach(pushEntry);
+    };
+
+    const trimmed = String(text || '').trim();
+    if (!trimmed) throw new Error('请粘贴 refresh_token，每行一个');
+
+    let wholeParsed = false;
+    if (['{', '[', '"'].includes(trimmed[0])) {
         try {
-            entries = JSON.parse(text);
+            pushParsed(JSON.parse(trimmed));
+            wholeParsed = true;
         } catch (error) {
-            if (!text.includes('\n')) throw error;
-            entries = text.split('\n').map(line => line.trim()).filter(Boolean).map(line => JSON.parse(line));
+            if (!(error instanceof SyntaxError)) throw error;
         }
-    } else if (/\s/.test(text)) {
-        throw new Error('请粘贴一个 refresh_token 或有效的凭证 JSON');
-    } else {
-        entries = text;
     }
-    if (!Array.isArray(entries)) entries = [entries];
-    if (!entries.length || entries.length > 100) {
-        throw new Error('每次可导入 1 至 100 条凭证');
+
+    if (!wholeParsed) {
+        trimmed.split(/\r?\n/).forEach((line, index) => {
+            const row = line.trim();
+            if (!row || row.startsWith('#')) return;
+            if (['{', '[', '"'].includes(row[0])) {
+                let parsed;
+                try {
+                    parsed = JSON.parse(row);
+                } catch (error) {
+                    throw new Error(`第 ${index + 1} 行不是有效的 JSON`);
+                }
+                pushParsed(parsed);
+                return;
+            }
+            row.split(/[\s,;，；]+/).forEach(push);
+        });
     }
-    return entries.map(entry => {
-        const value = typeof entry === 'string' ? entry : entry?.refresh_token;
-        return typeof value === 'string' ? value.trim() : '';
-    });
+
+    const tokens = [...new Set(collected)];
+    if (!tokens.length) throw new Error('未识别到 refresh_token，请检查粘贴内容');
+    if (tokens.length > 100) throw new Error(`每次可导入 1 至 100 条凭证，当前 ${tokens.length} 条`);
+    return tokens;
+}
+
+// 输入框实时反馈：识别到的条数直接显示在输入框下方，导入按钮也带上条数。
+function updateAntigravityRefreshTokenInputState() {
+    const input = document.getElementById('antigravityRefreshTokenInput');
+    const hint = document.getElementById('antigravityRefreshTokenCount');
+    const button = document.getElementById('antigravityImportBtn');
+    if (!input || !hint) return;
+
+    if (!input.value.trim()) {
+        hint.textContent = '每行一个 refresh_token，也支持粘贴凭证 JSON';
+        hint.style.color = '#666';
+        if (button) button.textContent = '导入凭证';
+        return;
+    }
+
+    try {
+        const tokens = parseAntigravityRefreshTokens(input.value);
+        hint.textContent = `已识别 ${tokens.length} 条凭证`;
+        hint.style.color = '#0a7d32';
+        if (button) button.textContent = `导入 ${tokens.length} 条凭证`;
+    } catch (error) {
+        hint.textContent = error.message;
+        hint.style.color = '#c62828';
+        if (button) button.textContent = '导入凭证';
+    }
 }
 
 async function importAntigravityByRefreshToken() {
@@ -3340,15 +3404,15 @@ async function importAntigravityByRefreshToken() {
     const proxyInput = document.getElementById('antigravityRefreshTokenProxyInput');
     if (button.disabled) return;
     if (!input.value.trim()) {
-        showStatus('请粘贴 refresh_token 或凭证 JSON', 'error');
+        showStatus('请粘贴 refresh_token，每行一个', 'error');
         return;
     }
 
     let tokens;
     try {
-        tokens = parseAntigravityRefreshTokens(input.value.trim());
+        tokens = parseAntigravityRefreshTokens(input.value);
     } catch (error) {
-        showStatus(error instanceof SyntaxError ? '凭证 JSON 格式无效' : error.message, 'error');
+        showStatus(error.message, 'error');
         return;
     }
     const controls = [button, input, proxySelect, proxyInput];
@@ -3363,8 +3427,9 @@ async function importAntigravityByRefreshToken() {
         });
         input.value = '';
         proxyInput.value = '';
+        updateAntigravityRefreshTokenInputState();
         sessionStorage.setItem('antigravityImportBatch', result.batch_id);
-        showStatus('凭证已加入导入队列', 'success');
+        showStatus(`已提交 ${tokens.length} 条凭证到导入队列`, 'success');
         await refreshAntigravityImportProgress({ reloadBatches: true });
     } catch (error) {
         showStatus(error.message, 'error');
