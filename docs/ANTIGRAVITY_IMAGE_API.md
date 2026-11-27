@@ -92,7 +92,7 @@ Content-Type: application/json
 | AGY | Anthropic Messages | `image` 块的 `source.type` 设为 `url`，地址放在 `source.url` |
 | AGY、Vertex | Gemini `generateContent`、`streamGenerateContent` | `fileData.fileUri`，并在 `fileData.mimeType` 声明 `image/*` 类型，例如 `image/png` |
 
-各入口使用同一套下载规则，把公网图片转成 Base64 `inlineData` 再发给上游。已有的内联图片、文件上传和 Gemini Files API 引用可继续使用。公网 URL 限 HTTP 80 或 HTTPS 443，每个请求最多下载 1000 张（并发 6 路）、合计 10 MiB，总下载时间上限为 20 秒；张数上限只用于快速拒绝病态输入，真正的约束是 10 MiB 请求级字节预算与 20 s 总超时，上游内联请求体上限为 20 MB。下载失败时，各入口按对应协议返回 HTTP 400。
+各入口使用同一套下载规则，把公网图片转成 Base64 `inlineData` 再发给上游。已有的内联图片、文件上传和 Gemini Files API 引用可继续使用。公网 URL 限 HTTP 80 或 HTTPS 443，每个请求最多下载 1000 张（并发 6 路）、合计 10 MiB，总下载时间上限为 20 秒；张数上限只用于快速拒绝病态输入，真正的约束是 10 MiB 请求级字节预算与 20 s 总超时。作为参照，Gemini API 文档化的内联请求体上限为 20 MB（Base64 后本地 10 MiB 约合 13.3 MiB）；AGY 通道本身未见公开的请求体上限数值，本地 10 MiB 预算按保守口径选取。下载失败时，各入口按对应协议返回 HTTP 400。
 
 Gemini `countTokens` 和 Anthropic `messages/count_tokens` 对 URL 图片和内联图片使用同一估算值，无需联网下载。
 
