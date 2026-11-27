@@ -170,6 +170,29 @@ test('ingress timing and event-loop lag are shown when collected', () => {
     assert.match(html, /事件循环最大延迟 120\.00ms/);
 });
 
+test('retried requests show the attempt count on the row and in the tooltip', () => {
+    const html = latencyCell({
+        response_total_seconds: 1.54,
+        upstream_first_byte_seconds: 0.54,
+        downstream_first_byte_seconds: 1.54,
+        timing_details: {
+            attempts: 3,
+            stages: {first_upstream_send: 0.1, last_upstream_send: 0.99, last_upstream_data: 1.53},
+        },
+    });
+    assert.match(html, /class="cm-attempts"[^>]*>×3</);
+    assert.match(html, /上游尝试 3 次/);
+    // 单一数字口径不变：耗时本身仍按最终结果展示。
+    assert.match(html, />1\.54s</);
+});
+
+test('single-attempt and legacy rows render no attempt badge', () => {
+    const single = latencyCell({response_total_seconds: 2, timing_details: {attempts: 1}});
+    assert.doesNotMatch(single, /cm-attempts|上游尝试/);
+    const legacy = latencyCell({response_total_seconds: 2, timing_details: {}});
+    assert.doesNotMatch(legacy, /cm-attempts|上游尝试/);
+});
+
 test('settlement tooltip renders only measured phases and converts milliseconds once', () => {
     const html = latencyCell({timing_details: {phase_ms: {
         credential_save_pg_pool: 1250, model_stats_pg_sql: 0, billing_price_lookup: 3,

@@ -3846,6 +3846,18 @@ function _cmFormatLatency(seconds) {
     return `${seconds.toFixed(2)}s`;
 }
 
+function _cmAttempts(row) {
+    const attempts = Number(row?.timing_details?.attempts);
+    // 1 表示没有重试；历史记录没有这个键，也不应显示成 ×0。
+    return Number.isFinite(attempts) && attempts >= 2 ? attempts : 0;
+}
+
+function _cmAttemptsBadge(row) {
+    const attempts = _cmAttempts(row);
+    if (!attempts) return '';
+    return `<span class="cm-attempts" aria-label="上游尝试 ${attempts} 次">×${attempts}</span>`;
+}
+
 function _cmLatencyCell(row) {
     const measured = value => value !== null && value !== undefined
         && Number.isFinite(Number(value)) && Number(value) >= 0;
@@ -3853,6 +3865,7 @@ function _cmLatencyCell(row) {
         ? (Number(value) < 1 ? `${(Number(value) * 1000).toFixed(2)}ms` : _cmFormatLatency(Number(value))) : '未采集';
     const hasTotal = measured(row.response_total_seconds);
     const visible = format(row.response_total_seconds);
+    const attempts = _cmAttempts(row);
     const tip = [
         `总耗时 ${visible}`,
         `上游 ${format(row.upstream_response_seconds)}`,
@@ -3860,6 +3873,9 @@ function _cmLatencyCell(row) {
         `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
         `响应等待 ${format(row.downstream_first_byte_seconds)}`,
     ];
+    if (attempts) {
+        tip.push(`上游尝试 ${attempts} 次（同一请求内重试/换号，仅保留最终结果）`);
+    }
     const stages = row.timing_details?.stages;
     if (stages) {
         const {first_upstream_send: first, last_upstream_send: last, last_upstream_data: end} = stages;
@@ -3899,7 +3915,7 @@ function _cmLatencyCell(row) {
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
     return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
-        onclick="showCallMonitorLatency(this)" aria-label="总耗时 ${visible}，查看耗时明细">${visible}</button>`;
+        onclick="showCallMonitorLatency(this)" aria-label="总耗时 ${visible}${attempts ? `，上游尝试 ${attempts} 次` : ''}，查看耗时明细">${_cmAttemptsBadge(row)}${visible}</button>`;
 }
 
 let callMonitorLatencyTooltip = null;

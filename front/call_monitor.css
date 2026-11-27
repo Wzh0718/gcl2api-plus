@@ -27,6 +27,17 @@
     outline-offset: 3px;
 }
 
+/* 同一请求内的上游尝试次数：只在重试过（attempts ≥ 2）时出现。 */
+.cm-attempts {
+    display: inline-block;
+    margin-right: 4px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(127, 127, 127, 0.18);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+}
+
 .cm-latency-tooltip {
     position: fixed;
     z-index: var(--ui-z-toast, 50);
