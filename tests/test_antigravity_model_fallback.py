@@ -88,7 +88,8 @@ class _FakeResponse:
         return json.loads(self.text)
 
 
-def _patch_common(monkeypatch, chain, max_retries=2):
+def _patch_common(monkeypatch, chain, max_retries=2, *, ttft_seconds=0):
+    monkeypatch.setattr(agy, "get_antigravity_ttft_fallback_seconds", lambda: _awaitable(ttft_seconds))
     monkeypatch.setattr(agy, "get_antigravity_api_url", lambda: _awaitable("http://agy.test"))
     monkeypatch.setattr(agy, "get_antigravity_model_fallback_chain", lambda: _awaitable(chain))
     monkeypatch.setattr(

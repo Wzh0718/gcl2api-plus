@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import datetime
 from decimal import Decimal
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -922,10 +923,34 @@ setTimeout(() => console.log(JSON.stringify({delay: scheduled.at(-1).delay, time
 def test_panel_defaults_to_key_distribution_and_hides_gcli_navigation(filename):
     html = (REPO_ROOT / "front" / filename).read_text(encoding="utf-8")
 
-    assert (
-        '<button type="button" class="tab active" aria-current="page" '
-        'onclick="switchTab(\'api-keys\', this)">密钥分发</button>'
-    ) in html
+    class NavigationParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.buttons = []
+            self.current = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "button":
+                self.current = {"attrs": dict(attrs), "text": []}
+
+        def handle_data(self, data):
+            if self.current is not None:
+                self.current["text"].append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "button" and self.current is not None:
+                self.buttons.append(self.current)
+                self.current = None
+
+    navigation = NavigationParser()
+    navigation.feed(html)
+    active = [button for button in navigation.buttons
+              if {"tab", "active"} <= set(button["attrs"].get("class", "").split())]
+    assert len(active) == 1
+    assert active[0]["attrs"]["type"] == "button"
+    assert active[0]["attrs"]["aria-current"] == "page"
+    assert active[0]["attrs"]["onclick"] == "switchTab('api-keys', this)"
+    assert "".join(active[0]["text"]).strip() == "密钥分发"
     assert "switchTab('oauth')" not in html
     assert "switchTab('manage')" not in html
     assert 'id="api-keysTab" class="tab-content active"' in html

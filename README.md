@@ -8,6 +8,11 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/Wzh0718/gcl2api-plus/pkgs/container/gcl2api-plus)
 
+[![最近提交](https://img.shields.io/github/last-commit/Wzh0718/gcl2api-plus/dev?label=最近提交)](https://github.com/Wzh0718/gcl2api-plus/commits/dev/)
+[![每月提交活跃度](https://img.shields.io/github/commit-activity/m/Wzh0718/gcl2api-plus/dev?label=每月提交活跃度)](https://github.com/Wzh0718/gcl2api-plus/graphs/commit-activity)
+
+更新活跃度按 `dev` 分支提交统计，徽章可能有缓存延迟；提交次数不等于镜像发布次数。可安装版本以 [Packages](https://github.com/Wzh0718/gcl2api-plus/packages) 为准，项目不承诺固定发布周期。
+
 中文 | [English](docs/README_EN.md)
 
 ---
@@ -33,7 +38,7 @@ Antigravity 提供 OpenAI Chat Completions / Responses、Gemini 和 Anthropic Me
 | Token 用量与费用统计 | 配置模型 Token 单价，按请求去重入账，查看汇总、排行和密钥账单；历史账单保留当时价格。SQLite 持久化，Redis 可选作计费镜像和看板数据源，故障时回退 SQLite。 |
 | 调用监控与日志 | 查看实时调用、用量和日志；对照请求模型与上游返回的实际执行模型 `modelVersion`，并持久化实际模型记录。 |
 | 流式响应与抗截断 | 支持流式空闲超时守护，以及 `假流式/`、`流式抗截断/`、`抗截断/` 三种模型前缀；抗截断仅对流式请求执行续传，旧前缀继续兼容。 |
-| 配额耗尽降级 | 可配置模型降级链，默认关闭；仅在明确的配额耗尽型 429 时触发，图片请求不使用该降级链。 |
+| 文本模型降级 | 使用配置管理中的模型顺序；发前无可用凭证或首次有效响应超时才尝试后续模型。默认链为空。 |
 | 图片参数与传输 | 兼容 Gemini 图片参数及 OpenAI Chat Completions 顶层 `size`，保留历史尺寸后缀；图片请求使用独立的传输、容量错误处理和有限重试策略。详见[图片 API 说明](docs/ANTIGRAVITY_IMAGE_API.md)。 |
 | 客户端名称过滤 | 支持对 system prompt 中的客户端名称执行替换或本地拦截，可配置内置词与自定义规则；不修改用户消息和工具调用。 |
 | AGY 基础提示 | 默认开启，向 Antigravity 请求注入官方 AGY 2.31.2 基础模块（随账号 hub 版本）；可用面板或环境变量显式关闭。内容来源与约束见[强制说明](#agy-基础提示强制说明)。 |
@@ -125,7 +130,8 @@ cp .env.example .env
 | `PROXY` | 全局代理 | 按需设置 `http` / `https` / `socks5` |
 | `REDIS_URL` | 计费镜像和看板加速 | 可选，故障时回退 SQLite |
 | `REDIS_USER` / `REDIS_PASSWORD` | Redis 分离认证 | 推荐单独设置 |
-| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | 配额耗尽时的模型降级链 | 逗号分隔，留空关闭 |
+| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | Antigravity 文本模型降级链 | 逗号分隔，留空关闭 |
+| `ANTIGRAVITY_TTFT_FALLBACK_SECONDS` | 从发往上游到首个有效输出的降级阈值 | 默认 `30` 秒；`0` 只关闭超时降级 |
 | `MAX_NON_STREAM_BUFFER_BYTES` | 非流响应最大缓冲区 | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` | 单次账号候选上限 | `32` |
 
@@ -141,7 +147,7 @@ cp .env.example .env
 ANTIGRAVITY_MODEL_FALLBACK_CHAIN=gemini-3.8-flash,gemini-3.8-flash-tiered
 ```
 
-只有明确的配额耗尽型 429 才会触发降级；图片请求不会自动切换模型。具体配置映射见 [`config.py`](config.py) 和控制面板设置页。
+客户端流式请求使用上游 SSE；非流式请求使用上游普通 JSON 接口。计时从发出上游请求开始，到流式首个有效事件（不限文字）或非流式首批非空白正文为止。流式心跳和用量帧不会重置计时。只有请求仍在等待且达到阈值，才取消本次尝试并切到配置链下一项；提前报错、断流或空回复按原策略处理。链尾、链外、限模型密钥和图片请求不参与延迟降级。
 
 ### 普通模型与流式抗截断
 

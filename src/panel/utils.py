@@ -162,7 +162,9 @@ def get_env_locked_keys() -> Set:
     from src.capture_config import CAPTURE_FIELDS
     mappings = {**config.ENV_MAPPINGS, **{key.upper(): key for key in CAPTURE_FIELDS}}
     for env_key, config_key in mappings.items():
-        if os.getenv(env_key):
+        if os.getenv(env_key) or (
+            env_key == "ANTIGRAVITY_MODEL_FALLBACK_CHAIN" and env_key in os.environ
+        ):
             env_locked_keys.add(config_key)
 
     return env_locked_keys

@@ -1,0 +1,111 @@
+/* Shared desktop/mobile key directory; scoped to avoid changing other tabs. */
+#api-keysTab .api-key-shell { max-width: 1440px; margin: auto; color: #243146; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+#api-keysTab [hidden] { display: none !important; }
+#api-keysTab .api-key-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 0; padding: 0 0 24px; }
+#api-keysTab .api-key-header h2 { font-size: 30px; font-weight: 650; letter-spacing: -.04em; }
+#api-keysTab .api-key-kicker { color: #64748b; font-size: 11px; letter-spacing: .08em; margin: 0 0 10px; }
+#api-keysTab .api-key-header p { line-height: 1.6; }
+#api-keysTab .api-key-overview { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); background: #f4f7fb; border: 1px solid #e3e9f1; border-radius: 12px; margin-bottom: 24px; padding: 20px 0; }
+#api-keysTab .api-key-overview > div { padding: 0 24px; border-right: 1px solid #dfe6ef; }
+#api-keysTab .api-key-overview > div:last-child { border: 0; }
+#api-keysTab .api-key-overview span { display: block; color: #64748b; font-size: 12px; }
+#api-keysTab .api-key-overview strong { display: block; margin-top: 8px; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+#api-keysTab .api-key-disclosure { margin: 10px 0; border: 1px solid #e0e6ef; border-radius: 10px; background: #fff; }
+#api-keysTab summary { cursor: pointer; padding: 15px 18px; font-size: 13px; font-weight: 600; color: #33465f; }
+#api-keysTab summary span { margin-left: 12px; color: #708095; font-size: 12px; font-weight: 400; }
+#api-keysTab details[open] > summary { border-bottom: 1px solid #e5ebf2; }
+#api-keysTab .api-key-endpoints { margin-bottom: 20px; }
+#api-keysTab .api-key-endpoints > div { margin: 0 !important; }
+#api-keysTab .api-key-endpoints code { overflow-wrap: anywhere; }
+#api-keysTab .api-key-create { grid-template-columns: repeat(4,minmax(0,1fr)); border: 0; background: #fff; margin: 0; padding: 20px; }
+#api-keysTab #apiKeyAccountStatus, #api-keysTab #apiKeyModelPolicyStatus { margin: 0; padding: 0 20px 14px; color: #64748b; font-size: 12px; line-height: 1.6; }
+#api-keysTab .api-key-directory { margin-top: 30px; }
+#api-keysTab .api-key-directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+#api-keysTab .api-key-directory-heading h3 { font-size: 17px; margin: 0; }
+#api-keysTab .api-key-toolbar { display: flex; align-items: end; gap: 12px; }
+#api-keysTab .api-key-toolbar label { display: grid; gap: 7px; color: #64748b; font-size: 12px; margin: 0; }
+#api-keysTab .api-key-search { flex: 1; }
+#api-keysTab .api-key-toolbar input, #api-keysTab .api-key-toolbar select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 42px; border: 1px solid #ced8e5; border-radius: 8px; background: #fff; padding: 10px 12px; color: #243146; font: inherit; font-size: 13px; }
+#api-keysTab .api-key-toolbar select { min-width: 140px; }
+#api-keysTab button { transition: background-color .18s, border-color .18s; cursor: pointer; }
+#api-keysTab .api-key-refresh { min-height: 42px; padding: 9px 14px; border: 1px solid #d6dfeb; border-radius: 8px; background: #fff; color: #40526b; font: inherit; font-size: 12px; white-space: nowrap; }
+#api-keysTab .api-key-refresh:hover { background: #edf3fb; border-color: #9bb4d5; }
+#api-keysTab :is(button,input,select,summary):focus-visible { outline: 3px solid #8db8ee; outline-offset: 3px; }
+#api-keysTab button:disabled { cursor: not-allowed; opacity: .5; }
+#api-keysTab .api-key-result-count { margin: 12px 0; color: #64748b; font-size: 12px; font-variant-numeric: tabular-nums; }
+#api-keysTab .api-key-card { min-width: 0; padding: 20px; border: 1px solid #e0e6ef; border-radius: 10px; box-shadow: 0 2px 5px #263d5a04; }
+#api-keysTab .api-key-card h3 { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+#api-keysTab .api-key-card code { overflow-wrap: anywhere; }
+#api-keysTab .api-key-kind { font-size: 10px; color: #64748b; font-weight: 500; letter-spacing: .03em; }
+#api-keysTab .api-key-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; margin: 18px 0 0; }
+#api-keysTab .api-key-metrics > div { padding: 0; background: none; }
+#api-keysTab .api-key-metrics span { font-size: 11px; color: #64748b; }
+#api-keysTab .api-key-metrics strong { font-size: 14px; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#api-keysTab .api-key-metrics small { display: block; margin-top: 4px; font-size: 11px; color: #64748b; }
+#api-keysTab .api-key-settings { margin-top: 16px; border-top: 1px solid #edf0f5; }
+#api-keysTab .api-key-settings summary { padding: 12px 0 0; }
+#api-keysTab .api-key-settings[open] summary { border: 0; }
+#api-keysTab .api-key-batch { margin: 0; background: #f8fafc; }
+#api-keysTab #apiKeyBatch { border: 0; background: none; margin: 0; padding: 16px; }
+#api-keysTab #apiKeyBatch > legend { display: none; }
+#api-keysTab .api-key-empty { padding: 40px 20px; border: 1px dashed #ced8e5; background: #f8fafc; color: #64748b; }
+#api-keysTab .api-key-empty strong { color: #33465f; font-size: 16px; }
+@media (max-width: 700px) {
+    #api-keysTab .api-key-header { align-items: flex-start; gap: 12px; }
+    #api-keysTab .api-key-header h2 { font-size: 25px; }
+    #api-keysTab .api-key-header button { flex-shrink: 0; }
+    #api-keysTab .api-key-overview { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px 0; padding: 18px 0; }
+    #api-keysTab .api-key-overview > div { padding: 0 18px; }
+    #api-keysTab .api-key-overview > div:nth-child(2) { border: 0; }
+    #api-keysTab .api-key-overview strong { font-size: 26px; }
+    #api-keysTab .api-key-toolbar { flex-wrap: wrap; }
+    #api-keysTab .api-key-search { flex-basis: 100%; }
+    #api-keysTab .api-key-toolbar label:not(.api-key-search) { flex: 1; }
+    #api-keysTab .api-key-create, #api-keysTab .api-key-editor { grid-template-columns: 1fr; }
+    #api-keysTab .api-key-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+    #api-keysTab .api-key-card { padding: 16px; }
+    #api-keysTab summary span { display: block; margin: 6px 0 0; line-height: 1.5; }
+}
+#api-keysTab .api-key-quick-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+#api-keysTab .api-key-header > button, #api-keysTab .api-key-quick-actions > button { width: auto; }
+@media (max-width: 700px) {
+    #api-keysTab .api-key-header { flex-wrap: wrap; }
+}
+#api-keysTab .api-key-directory { margin-top: 0; margin-bottom: 24px; }
+#api-keysTab .api-key-metrics { border: 0; border-radius: 0; }
+#api-keysTab .api-key-metrics > div { border: 0; }
+@media (max-width: 700px) {
+    #api-keysTab .api-key-overview { gap: 12px 0; padding: 14px 0; margin-bottom: 18px; }
+    #api-keysTab .api-key-overview strong { margin-top: 4px; font-size: 24px; }
+}
+#api-keysTab .api-key-batch { background: transparent; }
+#api-keysTab .api-key-batch-toolbar { display: flex; align-items: center; gap: 12px; padding: 0 0 4px; }
+#api-keysTab .api-key-batch-toolbar span { color: #64748b; font-size: 12px; }
+#api-keysTab .api-key-quick-actions { gap: 8px; }
+#api-keysTab .api-key-quick-actions .api-key-refresh { min-height: 38px; }
+#api-keysTab .api-key-panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 0; }
+#api-keysTab .api-key-panel-heading h3 { margin: 0; font-size: 17px; }
+#api-keysTab .api-key-utility-actions { display: flex; margin-top: 16px; }
+#api-keysTab #apiKeyBatchPanel { margin-top: 12px; border: 1px solid #e0e6ef; border-radius: 10px; background: #f8fafc; }
+@media (max-width: 700px) {
+    #api-keysTab .api-key-batch-toolbar { flex-wrap: wrap; gap: 8px; }
+    #api-keysTab .api-key-batch-toolbar button, #api-keysTab .api-key-utility-actions button { width: auto; }
+}
+/* Compact cards: identity and usage share the first row. */
+#api-keysTab article.api-key-card { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(0, 3fr) auto; align-items: start; gap: 14px 24px; padding: 16px 20px; }
+#api-keysTab article > .api-key-card-head { grid-column: 1; grid-row: 1; min-width: 0; }
+#api-keysTab article > .api-key-metrics { grid-column: 2; grid-row: 1; margin: 0; gap: 16px; }
+#api-keysTab article > .api-key-status { grid-column: 3; grid-row: 1; justify-self: end; }
+#api-keysTab .api-key-usage-metric .api-key-progress { height: 4px; padding: 0; border: 0; margin-top: 8px; border-radius: 4px; background: #edf1f6; }
+#api-keysTab article > .api-key-quick-actions { grid-column: 1 / -1; margin: 0; flex-wrap: wrap; }
+#api-keysTab article > .api-key-settings, #api-keysTab article > .api-key-readonly { grid-column: 1 / -1; margin: 0; }
+#api-keysTab .api-key-toggle { color: #86531c; border-color: #e0ceb6; }
+@media (max-width: 1050px) {
+    #api-keysTab article.api-key-card { grid-template-columns: minmax(0,1fr) auto; gap: 12px; }
+    #api-keysTab article > .api-key-status { grid-column: 2; }
+    #api-keysTab article > .api-key-metrics { grid-column: 1 / -1; grid-row: 2; }
+}
+@media (max-width: 700px) {
+    #api-keysTab article.api-key-card { padding: 14px; }
+    #api-keysTab article > .api-key-quick-actions { justify-content: flex-start; }
+}

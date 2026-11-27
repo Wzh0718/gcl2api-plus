@@ -170,6 +170,16 @@ async def test_workflows_across_openai_route_and_stream_collector(
             yield b'data: ' + frame.body + b'\n\n'
 
     monkeypatch.setattr('src.claude_routing._load_route', load_route)
+    if not stream:
+        from unittest.mock import AsyncMock
+        from test_antigravity_model_fallback import _FakeResponse, _patch_common
+        _patch_common(monkeypatch, [])
+        monkeypatch.setattr(antigravity.credential_manager, 'get_valid_credential',
+                            AsyncMock(return_value=('account.json', {'access_token': 'test', 'project_id': 'project'})))
+        async def post(**kwargs):
+            assert kwargs['url'].endswith(':generateContent')
+            return _FakeResponse(200, response(raw).body)
+        monkeypatch.setattr(antigravity, 'post_async', post)
     monkeypatch.setattr(antigravity, '_stream_request_inner', fake_stream)
     request = OpenAIChatCompletionRequest.model_validate({
         'model': 'gemini-2.5-flash', 'stream': stream,

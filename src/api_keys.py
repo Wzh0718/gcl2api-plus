@@ -402,6 +402,18 @@ class ApiKeyService:
         )
         return self._public(record, current)
 
+    async def lookup_key_id(self, api_key: str) -> str | None:
+        """Exact management lookup, including inactive keys, without admission side effects."""
+        parts = api_key.split("_", 2)
+        if len(parts) != 3 or parts[0] != "gcli" or len(parts[1]) != 8 or not parts[2]:
+            return None
+        record = await self.storage.get_api_key_by_prefix(parts[1])
+        if record is None or not hmac.compare_digest(
+            str(record.get("secret_hash") or ""), hash_api_key(api_key)
+        ):
+            return None
+        return record["id"]
+
     async def authenticate(
         self, api_key: str, *, now: Optional[datetime] = None
     ) -> ApiKeyPrincipal:

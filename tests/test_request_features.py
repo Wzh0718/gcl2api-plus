@@ -1,3 +1,5 @@
+"""验证请求特征采集、持久化和面板读取。"""
+
 import asyncio
 import json
 
@@ -163,7 +165,7 @@ async def test_content_persistence_auth_and_email(tmp_path, monkeypatch):
             async def get_all_credential_states(self, mode):
                 return {"acc.json": {"user_email": "person@example.com"}}
         rows = [{"group_key": "acc.json"}, {"credential_name": "acc.json"}]
-        await panel._attach_account_emails(rows, Accounts())
+        await panel._attach_account_metadata(rows, Accounts())
         assert all(row["user_email"] == "person@example.com" for row in rows)
         await backend.delete_call_records_before(10**12)
         assert await backend.get_call_record_content("r-content") is None

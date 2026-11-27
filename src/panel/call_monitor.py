@@ -188,9 +188,11 @@ async def _attach_api_key_names(rows: list[Dict[str, Any]], backend: Any) -> Non
 
 
 async def _attach_account_metadata(rows: list[Dict[str, Any]], backend: Any) -> None:
+    for row in rows:
+        row["account_tier"] = None
     getter = getattr(backend, "get_call_monitor_account_metadata", None)
     if getter is None:
-        await _attach_account_emails(rows, backend)
+        await _attach_account_states(rows, backend)
         await _attach_warmup_status(rows, backend)
         return
     names = [row.get("credential_name", row.get("group_key")) for row in rows]
@@ -199,25 +201,27 @@ async def _attach_account_metadata(rows: list[Dict[str, Any]], backend: Any) -> 
         account = accounts.get(name, {})
         if row.get("channel") != "vertex":
             row["user_email"] = account.get("user_email", "")
+            row["account_tier"] = account.get("tier")
         row["warmup_status"] = account.get("warmup_status", "off")
         row["warmup_level"] = account.get("warmup_level", 0)
         row["warmup_success_count"] = account.get("warmup_success_count", 0)
         row["warmup_max_level"] = account.get("warmup_max_level", 3)
 
 
-async def _attach_account_emails(rows: list[Dict[str, Any]], backend: Any) -> None:
+async def _attach_account_states(rows: list[Dict[str, Any]], backend: Any) -> None:
     getter = getattr(backend, "get_all_credential_states", None)
     if getter is None:
         return
-    states_by_mode = {}
+    states = None
     for row in rows:
-        mode = "vertex" if row.get("channel") == "vertex" else "antigravity"
-        if mode == "vertex":
+        name = row.get("credential_name", row.get("group_key"))
+        if not name or row.get("channel") == "vertex":
             continue
-        if mode not in states_by_mode:
-            states_by_mode[mode] = await getter(mode=mode)
-        name = row.get("credential_name") or row.get("group_key")
-        row["user_email"] = (states_by_mode[mode].get(name) or {}).get("user_email") or ""
+        if states is None:
+            states = await getter(mode="antigravity")
+        state = states.get(name) or {}
+        row["user_email"] = state.get("user_email") or ""
+        row["account_tier"] = state.get("tier")
 
 
 async def _attach_warmup_status(rows: list[Dict[str, Any]], backend: Any) -> None:
@@ -371,7 +375,28 @@ async def call_monitor_realtime(
                     and event["filename"] == row.get("credential_name")]
         row["telemetry"] = {"count": len(matching), "outcomes": list(dict.fromkeys(event["outcome"] for event in matching))}
     await _attach_api_key_names(paged["records"], storage._backend)
-    await _attach_account_metadata(paged["records"], storage._backend)
+    records = [dict(row) for row in paged["records"]]
+    retry_accounts = {}
+    for row in records:
+        retry = (row.get("request_features") or {}).get("text_account_retry")
+        if retry:
+            for attempt in retry["attempts"]:
+                name = attempt["credential_name"]
+                retry_accounts.setdefault(name, {"credential_name": name, "channel": "antigravity"})
+    await _attach_account_metadata([*records, *retry_accounts.values()], storage._backend)
+    for row in records:
+        features = row.get("request_features") or {}
+        if retry := features.get("text_account_retry"):
+            attempts = [
+                {
+                    **attempt,
+                    "user_email": retry_accounts[attempt["credential_name"]].get("user_email", ""),
+                }
+                for attempt in retry["attempts"]
+            ]
+            row["request_features"] = {
+                **features, "text_account_retry": {**retry, "attempts": attempts}
+            }
     total = int(paged["total"])
     page_size = int(paged["page_size"])
     total_pages = max(1, -(-total // page_size))
@@ -392,7 +417,7 @@ async def call_monitor_realtime(
             "realtime": counters.get("logs", 0),
             "inflight": get_inflight_requests(),
         },
-        "records": paged["records"],
+        "records": records,
     }
 
 

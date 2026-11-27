@@ -12,6 +12,8 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from src.antigravity_ttft import buffered_post
+
 from log import log
 from src.shadowsocks import shadowsocks_proxy_context
 from src.request_timing import add_timing_hook
@@ -293,14 +295,16 @@ class AgyNativeTransport:
         json: Any = None,
         proxy_url: Any = ...,
         timeout: float = 30.0,
+        first_output_deadline=None,
     ) -> httpx.Response:
         timing_kwargs = {}
         add_timing_hook(timing_kwargs, url)
+        options = {"deadline": first_output_deadline} if first_output_deadline else {}
         await self.ensure_ready()
         try:
             return await self._request_once(
                 method, url, headers=headers, data=data, json=json,
-                proxy_url=proxy_url, timeout=timeout, timing_kwargs=timing_kwargs,
+                proxy_url=proxy_url, timeout=timeout, timing_kwargs=timing_kwargs, **options,
             )
         except httpx.ConnectError:
             # 连接被拒通常就是 listener 死了；重建后只重试一次，
@@ -309,7 +313,7 @@ class AgyNativeTransport:
             await self.ensure_ready(force=True)
             return await self._request_once(
                 method, url, headers=headers, data=data, json=json,
-                proxy_url=proxy_url, timeout=timeout, timing_kwargs=timing_kwargs,
+                proxy_url=proxy_url, timeout=timeout, timing_kwargs=timing_kwargs, **options,
             )
 
     async def _request_once(
@@ -323,15 +327,14 @@ class AgyNativeTransport:
         proxy_url: Any,
         timeout: float,
         timing_kwargs: Dict[str, Any],
+        deadline=None,
     ) -> httpx.Response:
         async with self._upstream_proxy(proxy_url) as resolved_proxy:
             transport = httpx.AsyncHTTPTransport(uds=str(self._socket()))
             async with httpx.AsyncClient(
                 **timing_kwargs, transport=transport, timeout=httpx.Timeout(timeout + 5.0, connect=30.0)
             ) as client:
-                return await client.request(
-                    method,
-                    "http://localhost/request",
+                options = dict(
                     headers=self._headers(
                         url=url,
                         headers=headers,
@@ -341,6 +344,9 @@ class AgyNativeTransport:
                     ),
                     content=encode_request_body(data, json),
                 )
+                if deadline:
+                    return await buffered_post(client, method, "http://localhost/request", deadline, **options)
+                return await client.request(method, "http://localhost/request", **options)
 
     @asynccontextmanager
     async def stream(
@@ -352,6 +358,7 @@ class AgyNativeTransport:
         json: Any = None,
         proxy_url: Any = ...,
         timeout: float = 300.0,
+        on_send=None,
     ) -> AsyncGenerator[httpx.Response, None]:
         timing_kwargs = {}
         add_timing_hook(timing_kwargs, url)
@@ -363,6 +370,8 @@ class AgyNativeTransport:
             async with httpx.AsyncClient(
                 **timing_kwargs, transport=transport, timeout=httpx.Timeout(None, connect=30.0)
             ) as client:
+                if on_send:
+                    on_send()
                 async with client.stream(
                     method,
                     "http://localhost/request",

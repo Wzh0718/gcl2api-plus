@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from src.api_keys import ApiKeyService
 from src.storage_adapter import get_storage_adapter
@@ -88,6 +88,26 @@ async def list_api_keys(
         )
     except (KeyError, ValueError) as exc:
         raise _error(exc) from exc
+    except Exception as exc:
+        raise _unexpected(exc) from exc
+
+
+class ApiKeyLookupRequest(BaseModel):
+    api_key: SecretStr
+
+
+@router.post("/lookup")
+async def lookup_api_key(
+    payload: ApiKeyLookupRequest,
+    _token: str = Depends(verify_panel_token),
+):
+    """Keep the pasted key out of URLs and return only its matching record ID."""
+    value = payload.api_key.get_secret_value().strip()
+    if len(value) > 512:
+        raise HTTPException(status_code=400, detail="密钥长度无效")
+    try:
+        key_id = await ApiKeyService(await get_storage_adapter()).lookup_key_id(value)
+        return JSONResponse({"id": key_id}, headers={"Cache-Control": "no-store"})
     except Exception as exc:
         raise _unexpected(exc) from exc
 
