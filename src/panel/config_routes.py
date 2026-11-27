@@ -72,6 +72,13 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["service_usage_api_url"] = await config.get_service_usage_api_url()
         current_config["antigravity_api_url"] = await config.get_antigravity_api_url()
 
+        # 远程图片内联策略（来源 IP 白名单）
+        current_config["remote_image_inline_mode"] = await config.get_remote_image_inline_mode()
+        current_config["remote_image_inline_ips"] = await config.get_remote_image_inline_ips()
+        current_config["remote_image_inline_trust_forwarded"] = (
+            await config.get_remote_image_inline_trust_forwarded()
+        )
+
         # 自动封禁配置
         current_config["auto_ban_enabled"] = await config.get_auto_ban_enabled()
         current_config["auto_ban_error_codes"] = await config.get_auto_ban_error_codes()
@@ -223,6 +230,12 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 new_config[ACCOUNT_USAGE_CONFIG] = validate_usage_settings(new_config[ACCOUNT_USAGE_CONFIG])
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+
+        from src.image_inline_policy import InlinePolicyError, validate_settings as validate_inline_policy
+        try:
+            validate_inline_policy(new_config)
+        except InlinePolicyError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
         log.debug(f"收到的配置数据: {list(new_config.keys())}")
 

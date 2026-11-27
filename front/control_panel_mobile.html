@@ -2239,6 +2239,39 @@
                                     style="display: block; color: #666; font-size: 12px; margin-top: 5px;">HTTP/HTTPS/SOCKS5Endpoint，留空表示不使用代理</small>
                             </div>
                         </div>
+                        <div class="card">
+                            <h4>远程图片内联</h4>
+                            <div class="form-group">
+                                <label for="remoteImageInlineMode">内联模式:</label>
+                                <select id="remoteImageInlineMode">
+                                    <option value="all">全部内联（默认）：所有第三方图片先下载再转发</option>
+                                    <option value="ip_list">仅白名单 IP：列表内来源的图片下载后转发，其余透传</option>
+                                    <option value="off">全部透传：不下载，交由上游抓取</option>
+                                </select>
+                                <small style="display: block; color: #666; font-size: 12px; margin-top: 5px;">
+                                    上游抓取第三方图片遵守对方 robots.txt，被拒时返回 400
+                                    <code>URL_ROBOTED_ROBOTED_DENIED</code>；内联可彻底避免。
+                                </small>
+                            </div>
+                            <div class="form-group">
+                                <label for="remoteImageInlineIps">来源 IP 白名单（每行一条）:</label>
+                                <textarea id="remoteImageInlineIps" rows="5"
+                                    placeholder="47.121.25.9&#10;10.20.30.0/24&#10;2001:db8::/32&#10;# 以 # 开头为注释"
+                                    style="font-family: monospace;"></textarea>
+                                <small style="display: block; color: #666; font-size: 12px; margin-top: 5px;">
+                                    支持 IPv4/IPv6 与 CIDR，最多 512 条；仅在「仅白名单 IP」模式下生效，匹配请求来源地址。
+                                </small>
+                            </div>
+                            <div class="form-group">
+                                <label style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="checkbox" id="remoteImageInlineTrustForwarded" />
+                                    信任 X-Forwarded-For / X-Real-IP
+                                </label>
+                                <small style="display: block; color: #666; font-size: 12px; margin-top: 5px;">
+                                    仅在可信反向代理之后开启；直连暴露时开启会让白名单可被伪造。
+                                </small>
+                            </div>
+                        </div>
 <section class="card proxy-console" aria-labelledby="proxyConsoleTitle">
                             <div class="proxy-console-head">
                                 <div>

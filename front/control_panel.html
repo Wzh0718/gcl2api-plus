@@ -3061,6 +3061,42 @@
                                 <small class="config-note">HTTP/HTTPS/SOCKS5Endpoint，留空表示不使用代理</small>
                             </div>
                         </div>
+                        <div class="config-group">
+                            <h4>远程图片内联</h4>
+                            <div class="form-group">
+                                <label for="remoteImageInlineMode">内联模式:</label>
+                                <select id="remoteImageInlineMode" class="config-input">
+                                    <option value="all">全部内联（默认）：所有第三方图片先下载再转发</option>
+                                    <option value="ip_list">仅白名单 IP：列表内来源的图片下载后转发，其余透传</option>
+                                    <option value="off">全部透传：不下载，交由上游抓取</option>
+                                </select>
+                                <small class="config-note">
+                                    上游抓取第三方图片会遵守对方 robots.txt，命中拒绝时返回 400
+                                    <code>URL_ROBOTED_ROBOTED_DENIED</code>；内联可彻底避免。
+                                    透传不产生下载耗时，但上游抓取失败时需要调用方重试。
+                                </small>
+                            </div>
+                            <div class="form-group">
+                                <label for="remoteImageInlineIps">来源 IP 白名单（每行一条）:</label>
+                                <textarea id="remoteImageInlineIps" class="config-input" rows="5"
+                                    style="resize: vertical; font-family: monospace;"
+                                    placeholder="47.121.25.9&#10;10.20.30.0/24&#10;2001:db8::/32&#10;# 以 # 开头为注释"></textarea>
+                                <small class="config-note">
+                                    支持单个 IPv4/IPv6 与 CIDR 网段，最多 512 条；仅在「仅白名单 IP」模式下生效。
+                                    匹配的是请求来源地址（直连对端 IP）。
+                                </small>
+                            </div>
+                            <div class="form-group">
+                                <label>
+                                    <input type="checkbox" id="remoteImageInlineTrustForwarded" class="config-checkbox" />
+                                    信任 X-Forwarded-For / X-Real-IP
+                                </label>
+                                <small class="config-note">
+                                    仅在服务部署于可信反向代理之后时开启；开启后取 X-Forwarded-For 最左一跳作为来源 IP。
+                                    直连暴露时开启会让白名单可被伪造。
+                                </small>
+                            </div>
+                        </div>
                         <section class="config-group proxy-console" aria-labelledby="proxyConsoleTitle">
                             <div class="proxy-console-head">
                                 <div>
