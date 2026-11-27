@@ -974,3 +974,53 @@ def test_key_distribution_list_supports_copying_keys_after_creation():
     assert "./api-keys/${encodeURIComponent(apiKeyId)}/secret" in source
     assert "copyCreatedApiKey" not in source
     assert "请立即复制保存" not in source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["main", "redis", "accounts"])
+async def test_panel_billing_account_emails_preserve_ranking_and_ledger_ids(monkeypatch, source):
+    from types import SimpleNamespace
+    from src.panel import billing as panel
+    import src.billing as billing_module
+
+    items = [
+        {"credential_name": "ag_one.json", "total_tokens": 200, "total_cost": "3.00"},
+        {"credential_name": "deleted.json", "total_tokens": 100, "total_cost": "1.00"},
+    ]
+    lookups = []
+
+    async def metadata(names):
+        lookups.append(names)
+        return {"ag_one.json": {"user_email": "person@example.com"}}
+
+    async def accounts(*args, **kwargs):
+        return {"items": [dict(item) for item in items], "total": 2}
+
+    async def empty(*args, **kwargs):
+        return {}
+
+    storage = SimpleNamespace(
+        _backend=SimpleNamespace(get_call_monitor_account_metadata=metadata),
+        get_billing_accounts=accounts, get_billing_summary=empty,
+        get_billing_models=empty, get_billing_keys=empty,
+    )
+
+    async def adapter():
+        return storage
+
+    async def redis_dashboard(*args, **kwargs):
+        return {"accounts": await accounts()}
+
+    async def recorder(*args):
+        return SimpleNamespace(get_redis_dashboard=redis_dashboard)
+
+    monkeypatch.setattr(panel, "get_storage_adapter", adapter)
+    monkeypatch.setattr(billing_module, "get_billing_recorder", recorder)
+    monkeypatch.setenv("BILLING_DASHBOARD_SOURCE", "redis" if source == "redis" else "sqlite")
+    if source == "accounts":
+        result = await panel.billing_accounts(_token="test")
+    else:
+        result = (await panel.billing_dashboard(_token="test"))["accounts"]
+    assert lookups == [["ag_one.json", "deleted.json"]]
+    assert result["items"] == [dict(items[0], user_email="person@example.com"), dict(items[1], user_email="")]
+    assert result["total"] == 2

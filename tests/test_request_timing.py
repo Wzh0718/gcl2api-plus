@@ -211,6 +211,9 @@ async def test_retry_replaces_upstream_timing_and_closes_underlying_stream():
         measured = state.upstream_first_byte_seconds
         assert timing_hook('https://oauth2.googleapis.com/token') is None
         assert state.upstream_first_byte_seconds == measured
+        # 三次尝试只落一行，计数是唯一能看出“重试过”的字段。
+        assert state.upstream_attempts == 3
+        assert state.details()['attempts'] == 3
         assert len(closed) == 3
     finally:
         request_timing.reset(token)
@@ -324,6 +327,9 @@ async def test_httpx_inference_transport_captures_first_byte(monkeypatch, stream
             response = await httpx_client.post_async(url, json={}, transport='antigravity')
             assert response.content == b'data: first\n\ndata: last\n\n'
         assert state.upstream_first_byte_seconds is not None
+        # httpx 与原生传输都必须计入尝试次数，否则原生传输下的 ×N 恒为 1。
+        assert state.upstream_attempts == 1
+        assert 'attempts' not in state.details()
         assert len(closed) == 1
     finally:
         request_timing.reset(token)

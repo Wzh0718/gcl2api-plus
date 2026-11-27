@@ -3823,14 +3823,14 @@ function _cmEscape(value) {
 
 // 脱敏：保留首尾少量字符，中间打码
 // 长标识（API Key / 账号文件名）保留前 8 后 4，避免多个账号被打码成同一个名字
-function _cmMask(value) {
+function _cmMask(value, escape = _cmEscape) {
     const s = String(value ?? '');
     if (!s) return '-';
-    if (!callMonitorState.mask) return _cmEscape(s);
+    if (!callMonitorState.mask) return escape(s);
     if (s === 'env') return 'env（默认密钥）';
-    if (s.length <= 6) return _cmEscape(s[0] + '****');
-    if (s.length <= 16) return _cmEscape(s.slice(0, 4) + '****' + s.slice(-3));
-    return _cmEscape(s.slice(0, 8) + '****' + s.slice(-4));
+    if (s.length <= 6) return escape(s[0] + '****');
+    if (s.length <= 16) return escape(s.slice(0, 4) + '****' + s.slice(-3));
+    return escape(s.slice(0, 8) + '****' + s.slice(-4));
 }
 
 function _cmFormatTime(ts) {
@@ -3846,6 +3846,18 @@ function _cmFormatLatency(seconds) {
     return `${seconds.toFixed(2)}s`;
 }
 
+function _cmAttempts(row) {
+    const attempts = Number(row?.timing_details?.attempts);
+    // 1 表示没有重试；历史记录没有这个键，也不应显示成 ×0。
+    return Number.isFinite(attempts) && attempts >= 2 ? attempts : 0;
+}
+
+function _cmAttemptsBadge(row) {
+    const attempts = _cmAttempts(row);
+    if (!attempts) return '';
+    return `<span class="cm-attempts" aria-label="上游尝试 ${attempts} 次">×${attempts}</span>`;
+}
+
 function _cmLatencyCell(row) {
     const measured = value => value !== null && value !== undefined
         && Number.isFinite(Number(value)) && Number(value) >= 0;
@@ -3853,6 +3865,7 @@ function _cmLatencyCell(row) {
         ? (Number(value) < 1 ? `${(Number(value) * 1000).toFixed(2)}ms` : _cmFormatLatency(Number(value))) : '未采集';
     const hasTotal = measured(row.response_total_seconds);
     const visible = format(row.response_total_seconds);
+    const attempts = _cmAttempts(row);
     const tip = [
         `总耗时 ${visible}`,
         `上游 ${format(row.upstream_response_seconds)}`,
@@ -3860,6 +3873,9 @@ function _cmLatencyCell(row) {
         `上游首字节 ${format(row.upstream_first_byte_seconds)}`,
         `响应等待 ${format(row.downstream_first_byte_seconds)}`,
     ];
+    if (attempts) {
+        tip.push(`上游尝试 ${attempts} 次（同一请求内重试/换号，仅保留最终结果）`);
+    }
     const stages = row.timing_details?.stages;
     if (stages) {
         const {first_upstream_send: first, last_upstream_send: last, last_upstream_data: end} = stages;
@@ -3897,9 +3913,13 @@ function _cmLatencyCell(row) {
     }
     if (row.timing_id && Object.keys(phases).length) tip.push(`timing_id ${row.timing_id}`);
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
-    return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
+    return _cmTooltipTrigger(_cmAttemptsBadge(row) + _cmEscape(visible), tip, `总耗时 ${visible}${attempts ? `，上游尝试 ${attempts} 次` : ""}，查看耗时明细`);
+}
+
+function _cmTooltipTrigger(contentHtml, lines, ariaLabel, multiline = false) {
+    return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(lines.join('\n'))}"${multiline ? ' data-tip-multiline' : ''}
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
-        onclick="showCallMonitorLatency(this)" aria-label="总耗时 ${visible}，查看耗时明细">${visible}</button>`;
+        onclick="showCallMonitorLatency(this)" aria-label="${_cmEscape(ariaLabel)}">${contentHtml}</button>`;
 }
 
 let callMonitorLatencyTooltip = null;
@@ -3917,8 +3937,10 @@ function showCallMonitorLatency(trigger) {
     tooltip.setAttribute('role', 'tooltip');
     const body = document.createElement('div');
     body.className = 'cm-latency-tooltip-body';
+    const multiline = trigger.dataset.tipMultiline !== undefined;
+    if (multiline) body.classList.add('cm-retry-tooltip-body');
     trigger.dataset.latencyTip.split('\n').forEach((text, index) => {
-        if (index) body.append(' · ');
+        if (index && !multiline) body.append(' · ');
         const metric = document.createElement('span');
         metric.textContent = text;
         body.append(metric);
@@ -4250,7 +4272,7 @@ function _cmModelCell(row) {
     const fellBack = requested !== executed;
     const normalized = !!upstream && upstream !== executed;
     if (!fellBack && !normalized) {
-        return `<td title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</td>`;
+        return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</div></td>`;
     }
 
     const segments = [_cmEscape(requested) || '-'];
@@ -4263,7 +4285,7 @@ function _cmModelCell(row) {
         segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
         tips.push(`上游物理: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`);
     }
-    return `<td title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</td>`;
+    return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</div></td>`;
 }
 
 function _cmRequestModeCell(row) {
@@ -4276,7 +4298,7 @@ function _cmRequestModeCell(row) {
     const modeLabels = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
     const tags = [`<span class="cm-badge cm-badge-protocol">${_cmEscape(protocolLabels[protocol] || protocol)}</span>`];
     if (transport) tags.push(`<span class="cm-badge cm-badge-transport">${transport === 'stream' ? '流式' : '非流式'}</span>`);
-    if (mode) tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
+    if (mode && mode !== 'normal') tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
     return `<div class="cm-mode-tags">${tags.join(' ')}</div>`;
 }
 
@@ -4475,24 +4497,28 @@ function _cmTextRetryCells(row) {
     if (!retry?.attempts?.length) return null;
     const labels = {sent: '换号 1 次', no_candidate: '无备选账号', not_sent: '未发送', selection_failed: '选取账号失败'};
     const label = labels[retry.state] || '未记录';
-    const account = attempt => _cmMask(attempt.user_email || attempt.credential_name);
-    const status = (attempt, index) => index > 0 && retry.state === 'not_sent' ? '未发送'
-        : attempt.status_code == null ? '未收到响应' : _cmStatusCodeChip(attempt.status_code, attempt.rate_limit);
-    const rows = retry.attempts.map((attempt, index) => {
-        const fields = [index ? '备选账号' : '原账号', account(attempt), status(attempt, index)];
-        if (attempt.model) fields.push(`请求模型 ${_cmEscape(attempt.model)}`);
-        if (index > 0 && retry.state === 'sent' && row.upstream_model) fields.push(`响应模型 ${_cmEscape(row.upstream_model)}`);
-        if (attempt.elapsed_ms != null) fields.push(`${_cmEscape(attempt.elapsed_ms)} ms`);
-        if (attempt.rate_limit) fields.push(_cmEscape(_cmRateLimitText(attempt.rate_limit).detail));
-        if (attempt.retry_after) fields.push(`Retry-After: ${_cmEscape(attempt.retry_after)}`);
-        return `<li>${fields.join(' · ')}</li>`;
+    const first = retry.attempts[0];
+    const outcome = (attempt, index) => index === 1 && retry.state === 'not_sent' && attempt.kind !== 'same_account'
+        ? '未发送' : attempt.status_code == null ? '未收到响应' : `HTTP ${attempt.status_code}`;
+    const status = (attempt, index) => attempt.status_code == null ? _cmEscape(outcome(attempt, index))
+        : _cmStatusCodeChip(attempt.status_code);
+    const lines = retry.attempts.map((attempt, index) => {
+        const stage = attempt.kind === 'same_account' ? '原号重试' : index ? '备选账号' : '原账号';
+        const fields = [stage, _cmMask(attempt.user_email || attempt.credential_name, String), outcome(attempt, index)];
+        if (attempt.model) fields.push(`请求模型 ${attempt.model}`);
+        if (index === retry.attempts.length - 1 && row.upstream_model) fields.push(`响应模型 ${row.upstream_model}`);
+        if (attempt.elapsed_ms != null) fields.push(`${attempt.elapsed_ms} ms`);
+        if (attempt.rate_limit) fields.push(_cmRateLimitText(attempt.rate_limit).detail);
+        if (attempt.retry_after) fields.push(`Retry-After: ${attempt.retry_after}`);
+        return fields.join(' · ');
     });
+    const codes = retry.attempts.map(status).join(' → ');
+    const outcomes = retry.attempts.map(outcome).join(' → ');
+    const tooltipLines = ['no_candidate', 'selection_failed'].includes(retry.state) ? [label, ...lines] : lines;
     return {
-        status: retry.attempts.map(status).join(' → '),
-        accounts: retry.state === 'not_sent' && retry.attempts.length > 1
-            ? `${account(retry.attempts[0])} <small>备选 ${account(retry.attempts[1])} 未发送</small>`
-            : `${retry.attempts.map(account).join(' → ')} <small>${label}</small>`,
-        details: `<h4>文本换号 · ${label}</h4><ol>${rows.join('')}</ol>`,
+        status: _cmTooltipTrigger(codes, tooltipLines, `${outcomes}，${label}，查看重试详情`, true),
+        account: _cmMask(first.user_email || first.credential_name),
+        details: `<h4>文本换号 · ${label}</h4><ol>${lines.map(line => `<li>${_cmEscape(line)}</li>`).join('')}</ol>`,
     };
 }
 
@@ -4745,6 +4771,7 @@ async function showCallMonitorTelemetry(index) {
 function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
         const retry = _cmTextRetryCells(row);
+        const account = retry?.account ?? _cmMask(row.user_email || row.credential_name);
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         const statusCell = row.success
@@ -4753,7 +4780,6 @@ function _cmRenderRealtime(records) {
         return `<tr>
             <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmEscape(row.api_key_name || '未命名密钥')}</td>
             ${_cmModelCell(row)}
-            <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
             <td>${retry?.status ?? _cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
             <td>${statusCell}</td>
@@ -4761,7 +4787,7 @@ function _cmRenderRealtime(records) {
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${retry?.accounts ?? _cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td class="cm-key-cell" title="账号: ${account}">${account}${retry ? '' : _cmWarmupBadge(row)}</td>
             ${_cmAccountTierCell(row)}
             <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
@@ -4769,7 +4795,7 @@ function _cmRenderRealtime(records) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥名称</th><th>模型 / 协议</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>遥测</th><th>请求详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -7107,7 +7133,7 @@ function populateConfigForm() {
     setConfigField('callsPerRotation', c.calls_per_rotation || 10);
 
     document.getElementById('retry429Enabled').checked = Boolean(c.retry_429_enabled);
-    setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502]).join(','));
+    setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502, 503]).join(','));
     setConfigField('retry429MaxRetries', c.retry_429_max_retries ?? 5);
     setConfigField('retry429Interval', c.retry_429_interval || 0.1);
 
@@ -7655,9 +7681,10 @@ function renderBillingRanking(items, nameKey, currency) {
     return items.map((item, index) => {
         const tokens = Number(item.total_tokens) || 0;
         const width = Math.max(3, Math.round(tokens / maxTokens * 100));
+        const name = nameKey === 'credential_name' ? (item.user_email?.trim() || item.credential_name) : item[nameKey];
         return `<div class="billing-ranking-row">
-            <div class="billing-ranking-meta"><strong>${index + 1}. ${escapeHtml(item[nameKey])}</strong><span>${formatBillingNumber(tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, currency))}</span></div>
-            <div class="billing-bar" role="img" aria-label="${escapeHtml(item[nameKey])} ${formatBillingNumber(tokens)} tokens"><span style="width:${width}%"></span></div>
+            <div class="billing-ranking-meta"><strong>${index + 1}. ${escapeHtml(name)}</strong><span>${formatBillingNumber(tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, currency))}</span></div>
+            <div class="billing-bar" role="img" aria-label="${escapeHtml(name)} ${formatBillingNumber(tokens)} tokens"><span style="width:${width}%"></span></div>
         </div>`;
     }).join('');
 }
@@ -7800,7 +7827,7 @@ async function loadBillingDashboard({ includePricing = true, silent = false } = 
             );
         } else {
             document.getElementById('billingTrend').innerHTML = quotaPeriodView ? quotaDetailMessage : ((summary.daily_trend || []).map(item => `<div>${escapeHtml(item.billing_date)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, billingCurrency))}</div>`).join('') || '暂无数据');
-            document.getElementById('billingAccounts').innerHTML = quotaPeriodView ? quotaDetailMessage : ((accounts.items || []).map(item => `<div>${escapeHtml(item.credential_name)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
+            document.getElementById('billingAccounts').innerHTML = quotaPeriodView ? quotaDetailMessage : ((accounts.items || []).map(item => `<div>${escapeHtml(item.user_email?.trim() || item.credential_name)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
             document.getElementById('billingModels').innerHTML = quotaPeriodView ? quotaDetailMessage : ((models.items || []).map(item => `<div>${escapeHtml(item.model)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
             document.getElementById('billingKeys').innerHTML = (keys.items || []).map(item => `<div>${escapeHtml(apiKeyName(item.api_key_id))}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据';
         }

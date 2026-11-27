@@ -1,3 +1,14 @@
+/* 协议与传输方式在上，模型名称在下；桌面和移动端共用。 */
+.cm-mode-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+}
+
+.cm-model-name {
+    margin-top: 4px;
+}
+
 /* 桌面端和移动端共用的耗时提示，独立于表格滚动容器。 */
 .cm-latency-trigger {
     display: inline;
@@ -25,6 +36,21 @@
 .cm-latency-trigger:focus-visible {
     outline: 2px solid var(--ui-accent, #2764ce);
     outline-offset: 3px;
+}
+
+/* 同一请求内的上游尝试次数：只在重试过（attempts ≥ 2）时出现。 */
+.cm-attempts {
+    display: inline-block;
+    margin-right: 4px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(127, 127, 127, 0.18);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+}
+
+.cm-latency-trigger[data-tip-multiline] {
+    white-space: nowrap;
 }
 
 .cm-latency-tooltip {
@@ -57,6 +83,13 @@
 .cm-latency-tooltip-body span {
     display: inline-block;
     white-space: nowrap;
+}
+.cm-retry-tooltip-body span {
+    display: block;
+    white-space: normal;
+}
+.cm-retry-tooltip-body span + span {
+    margin-top: 4px;
 }
 .cm-rate-limit-source {
     display: block;

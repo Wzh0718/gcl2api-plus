@@ -152,6 +152,18 @@ async def billing_summary(
     return await storage.get_billing_summary(_range(range), api_key_id=api_key_id)
 
 
+async def _attach_billing_account_emails(storage: Any, accounts: Dict[str, Any]) -> None:
+    """Resolve display names in one bounded lookup without changing ledger identities."""
+    items = accounts.get("items", [])
+    names = list(dict.fromkeys(item["credential_name"] for item in items if item.get("credential_name")))
+    getter = getattr(getattr(storage, "_backend", None), "get_call_monitor_account_metadata", None)
+    if not names or getter is None:
+        return
+    metadata = await getter(names)
+    for item in items:
+        item["user_email"] = (metadata.get(item.get("credential_name")) or {}).get("user_email") or ""
+
+
 async def _main_dashboard(
     storage: Any, range_name: str, page_size: int,
     api_key_id: str | None, *, degraded: bool = False,
@@ -166,6 +178,7 @@ async def _main_dashboard(
         ),
         storage.get_billing_keys(range_name, 1, page_size),
     )
+    await _attach_billing_account_emails(storage, accounts)
     return {
         "source": main_backend(),
         "degraded": degraded,
@@ -194,9 +207,11 @@ async def billing_dashboard(
 
     from src.billing import BillingRedisUnavailable, get_billing_recorder
     try:
-        return await (await get_billing_recorder(storage)).get_redis_dashboard(
+        dashboard = await (await get_billing_recorder(storage)).get_redis_dashboard(
             range_name, bounded_page_size, api_key_id=api_key_id
         )
+        await _attach_billing_account_emails(storage, dashboard["accounts"])
+        return dashboard
     except BillingRedisUnavailable as exc:
         log.warning(
             f"[BILLING] Redis dashboard unavailable; using the main ledger: {type(exc).__name__}"
@@ -212,9 +227,11 @@ async def billing_accounts(
     api_key_id: str | None = None, _token: str = Depends(verify_panel_token),
 ):
     storage = await get_storage_adapter()
-    return await storage.get_billing_accounts(
+    accounts = await storage.get_billing_accounts(
         _range(range), page, min(page_size, 100), api_key_id=api_key_id
     )
+    await _attach_billing_account_emails(storage, accounts)
+    return accounts
 
 
 @router.get("/billing/models")

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from src.credential_manager import CredentialManager
 
-DEFAULT_STATUS_CODES = (429, 502)
+DEFAULT_STATUS_CODES = (429, 502, 503)
 
 
 def parse_status_codes(value: object) -> list[int]:
@@ -97,7 +97,7 @@ def text_retry_decision(
         return None
     if status in codes:
         return bool(settings["retry_enabled"])
-    return False if status in DEFAULT_STATUS_CODES else None
+    return False if status in (429, 502) else None
 
 
 def _account_email(data: dict[str, Any]) -> str:
