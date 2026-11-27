@@ -3547,11 +3547,11 @@
                             <fieldset class="prompt-mode-fieldset" aria-describedby="systemObfuscationHint">
                                 <legend>文本处理</legend>
                                 <div class="prompt-mode-options">
-                                    <label><input type="radio" name="systemObfuscationChoice" value="off" onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="off" checked onchange="selectSystemObfuscationMode(this.value)"><span>关闭</span></label>
                                     <label><input type="radio" name="systemObfuscationChoice" value="full" onchange="selectSystemObfuscationMode(this.value)"><span>全文 Leet</span></label>
-                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" checked onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
+                                    <label><input type="radio" name="systemObfuscationChoice" value="protected" onchange="selectSystemObfuscationMode(this.value)"><span>智能保护</span></label>
                                 </div>
-                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off">关闭</option><option value="full">全文 Leet</option><option value="protected" selected>智能保护 Leet</option></select>
+                                <select id="antigravitySystemObfuscationMode" hidden aria-hidden="true" tabindex="-1"><option value="off" selected>关闭</option><option value="full">全文 Leet</option><option value="protected">智能保护 Leet</option></select>
                                 <p id="systemObfuscationHint" class="prompt-setting-hint">自动保留可识别的输出格式、代码、模板变量、路径和工具或环境章节。</p>
                                 <p id="systemObfuscationLock" class="prompt-setting-lock" hidden>由环境变量控制</p>
                             </fieldset>
@@ -3575,7 +3575,7 @@
                             </details>
                             <details class="prompt-settings-advanced">
                                 <summary>更多设置与处理说明</summary>
-                                <label class="prompt-setting-row" for="antigravitySystemPromptEnabled"><span><strong>AGY 基础提示</strong><span class="prompt-setting-hint">默认开启。注入官方 AGY 2.31.2 基础模块（随账号 hub 版本），不是自定义前置文本。</span></span><input type="checkbox" id="antigravitySystemPromptEnabled"></label>
+                                <label class="prompt-setting-row" for="antigravitySystemPromptEnabled"><span><strong>AGY 基础提示</strong><span class="prompt-setting-hint">默认开启。整段注入官方 AGY 2.35.2 系统提示（跟随账号 hub 版本），并附一段网关执行适配说明；不做分段拼接。</span></span><input type="checkbox" id="antigravitySystemPromptEnabled"></label>
                                 <ul class="prompt-rules"><li>两种 Leet 模式都附加解码说明，保留明确的输出要求、工具参数和输出 Schema 的字段与枚举。精确值建议用反引号标记。</li><li>智能保护额外识别代码块、路径和工具或环境章节，支持 Codex、Claude Code、DSH、Pi 的常见结构。</li><li>转为 user 后优先级也降为 user；提示词融合成功时优先于这些处理。不保证减少 429 或避免 403。</li></ul>
                             </details>
                         </section>
@@ -3585,6 +3585,7 @@
                                 <label><input type="checkbox" id="promptFusionEnabled" /> 全局开启提示词融合</label>
                                 <small class="config-note">用当前账号、当前文本模型整理客户端系统指导，并融合 AGY 基础提示。首次会额外调用模型并计入用量；相同输入缓存 24 小时。失败时沿用原有请求。默认关闭，图片请求不处理。</small>
                             </div>
+                                <label class="prompt-setting-row" for="antigravityOfficialToolAlignmentEnabled"><span><strong>官方工具声明形态</strong><span class="prompt-setting-hint">默认开启。按 AGY / DSH / Claude Code / GPT(Codex) 工具集排序，合并为单个 functionDeclarations，并把 type 与数值约束改成官方写法。只改形态，不改工具名和参数。</span></span><input type="checkbox" id="antigravityOfficialToolAlignmentEnabled"></label>
                             <p class="config-note">单个账号的设置请到「账号管理 → 凭证管理」中，点击对应账号的「提示词融合」。账号设置优先于全局开关。</p>
                             <small class="config-note">融合成功时优先于“客户端 System 转 User”和元音混淆，使用原始客户端提示生成融合结果，无需另开基础提示注入。模型改写可能改变含义，建议先单账号试用。缓存不包含用户对话，但融合结果可能包含项目路径等信息。</small>
                         </div>

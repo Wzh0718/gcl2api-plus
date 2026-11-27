@@ -19,7 +19,7 @@ class AntigravityUserAgentTests(unittest.TestCase):
                 cl="1003475615",
             ),
             "antigravity/hub/2.25.0 (aidev_client; os_type=linux; "
-            "arch=amd64; cl=1003475615)",
+            "arch=amd64; cl=1003475615; datacollection_opt_in=false)",
         )
 
     def test_cli_track_builder_is_retired(self):

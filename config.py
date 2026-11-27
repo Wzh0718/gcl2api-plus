@@ -41,6 +41,7 @@ AUTO_BAN_ERROR_CODES = [403]
 ENV_MAPPINGS = {
     "ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE": "antigravity_system_obfuscation_mode",
     "ANTIGRAVITY_SYSTEM_PROMPT_ENABLED": "antigravity_system_prompt_enabled",
+    "ANTIGRAVITY_OFFICIAL_TOOL_ALIGNMENT": "antigravity_official_tool_alignment_enabled",
     "ANTIGRAVITY_SYSTEM_AS_USER_ENABLED": "antigravity_system_as_user_enabled",
     "ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED": "antigravity_system_vowel_obfuscation_enabled",
     "CODE_ASSIST_ENDPOINT": "code_assist_endpoint",
@@ -564,11 +565,11 @@ async def get_antigravity_stream2nostream() -> bool:
     return bool(await get_config_value("antigravity_stream2nostream", False))
 
 
-# Antigravity hub 轨迹指纹（2.31.0 / CL 1017595969，官方二进制 --stamp 核验）
+# Antigravity hub 轨迹指纹（2.35.2 / CL 1029311855，官方二进制实读核验，2026-11-26）
 # 这两个键刻意不走 ENV_MAPPINGS：优先级为 面板配置 > ENV > 默认值，
 # ENV 只作部署期兜底初始值，面板随时可改（hub 通道周更，需频繁维护）。
-_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.34.0"
-_ANTIGRAVITY_HUB_CL_DEFAULT = "1026637980"
+_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.35.2"
+_ANTIGRAVITY_HUB_CL_DEFAULT = "1029311855"
 
 
 async def get_antigravity_hub_version() -> str:
@@ -1653,6 +1654,20 @@ async def get_antigravity_system_prompt_enabled() -> bool:
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
 
 
+async def get_antigravity_official_tool_alignment_enabled() -> bool:
+    """工具声明对齐到官方 agy 2.35.2 形态的开关，默认开启。
+
+    开启后 wrap_cli_request 会把客户端 tools 按来源工具集（AGY / DSH / Claude Code /
+    GPT(Codex)）的规范顺序重排、合并成单个 functionDeclarations entry，并把 schema 的
+    type/数值约束改成官方 protojson 写法。只改形态，不改工具名与参数语义。
+    """
+    value = await get_config_value(
+        'antigravity_official_tool_alignment_enabled', True,
+        env_var='ANTIGRAVITY_OFFICIAL_TOOL_ALIGNMENT',
+    )
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
 async def get_antigravity_system_as_user_enabled() -> bool:
     value = await get_config_value('antigravity_system_as_user_enabled', False, env_var='ANTIGRAVITY_SYSTEM_AS_USER_ENABLED')
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
@@ -1662,7 +1677,7 @@ async def get_antigravity_system_vowel_obfuscation_enabled() -> bool:
     return await get_antigravity_system_obfuscation_mode() != 'off'
 
 
-DEFAULT_SYSTEM_OBFUSCATION_MODE = 'protected'
+DEFAULT_SYSTEM_OBFUSCATION_MODE = 'off'
 
 
 async def get_antigravity_system_obfuscation_mode() -> str:
@@ -1676,4 +1691,7 @@ async def get_antigravity_system_obfuscation_mode() -> str:
     if value is not None:
         return value if value in ('off', 'full', 'protected') else 'off'
     enabled = legacy.lower() in ('true', '1', 'yes', 'on') if isinstance(legacy, str) else legacy
-    return DEFAULT_SYSTEM_OBFUSCATION_MODE if enabled is None or enabled else 'off'
+    if enabled is None:
+        return DEFAULT_SYSTEM_OBFUSCATION_MODE
+    # 旧布尔开关显式开启时仍按“智能保护”处理，避免升级后静默降级。
+    return 'protected' if enabled else 'off'

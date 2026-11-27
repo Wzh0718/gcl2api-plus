@@ -98,6 +98,7 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["system_prompt_append"] = await config.get_system_prompt_append()
         current_config["antigravity_system_prompt_enabled"] = await config.get_antigravity_system_prompt_enabled()
         current_config["antigravity_system_as_user_enabled"] = await config.get_antigravity_system_as_user_enabled()
+        current_config["antigravity_official_tool_alignment_enabled"] = await config.get_antigravity_official_tool_alignment_enabled()
         current_config["antigravity_system_vowel_obfuscation_enabled"] = await config.get_antigravity_system_vowel_obfuscation_enabled()
         current_config["antigravity_system_obfuscation_mode"] = await config.get_antigravity_system_obfuscation_mode()
 
@@ -293,7 +294,8 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(status_code=400, detail="敏感词替换规则过长（最多 20000 字符）")
 
         for key in ("antigravity_system_prompt_enabled", "antigravity_system_as_user_enabled",
-                    "antigravity_system_vowel_obfuscation_enabled"):
+                    "antigravity_system_vowel_obfuscation_enabled",
+                    "antigravity_official_tool_alignment_enabled"):
             if key in new_config and not isinstance(new_config[key], bool):
                 raise HTTPException(status_code=400, detail="AGY 提示词开关必须是布尔值")
 
@@ -304,7 +306,7 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 raise HTTPException(status_code=400, detail="AGY 混淆方案必须是 off、full 或 protected")
             new_config[legacy_key] = new_config[mode_key] != 'off'
         elif legacy_key in new_config:
-            new_config[mode_key] = config.DEFAULT_SYSTEM_OBFUSCATION_MODE if new_config[legacy_key] else 'off'
+            new_config[mode_key] = 'protected' if new_config[legacy_key] else 'off'
 
         if "system_prompt_append" in new_config:
             value = new_config["system_prompt_append"]
