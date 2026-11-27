@@ -4027,13 +4027,6 @@ function _cmTaskLabel(taskType) {
     return ({ image: '生图', chat: '对话', embedding: '嵌入' })[taskType] || (taskType || '对话');
 }
 
-function _cmStatusBadge(success) {
-    if (success === null || success === undefined) return '<span class="cm-badge cm-badge-muted">-</span>';
-    return success
-        ? '<span class="cm-badge cm-badge-ok">成功</span>'
-        : '<span class="cm-badge cm-badge-fail">失败</span>';
-}
-
 function _cmRateLimitText(attribution) {
     const source = { gateway: '网关', upstream: '上游' }[attribution?.source];
     if (!source) return { label: '来源未知', detail: '此记录缺少可确认的 429 来源' };
@@ -4262,19 +4255,82 @@ function _cmEmptyState() {
     </div>`;
 }
 
+// 模型格 = 一列说清「模型 / 协议 / 推理 / 服务」：
+//   主行  模型名（降级或归一时是“请求模型 → 实际模型”）
+//   次行  协议 · 传输 [· 非默认任务] [· 非默认服务]
+// 次行只写偏离默认的差异：对话与 Antigravity 是绝大多数情况，不占字；生图/嵌入、
+// GeminiCLI/Vertex 这类少数情况才补一个词。既不再单开一列，也不出现「对话 / antigravity」。
+const CM_PROTOCOL_LABELS = {
+    openai_chat: 'OpenAI Chat', openai_responses: 'OpenAI Responses', openai_images: 'OpenAI Images',
+    anthropic: 'Anthropic', gemini: 'Gemini', unknown: '未知协议',
+};
+const CM_MODE_LABELS = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
+const CM_CHANNEL_LABELS = { antigravity: 'Antigravity', geminicli: 'GeminiCLI', vertex: 'Vertex' };
+const CM_MODEL_HEADER_TIP = '左侧色条按任务类型着色：蓝=对话、琥珀=生图、青绿=嵌入；次行只写非默认的任务与上游，并按各自颜色标出';
+const CM_MODEL_HEADER = `<th title="${CM_MODEL_HEADER_TIP}">模型 / 协议 / 服务</th>`;
+// 聚合视图没有协议字段，列名只写模型与服务。
+const CM_MODEL_SERVICE_HEADER = `<th title="${CM_MODEL_HEADER_TIP}">模型 / 服务</th>`;
+// 只用作模型格左侧色条和次行差异词：对话蓝 / 生图琥珀 / 嵌入青绿；上游紫 / 红 / 天蓝。
+const CM_TASK_HUES = { chat: 214, image: 32, embedding: 168 };
+const CM_CHANNEL_HUES = { antigravity: 262, geminicli: 328, vertex: 199 };
+const CM_SERVICE_UNKNOWN_HUE = 220;
+
+function _cmServiceTask(row) {
+    return (row?.task_type || row?.taskType || 'chat');
+}
+
+function _cmServiceChannel(row) {
+    return (row?.channel || 'antigravity');
+}
+
+// 次行片段带一个来源标签，只有「非默认任务」「非默认上游」才着色；协议与传输保持中性灰。
+function _cmModelMetaParts(row, { protocol = false } = {}) {
+    const parts = [];
+    const task = _cmServiceTask(row);
+    if (task !== 'chat') parts.push({ text: _cmTaskLabel(task), tone: 'task' });
+    if (protocol) {
+        const info = row.timing_details?.request || row.request_info || {};
+        const proto = info.protocol || 'unknown';
+        parts.push({ text: CM_PROTOCOL_LABELS[proto] || proto });
+        if (info.transport) parts.push({ text: info.transport === 'stream' ? '流式' : '非流式' });
+        if (info.mode && info.mode !== 'normal') parts.push({ text: CM_MODE_LABELS[info.mode] || info.mode });
+    }
+    const channel = _cmServiceChannel(row);
+    if (channel !== 'antigravity') parts.push({ text: CM_CHANNEL_LABELS[channel] || channel, tone: 'channel' });
+    return parts;
+}
+
+function _cmModelMetaHtml(row, { protocol = false } = {}) {
+    const parts = _cmModelMetaParts(row, { protocol });
+    if (!parts.length) return '';
+    return `<div class="cm-model-meta">${parts.map(part =>
+        `<span${part.tone ? ` class="cm-tone-${part.tone}"` : ''}>${_cmEscape(part.text)}</span>`).join('')}</div>`;
+}
+
+// 模型名主行 + 次行元信息；协议信息只在实时视图有，聚合视图不传 protocol。
+// 左侧 2px 色条按任务类型着色（对话蓝 / 生图琥珀 / 嵌入青绿），整列扫视时生图请求会自己跳出来。
+function _cmModelServiceCell(row, nameHtml, nameTip, { protocol = false } = {}) {
+    const task = _cmServiceTask(row);
+    const channel = _cmServiceChannel(row);
+    const tip = `${_cmTaskLabel(task)} · ${CM_CHANNEL_LABELS[channel] || channel}`;
+    const taskHue = CM_TASK_HUES[task] ?? CM_SERVICE_UNKNOWN_HUE;
+    const channelHue = CM_CHANNEL_HUES[channel] ?? CM_SERVICE_UNKNOWN_HUE;
+    return `<td class="cm-model-cell" style="--cm-task-hue:${taskHue};--cm-channel-hue:${channelHue}"
+        title="${_cmEscape(tip)}">
+        <div class="cm-model-name" title="${_cmEscape(nameTip)}">${nameHtml}</div>${_cmModelMetaHtml(row, { protocol })}</td>`;
+}
+
 // 模型单元格：原始请求模型 → 网关执行模型（降级链切换后）→ 上游真实执行模型（modelVersion）逐条对比。
 // 发生降级或上游归一时，与原始请求不同的段会高亮，悬停显示完整链路。
 function _cmModelCell(row) {
     const executed = row.model_name || '';
     const requested = (row.request_model || '').trim() || executed; // 历史记录无 request_model，回落到执行模型
     const upstream = (row.upstream_model || '').trim();
-
     const fellBack = requested !== executed;
     const normalized = !!upstream && upstream !== executed;
     if (!fellBack && !normalized) {
-        return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</div></td>`;
+        return _cmModelServiceCell(row, _cmEscape(executed) || '-', executed, { protocol: true });
     }
-
     const segments = [_cmEscape(requested) || '-'];
     const tips = [`原始请求: ${requested || '-'}`];
     if (fellBack) {
@@ -4285,21 +4341,7 @@ function _cmModelCell(row) {
         segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
         tips.push(`上游物理: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`);
     }
-    return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</div></td>`;
-}
-
-function _cmRequestModeCell(row) {
-    const info = row.timing_details?.request || row.request_info || {};
-    const protocol = info.protocol || 'unknown';
-    const transport = info.transport || '';
-    const mode = info.mode || '';
-    const protocolLabels = { openai_chat: 'OpenAI Chat', openai_responses: 'OpenAI Responses',
-        openai_images: 'OpenAI Images', anthropic: 'Anthropic', gemini: 'Gemini', unknown: '未知协议' };
-    const modeLabels = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
-    const tags = [`<span class="cm-badge cm-badge-protocol">${_cmEscape(protocolLabels[protocol] || protocol)}</span>`];
-    if (transport) tags.push(`<span class="cm-badge cm-badge-transport">${transport === 'stream' ? '流式' : '非流式'}</span>`);
-    if (mode && mode !== 'normal') tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
-    return `<div class="cm-mode-tags">${tags.join(' ')}</div>`;
+    return _cmModelServiceCell(row, segments.join(' → '), tips.join('\n'), { protocol: true });
 }
 
 // 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
@@ -4404,10 +4446,8 @@ function _cmRenderKeyGroups(groups) {
                 </button>
             </td>
             ${_cmAccountTierCell()}
-            <td>${_cmKeyModelHtml(group.leader)}</td>
-            <td>${_cmTaskLabel(group.taskType)} / ${_cmEscape(group.channel || 'antigravity')}</td>
-            <td>${_cmStatusCodeChip(group.lastStatusCode)}</td>
-            <td>${_cmStatusBadge(group.lastSuccess)}</td>
+            ${_cmModelServiceCell(group.leader, _cmKeyModelHtml(group.leader), group.leader.top_model || group.leader.model_name || '')}
+            ${_cmResultCell({ status_code: group.lastStatusCode, success: group.lastSuccess })}
             ${_cmRateCell(group.successRate)}
             <td title="成功 ${group.successCount} / 失败 ${group.failedCount}">${group.total}</td>
             <td>${Math.round(group.tps * 1000) / 1000}</td>
@@ -4424,10 +4464,8 @@ function _cmRenderKeyGroups(groups) {
             rowsHtml.push(`<tr class="cm-child-row">
                 <td class="cm-key-cell cm-child-cell" title="账号: ${_cmMask(account.user_email || account.credential_name || '-')}（调用 ${account.total} 次）">${_cmMask(account.user_email || account.credential_name || '-')}${_cmWarmupBadge(account)}</td>
                 ${_cmAccountTierCell(account)}
-                <td>${_cmKeyModelHtml(account)}</td>
-                <td>${_cmTaskLabel(account.task_type)} / ${_cmEscape(account.channel || 'antigravity')}</td>
-                <td>${_cmStatusCodeChip(account.last_status_code)}</td>
-                <td>${_cmStatusBadge(account.last_success)}</td>
+                ${_cmModelServiceCell(account, _cmKeyModelHtml(account), account.top_model || account.model_name || '')}
+                ${_cmResultCell(account)}
                 ${_cmRateCell(account.success_rate)}
                 <td title="成功 ${account.success_count} / 失败 ${account.failed_count}">${account.total}</td>
                 <td>${account.tps ?? 0}</td>
@@ -4443,7 +4481,7 @@ function _cmRenderKeyGroups(groups) {
     }
     return `<div class="cm-table-wrap"><table class="cm-table cm-table-key">
         <thead><tr>
-            <th>密钥 / 账号</th>${CM_ACCOUNT_TIER_HEADER}<th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥 / 账号</th>${CM_ACCOUNT_TIER_HEADER}${CM_MODEL_SERVICE_HEADER}<th title="最终 HTTP 状态码与判定；重试过时显示压缩后的链路，悬停看逐次明细">结果</th>
             <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
         </tr></thead>
         <tbody>${rowsHtml.join('')}</tbody>
@@ -4465,15 +4503,12 @@ function _cmRenderGrouped(rows, view) {
     const body = rows.map(row => {
         const name = view === 'account' ? (row.user_email || row.group_key) : row.group_key;
         const title = view === 'account' ? '账号' : 'API Key ID';
-        const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         return `<tr>
             <td class="cm-key-cell" title="${title}: ${_cmMask(name)}">${_cmMask(name)}${_cmWarmupBadge(row)}</td>
             ${_cmAccountTierCell(row)}
-            <td title="${_cmEscape(row.model_name)}">${_cmEscape(row.model_name) || '-'}</td>
-            <td>${taskService}</td>
-            <td>${_cmStatusCodeChip(row.last_status_code)}</td>
-            <td>${_cmStatusBadge(row.last_success)}</td>
+            ${_cmModelServiceCell(row, _cmEscape(row.model_name) || '-', row.model_name || '')}
+            ${_cmResultCell(row)}
             ${_cmRateCell(row.success_rate)}
             <td title="成功 ${row.success_count} / 失败 ${row.failed_count}">${row.total}</td>
             <td>${row.tps ?? 0}</td>
@@ -4485,11 +4520,34 @@ function _cmRenderGrouped(rows, view) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>${firstHead}</th>${CM_ACCOUNT_TIER_HEADER}<th>模型</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>${firstHead}</th>${CM_ACCOUNT_TIER_HEADER}${CM_MODEL_SERVICE_HEADER}<th title="最终 HTTP 状态码与判定；重试过时显示压缩后的链路，悬停看逐次明细">结果</th>
             <th>成功率</th><th>调用</th><th>TPS</th><th>耗时</th><th>时间</th><th>用量</th><th>花费</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
+}
+
+// 同一状态连续出现时压成 503×3；逐条明细仍在悬停里，不丢信息。
+function _cmCompactTexts(texts) {
+    const merged = [];
+    for (const text of texts) {
+        const last = merged[merged.length - 1];
+        if (last && last.text === text) last.count += 1;
+        else merged.push({ text, count: 1 });
+    }
+    return merged.map(item => item.count > 1 ? `${item.text}×${item.count}` : item.text).join(' → ');
+}
+
+// 「最近状态」和「状态」合成一列：一次请求的最终结果只写一遍（码 + 判定）。
+function _cmResultCell(row) {
+    const retry = _cmTextRetryCells(row);
+    const code = row.status_code ?? row.last_status_code;
+    const chip = retry?.status ?? _cmStatusCodeChip(code, row.request_features?.rate_limit ?? null);
+    const success = row.success ?? row.last_success;
+    const verdict = success === null || success === undefined
+        ? ''
+        : `<span class="cm-verdict ${success ? 'is-ok' : 'is-fail'}">${success ? '成功' : '失败'}</span>`;
+    return `<td class="cm-result-cell">${chip}${verdict}</td>`;
 }
 
 function _cmTextRetryCells(row) {
@@ -4500,8 +4558,6 @@ function _cmTextRetryCells(row) {
     const first = retry.attempts[0];
     const outcome = (attempt, index) => index === 1 && retry.state === 'not_sent' && attempt.kind !== 'same_account'
         ? '未发送' : attempt.status_code == null ? '未收到响应' : `HTTP ${attempt.status_code}`;
-    const status = (attempt, index) => attempt.status_code == null ? _cmEscape(outcome(attempt, index))
-        : _cmStatusCodeChip(attempt.status_code);
     const lines = retry.attempts.map((attempt, index) => {
         const stage = attempt.kind === 'same_account' ? '原号重试' : index ? '备选账号' : '原账号';
         const fields = [stage, _cmMask(attempt.user_email || attempt.credential_name, String), outcome(attempt, index)];
@@ -4512,11 +4568,16 @@ function _cmTextRetryCells(row) {
         if (attempt.retry_after) fields.push(`Retry-After: ${attempt.retry_after}`);
         return fields.join(' · ');
     });
-    const codes = retry.attempts.map(status).join(' → ');
+    const statusTexts = retry.attempts.map((attempt, index) =>
+        attempt.status_code == null ? outcome(attempt, index) : String(attempt.status_code));
+    const codes = _cmCompactTexts(statusTexts);
+    const lastCode = [...retry.attempts].reverse().find(attempt => attempt.status_code != null)?.status_code;
+    const tone = lastCode == null ? 'muted' : lastCode < 300 ? 'ok' : lastCode < 500 ? 'warn' : 'fail';
+    const chain = `<span class="cm-code cm-code-${tone}">${_cmEscape(codes)}</span>`;
     const outcomes = retry.attempts.map(outcome).join(' → ');
     const tooltipLines = ['no_candidate', 'selection_failed'].includes(retry.state) ? [label, ...lines] : lines;
     return {
-        status: _cmTooltipTrigger(codes, tooltipLines, `${outcomes}，${label}，查看重试详情`, true),
+        status: _cmTooltipTrigger(chain, tooltipLines, `${outcomes}，${label}，查看重试详情`, true),
         account: _cmMask(first.user_email || first.credential_name),
         details: `<h4>文本换号 · ${label}</h4><ol>${lines.map(line => `<li>${_cmEscape(line)}</li>`).join('')}</ol>`,
     };
@@ -4525,8 +4586,8 @@ function _cmTextRetryCells(row) {
 function _cmRequestFeatureCell(row, index) {
     const features = row.request_features || {};
     const available = features.capture_id || features.client || features.upstream || features.rate_limit || features.text_account_retry;
-    if (!available) return '<span class="cm-muted">未采集</span>';
-    return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">查看详情</button>`;
+    if (!available) return '<span class="cm-muted" title="该请求没有保存正文">未采集</span>';
+    return `<button type="button" class="cm-telemetry-link telemetry-active" onclick="showCallMonitorContent(${index})" aria-label="查看请求详情">正文</button>`;
 }
 
 async function showCallMonitorContent(index) {
@@ -4654,6 +4715,14 @@ const CM_TELEMETRY_LABELS = {
     send_retired: '发送已下线（仅保留本地预览）'
 };
 
+// 遥测与请求详情合并成一列：同一个请求的两个入口，语义接近，不再各占一列。
+function _cmDetailCell(row, index) {
+    const parts = [];
+    if (!row.channel || row.channel === 'antigravity') parts.push(_cmTelemetryCell(row, index));
+    parts.push(_cmRequestFeatureCell(row, index));
+    return `<td class="cm-detail-cell">${parts.join('<span class="cm-detail-sep" aria-hidden="true"></span>')}</td>`;
+}
+
 function _cmTelemetryCell(row, index) {
     if (row.channel && row.channel !== 'antigravity') return '<span class="cm-muted">不适用</span>';
     const info = row.telemetry || {};
@@ -4772,31 +4841,24 @@ function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
         const retry = _cmTextRetryCells(row);
         const account = retry?.account ?? _cmMask(row.user_email || row.credential_name);
-        const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
-        const statusCell = row.success
-            ? `<span class="cm-badge cm-badge-ok">成功</span>`
-            : `<span class="cm-badge cm-badge-fail">失败</span>`;
         return `<tr>
             <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmEscape(row.api_key_name || '未命名密钥')}</td>
             ${_cmModelCell(row)}
-            <td>${taskService}</td>
-            <td>${retry?.status ?? _cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
-            <td>${statusCell}</td>
+            ${_cmResultCell(row)}
             <td>${_cmLatencyCell(row)}</td>
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
             <td class="cm-key-cell" title="账号: ${account}">${account}${retry ? '' : _cmWarmupBadge(row)}</td>
             ${_cmAccountTierCell(row)}
-            <td>${_cmTelemetryCell(row, index)}</td>
-            <td>${_cmRequestFeatureCell(row, index)}</td>
+            ${_cmDetailCell(row, index)}
         </tr>`;
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>密钥名称</th><th>模型 / 协议</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>遥测</th><th>请求详情</th>
+            <th>密钥名称</th>${CM_MODEL_HEADER}<th title="最终 HTTP 状态码与判定；重试过时显示压缩后的链路，悬停看逐次明细">结果</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;
