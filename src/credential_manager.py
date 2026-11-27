@@ -78,6 +78,20 @@ _PROXY_CONNECT_ERROR_MARKERS = (
 )
 
 
+_FREE_IMAGE_TIER_VALUES = frozenset({"free", "free-tier", "free_tier"})
+
+
+def _image_tier_priority(state: Dict[str, Any]) -> int:
+    """付费档优先，free 档只作兜底。
+
+    free 档的图片周额度极小（实测每个号一周约 7-8 张），额度用尽后上游返回
+    携带 128h reset 的 429 QUOTA_EXHAUSTED。把 free 号排在付费号前面会让图片
+    请求持续撞 429，而同一时刻 pro 号仍能正常出图。
+    """
+    tier = str(state.get("tier") or "").strip().lower()
+    return 1 if tier in _FREE_IMAGE_TIER_VALUES else 0
+
+
 def rank_antigravity_image_candidates(
     credential_states: Dict[str, Dict[str, Any]],
     *,
@@ -117,6 +131,7 @@ def rank_antigravity_image_candidates(
         routing_turn = max(int(state.get("routing_turn") or 0), 0)
         rotation_order = max(int(state.get("rotation_order") or 0), 0)
         sort_key = (
+            _image_tier_priority(state),
             health_priority,
             routing_turn,
             rotation_order,

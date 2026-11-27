@@ -95,8 +95,12 @@ async def test_long_cooldown_not_cleared_by_quota_info_only():
 
 
 @pytest.mark.asyncio
-async def test_long_cooldown_cleared_when_weekly_bucket_has_remaining():
-    """长冷却在 weekly bucket 确有剩余时才清除。"""
+async def test_long_cooldown_not_cleared_by_weekly_bucket_remaining():
+    """组 weekly 有剩余也不能清长冷却。
+
+    图片模型有自己独立的 128h 额度桶，组 weekly 在图片额度耗尽时照样显示满血。
+    生产 2026-11-26 22:49:52 写下的冷却就是被「weekly 剩余 100%」在 37 秒后清掉的。
+    """
     backend = FakeBackend()
     cooldowns = {MODEL: time.time() + 128 * 3600}
     cleared = await reconcile_model_cooldowns_with_quota(
@@ -104,10 +108,66 @@ async def test_long_cooldown_cleared_when_weekly_bucket_has_remaining():
         "cred.json",
         cooldowns,
         models={},
-        groups=_groups(gemini_5h=0.0, gemini_weekly=0.4),
+        groups=_groups(gemini_5h=1.0, gemini_weekly=1.0),
+    )
+    assert cleared == 0
+    assert backend.cleared == []
+
+
+@pytest.mark.asyncio
+async def test_long_cooldown_cleared_only_after_own_reset_window_rolled_over():
+    """该模型自己的 resetTimeRaw 已过才算冷却过期。"""
+    from datetime import datetime, timezone
+
+    backend = FakeBackend()
+    now = time.time()
+    cooldowns = {MODEL: now + 128 * 3600}
+    passed = datetime.fromtimestamp(now - 60, timezone.utc).isoformat()
+    cleared = await reconcile_model_cooldowns_with_quota(
+        backend,
+        "cred.json",
+        cooldowns,
+        models={MODEL: {"remaining": 0.0, "resetTimeRaw": passed}},
+        groups=_groups(gemini_5h=1.0, gemini_weekly=1.0),
     )
     assert cleared == 1
     assert backend.cleared == [("cred.json", MODEL)]
+
+
+@pytest.mark.asyncio
+async def test_long_cooldown_kept_when_reset_window_still_ahead():
+    """resetTimeRaw 仍在未来时保留冷却，即使 quotaInfo 显示满血。"""
+    from datetime import datetime, timezone
+
+    backend = FakeBackend()
+    now = time.time()
+    cooldowns = {MODEL: now + 128 * 3600}
+    ahead = datetime.fromtimestamp(now + 128 * 3600, timezone.utc).isoformat()
+    cleared = await reconcile_model_cooldowns_with_quota(
+        backend,
+        "cred.json",
+        cooldowns,
+        models={MODEL: {"remaining": 1.0, "resetTimeRaw": ahead}},
+        groups=_groups(gemini_5h=1.0, gemini_weekly=1.0),
+    )
+    assert cleared == 0
+    assert backend.cleared == []
+
+
+@pytest.mark.asyncio
+async def test_long_cooldown_kept_when_reset_time_unparseable():
+    """reset 时间解析不了时宁可保留冷却。"""
+    backend = FakeBackend()
+    cooldowns = {MODEL: time.time() + 128 * 3600}
+    cleared = await reconcile_model_cooldowns_with_quota(
+        backend,
+        "cred.json",
+        cooldowns,
+        models={MODEL: {"remaining": 1.0, "resetTimeRaw": "not-a-date"}},
+        groups=_groups(gemini_5h=1.0, gemini_weekly=1.0),
+    )
+    assert cleared == 0
+    assert backend.cleared == []
 
 
 @pytest.mark.asyncio

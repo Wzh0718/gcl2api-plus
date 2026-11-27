@@ -19,7 +19,13 @@ from typing import Any, Dict, List, Optional, Callable, Set, Tuple, Mapping
 from src.antigravity_400_classifier import upstream_error_log_detail
 from src.request_capture import record_local_capture, bind_capture_credential
 from src.antigravity_usage import AccountUsageLimitReached, begin_account_usage
-from src.rate_limits import CREDITS_EXHAUSTED_MARKER, RateLimit, upstream_rate_limit
+from src.rate_limits import (
+    CREDITS_EXHAUSTED_MARKER,
+    RateLimit,
+    retry_after_seconds,
+    upstream_rate_limit,
+    with_reset_at,
+)
 from src.claude_routing import bind_claude_request, bind_claude_stream
 
 from fastapi import Response
@@ -1534,6 +1540,12 @@ async def _stream_request_inner(
                             )
                             cooldown_until = classified_403.cooldown_until
 
+                        if status_code == 429:
+                            # 归因带上该账号的恢复时刻，监控可直接显示「何时能再用」。
+                            chunk.rate_limit = with_reset_at(
+                                getattr(chunk, "rate_limit", None), cooldown_until
+                            )
+
                         # 记录错误并切换凭证
                         # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
                         stream_final_failure = (
@@ -2153,6 +2165,15 @@ async def _non_stream_image_request_inner(
                 error_text=error_text,
             )
             cooldown_until = classified_403.cooldown_until
+        if status_code == 429:
+            # 归因带上恢复时刻，并给客户端一个 Retry-After：429 的语义是「这个账号
+            # 这个模型要等到 reset」，不是一个可以立刻重试的瞬时错误。
+            last_response.rate_limit = with_reset_at(
+                getattr(last_response, "rate_limit", None), cooldown_until
+            )
+            retry_after = retry_after_seconds(cooldown_until)
+            if retry_after:
+                last_response.headers["retry-after"] = retry_after
         if (
             classified_403 is not None
             and classified_403.rebind_retry
@@ -2173,8 +2194,12 @@ async def _non_stream_image_request_inner(
                 account_attempt += 1
                 continue
 
-        retryable = status_code not in (400, 403, 429) and (
-            status_code in (404, 500, 503) or status_code in disable_error_codes
+        # 429 是账号级额度/限流：换一个账号通常仍能出图（free 与 pro 的图片额度
+        # 互不相干，同一分钟里 free 号 429、pro 号 200 的情况已实测到）。
+        # 因此 429 不能像 400/403 一样直接终止；attempted_credentials 保证不重复
+        # 尝试同一个账号，换号次数仍受 max_account_attempts 约束。
+        retryable = status_code not in (400, 403) and (
+            status_code in (404, 429, 500, 503) or status_code in disable_error_codes
         )
         will_retry = retry_enabled and retryable and account_attempt < max_account_attempts
         await record_api_call_error(
@@ -2189,10 +2214,18 @@ async def _non_stream_image_request_inner(
             gateway_seconds=None if will_retry else time.monotonic() - gateway_started,
         )
 
+        if will_retry and status_code == 429:
+            reason = getattr(getattr(last_response, "rate_limit", None), "reason", "unknown")
+            log.warning(
+                "[ANTIGRAVITY IMAGE] 429 换号重试: "
+                f"credential={current_file}, reason={reason}, "
+                f"attempt={account_attempt}/{max_account_attempts}, model={requested_model}"
+            )
+
         if will_retry and status_code == 503:
             await asyncio.sleep(retry_config["retry_interval"])
 
-        if not retry_enabled or not retryable:
+        if not will_retry:
             break
 
     billing_credential = next(iter(attempted_credentials), "unknown")
@@ -2602,6 +2635,12 @@ async def non_stream_request(
                             error_text=error_text,
                         )
                         cooldown_until = classified_403.cooldown_until
+
+                    if status_code == 429:
+                        last_error_response.rate_limit = with_reset_at(
+                            getattr(last_error_response, "rate_limit", None),
+                            cooldown_until,
+                        )
 
                     # 记录错误并切换凭证
                     # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
@@ -3419,6 +3458,30 @@ def _group_window_remaining(groups: Optional[list], window: str) -> Dict[str, fl
 LONG_COOLDOWN_WEEKLY_THRESHOLD_SECONDS = 24 * 3600
 
 
+def _model_quota_window_rolled_over(model_quota: Any, now: float) -> bool:
+    """该模型自身的配额窗口是否已经翻页（resetTimeRaw 早于当前时间）。
+
+    只认 fetchAvailableModels 返回的该模型 quotaInfo.resetTimeRaw。解析不到时间、
+    字段缺失或格式不认识时一律返回 False —— 长冷却宁可多留一会，也不能凭组窗口
+    或满血比例把它清掉，否则会回到「清冷却 → 再请求 → 又 429」的抖动。
+    """
+    if not isinstance(model_quota, dict):
+        return False
+    raw = model_quota.get("resetTimeRaw")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.timestamp() <= float(now)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 async def reconcile_model_cooldowns_with_quota(
     backend: Any,
     filename: str,
@@ -3436,10 +3499,16 @@ async def reconcile_model_cooldowns_with_quota(
     认为冷却是过期的，直接清除。
 
     长冷却（剩余时长 > LONG_COOLDOWN_WEEKLY_THRESHOLD_SECONDS，即上游 429 明确给出
-    周配额重置时间的情形）只认 retrieveUserQuotaSummary 的 weekly bucket：
+    周配额重置时间的情形）只以「该模型自己的重置时间已过」为清除依据：
     fetchAvailableModels 的 quotaInfo 和 groups 的 5h bucket 在周额度仍耗尽时
     会显示满血（窗口已重置但周限额未重置），用它们清冷却会造成
     「清冷却 → 再请求 → 又 429 → 再长冷却」的抖动。
+
+    组 weekly bucket 同样不能作为长冷却的依据：图片模型（gemini-3.1-flash-image）
+    有自己独立的 128h 额度桶，组 weekly 在图片额度耗尽时照样显示 100% 剩余。
+    实测 2026-11-26 22:49:52 写下的图片模型冷却，37 秒后就被「gemini 组 weekly
+    剩余 100%」清掉，随后同一批 free 账号继续 429。上游明确给出的 reset 截止时间
+    因此具有最高优先级，只等它自然到期（或面板手动解除）。
 
     Returns:
         清除的冷却数量
@@ -3448,7 +3517,6 @@ async def reconcile_model_cooldowns_with_quota(
         return 0
 
     group_5h_remaining = _group_window_remaining(groups, "5h")
-    group_weekly_remaining = _group_window_remaining(groups, "weekly")
     now = time.time()
     cleared = 0
 
@@ -3462,8 +3530,11 @@ async def reconcile_model_cooldowns_with_quota(
         )
 
         if is_long_cooldown:
-            # 长冷却只信 weekly 窗口；weekly 数据缺失时保持冷却，不用 5h/quotaInfo 猜
-            remaining = group_weekly_remaining.get(group_key)
+            # 上游给了明确的额度重置时间：只有该模型自己的配额窗口已经翻页
+            # （resetTimeRaw 早于当前时间）才算冷却过期，组窗口与 quotaInfo 一律不采信。
+            if not _model_quota_window_rolled_over(models.get(model_name), now):
+                continue
+            reason_label = f"{model_name} 自身额度窗口已翻页"
         else:
             # 组额度（retrieveUserQuotaSummary，权威数据源）
             remaining = group_5h_remaining.get(group_key)
@@ -3476,16 +3547,18 @@ async def reconcile_model_cooldowns_with_quota(
                     if isinstance(value, (int, float)):
                         remaining = float(value)
 
-        if remaining is not None and remaining > 0:
-            window_label = "weekly" if is_long_cooldown else "5h"
-            try:
-                await backend.set_model_cooldown(filename, model_name, None, mode=mode)
-                cleared += 1
-                log.info(
-                    f"[ANTIGRAVITY] 配额已恢复（{group_key} 组 {window_label} 窗口剩余 "
-                    f"{remaining:.2%}），清除过期冷却: {filename} / {model_name}"
-                )
-            except Exception as e:
-                log.warning(f"[ANTIGRAVITY] 清除模型冷却失败 {filename}/{model_name}: {e}")
+            if remaining is None or not remaining > 0:
+                continue
+            reason_label = f"{group_key} 组 5h 窗口剩余 {remaining:.2%}"
+
+        try:
+            await backend.set_model_cooldown(filename, model_name, None, mode=mode)
+            cleared += 1
+            log.info(
+                f"[ANTIGRAVITY] 配额已恢复（{reason_label}），"
+                f"清除过期冷却: {filename} / {model_name}"
+            )
+        except Exception as e:
+            log.warning(f"[ANTIGRAVITY] 清除模型冷却失败 {filename}/{model_name}: {e}")
 
     return cleared

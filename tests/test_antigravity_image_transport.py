@@ -1659,3 +1659,294 @@ async def test_image_outcome_helper_awaits_async_singleton_proxy(monkeypatch):
 
 async def async_value(value):
     return value
+
+
+# ---------------- 429 换号与归因（2026-11-26 图片 429 事故回归） ----------------
+
+
+def test_image_ranking_puts_free_tier_last():
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    ranked = rank_antigravity_image_candidates(
+        {
+            "free-a.json": {
+                "disabled": False,
+                "tier": "free",
+                "rotation_order": 0,
+                "model_cooldowns": {},
+            },
+            "pro-b.json": {
+                "disabled": False,
+                "tier": "pro",
+                "rotation_order": 5,
+                "model_cooldowns": {},
+            },
+            "free-c.json": {
+                "disabled": False,
+                "tier": "free",
+                "rotation_order": 6,
+                "model_cooldowns": {},
+            },
+        },
+        model_name="gemini-3.1-flash-image",
+    )
+
+    assert ranked == ["pro-b.json", "free-a.json", "free-c.json"]
+
+
+def test_image_ranking_keeps_free_tier_as_last_resort():
+    """付费号全部冷却/停用时 free 号仍可用，不能把图片池打成空池。"""
+    from src.credential_manager import rank_antigravity_image_candidates
+
+    now = time.time()
+    ranked = rank_antigravity_image_candidates(
+        {
+            "free-a.json": {
+                "disabled": False,
+                "tier": "free",
+                "rotation_order": 0,
+                "model_cooldowns": {},
+            },
+            "pro-b.json": {
+                "disabled": False,
+                "tier": "pro",
+                "rotation_order": 1,
+                "model_cooldowns": {"gemini-3.1-flash-image": now + 3600},
+            },
+        },
+        model_name="gemini-3.1-flash-image",
+        now=now,
+    )
+
+    assert ranked == ["free-a.json"]
+
+
+def _quota_429_response(deadline):
+    import httpx
+
+    return httpx.Response(
+        429,
+        json={
+            "error": {
+                "code": 429,
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "QUOTA_EXHAUSTED",
+                        "metadata": {
+                            "quotaResetTimeStamp": time.strftime(
+                                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(deadline)
+                            )
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_image_quota_429_fails_over_to_next_account(monkeypatch):
+    """free 号图片额度耗尽时换号，而不是把 429 直接甩给客户端。"""
+    from src.api import antigravity
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.selections = []
+            self.releases = []
+
+        async def get_valid_credential(self, **kwargs):
+            excluded = set(kwargs.get("exclude_filenames") or set())
+            self.selections.append(excluded)
+            if "free.json" not in excluded:
+                return "free.json", {
+                    "access_token": "free-token",
+                    "project_id": "free-project",
+                    "tier": "free",
+                    "proxy_mode": "direct",
+                    "_image_lease_id": "lease-free",
+                }
+            if "pro.json" not in excluded:
+                return "pro.json", {
+                    "access_token": "pro-token",
+                    "project_id": "pro-project",
+                    "tier": "pro",
+                    "proxy_mode": "direct",
+                    "_image_lease_id": "lease-pro",
+                }
+            return None
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            return None
+
+        async def release_image_credential(self, credential_name, lease_id):
+            self.releases.append((credential_name, lease_id))
+            return True
+
+    manager = FakeCredentialManager()
+    manager.hold_transient = AsyncMock()
+    upstream_calls = []
+
+    async def fake_resolve_dynamic_model(**kwargs):
+        return "gemini-3.1-flash-image"
+
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
+        return {"project": project, "model": model, "request": request}, f"req-{project}"
+
+    async def fake_image_post(**kwargs):
+        upstream_calls.append(kwargs)
+        if len(upstream_calls) == 1:
+            return antigravity.ImageUpstreamResult(
+                _quota_429_response(time.time() + 128 * 3600), "daily", ()
+            )
+        return antigravity.ImageUpstreamResult(
+            __import__("httpx").Response(
+                200, json={"response": {"candidates": [], "usageMetadata": {}}}
+            ),
+            "daily",
+            (),
+        )
+
+    billing_records = []
+
+    class FakeRecorder:
+        async def record(self, **kwargs):
+            billing_records.append(kwargs)
+            return True
+
+    alert = AsyncMock(return_value=True)
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setattr(
+        antigravity, "get_retry_config",
+        lambda: async_value({"retry_enabled": True, "max_retries": 2, "retry_interval": 0}),
+    )
+    monkeypatch.setattr(antigravity, "get_auto_ban_error_codes", lambda: async_value([]))
+    monkeypatch.setattr(antigravity, "resolve_dynamic_image_model_for_credential", fake_resolve_dynamic_model)
+    monkeypatch.setattr(antigravity, "wrap_cli_request", fake_wrap)
+    monkeypatch.setattr(antigravity, "_post_image_generate", fake_image_post)
+    monkeypatch.setattr(antigravity, "record_api_call_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "record_api_call_success", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "get_billing_recorder", lambda: async_value(FakeRecorder()))
+    monkeypatch.setattr(antigravity, "send_all_accounts_unavailable_alert", alert)
+
+    response = await antigravity.non_stream_request(
+        {
+            "model": "gemini-3.1-flash-image",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "draw"}]}],
+                "generationConfig": {"responseModalities": ["IMAGE"]},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert [call["json_body"]["project"] for call in upstream_calls] == ["free-project", "pro-project"]
+    assert manager.selections == [set(), {"free.json"}]
+    assert manager.releases == [("free.json", "lease-free"), ("pro.json", "lease-pro")]
+    manager.hold_transient.assert_not_awaited()
+    alert.assert_not_awaited()
+    assert len(billing_records) == 1
+
+
+@pytest.mark.asyncio
+async def test_image_429_all_accounts_exhausted_returns_reset_at_and_retry_after(monkeypatch):
+    """所有账号都 429 时：透传 429，但带上恢复时刻与 Retry-After。"""
+    from email.utils import format_datetime
+    from datetime import datetime, timezone
+
+    from src.api import antigravity
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.tried = []
+
+        async def get_valid_credential(self, **kwargs):
+            excluded = set(kwargs.get("exclude_filenames") or set())
+            for name in ("free.json", "pro.json"):
+                if name not in excluded:
+                    self.tried.append(name)
+                    return name, {
+                        "access_token": "token",
+                        "project_id": name.replace(".json", "-project"),
+                        "tier": "free" if name.startswith("free") else "pro",
+                        "proxy_mode": "direct",
+                        "_image_lease_id": f"lease-{name}",
+                    }
+            return None
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            return None
+
+        async def release_image_credential(self, credential_name, lease_id):
+            return True
+
+    manager = FakeCredentialManager()
+    manager.hold_transient = AsyncMock()
+    deadline = time.time() + 128 * 3600
+    stamp = format_datetime(datetime.fromtimestamp(deadline, timezone.utc), usegmt=True)
+    upstream_calls = []
+
+    async def fake_resolve_dynamic_model(**kwargs):
+        return "gemini-3.1-flash-image"
+
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
+        return {"project": project, "model": model, "request": request}, f"req-{project}"
+
+    async def fake_image_post(**kwargs):
+        upstream_calls.append(kwargs)
+        import httpx
+
+        return antigravity.ImageUpstreamResult(
+            httpx.Response(
+                429,
+                json={"error": {"details": [{"reason": "QUOTA_EXHAUSTED"}]}},
+                headers={"retry-after": stamp},
+            ),
+            "daily",
+            (),
+        )
+
+    billing_records = []
+
+    class FakeRecorder:
+        async def record(self, **kwargs):
+            billing_records.append(kwargs)
+            return True
+
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setattr(
+        antigravity, "get_retry_config",
+        lambda: async_value({"retry_enabled": True, "max_retries": 5, "retry_interval": 0}),
+    )
+    monkeypatch.setattr(antigravity, "get_auto_ban_error_codes", lambda: async_value([]))
+    monkeypatch.setattr(antigravity, "resolve_dynamic_image_model_for_credential", fake_resolve_dynamic_model)
+    monkeypatch.setattr(antigravity, "wrap_cli_request", fake_wrap)
+    monkeypatch.setattr(antigravity, "_post_image_generate", fake_image_post)
+    monkeypatch.setattr(antigravity, "record_api_call_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "record_api_call_success", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "get_billing_recorder", lambda: async_value(FakeRecorder()))
+    monkeypatch.setattr(
+        antigravity, "send_all_accounts_unavailable_alert", AsyncMock(return_value=True)
+    )
+
+    response = await antigravity.non_stream_request(
+        {
+            "model": "gemini-3.1-flash-image",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "draw"}]}],
+                "generationConfig": {"responseModalities": ["IMAGE"]},
+            },
+        },
+    )
+
+    assert response.status_code == 429
+    # 两个账号都试过，说明 429 不再是一次即终止
+    assert manager.tried == ["free.json", "pro.json"]
+    assert len(upstream_calls) == 2
+    # 归因：reason + 恢复时刻
+    attribution = billing_records[-1]["rate_limit"]
+    assert attribution.reason == "quota_exhausted"
+    assert attribution.reset_at == pytest.approx(deadline, abs=2)
+    # 客户端拿到可执行的 Retry-After
+    header = response.headers.get("retry-after")
+    assert header is not None and header.isdigit() and int(header) > 3600
