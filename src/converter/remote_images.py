@@ -9,9 +9,11 @@ import httpx
 
 
 # 上游（AGY / Gemini 2.5 端点）对“直传 http(s) 图片 URL”限制为每请求 10 张，而内联（inlineData）
-# 只受请求体大小约束（Gemini API 内联上限 20 MB，官方文档给出的单请求图片数上限是数千张）。
-# 本地图片数上限只用于限制并发外抓的范围，真正的成本闸门是请求级 10 MiB 字节预算。
-_MAX_REMOTE_IMAGES = 100
+# 只受请求体大小约束（Gemini API 文档口径 20 MB；AGY 通道实测 36 MiB 请求体、60 张内联图片仍返回
+# 200，见 docs/ANTIGRAVITY_IMAGE_API.md）。
+# 因此本地不再设产品级张数限制：真正的闸门是请求级 10 MiB 字节预算、20 s 总超时和 6 路并发。
+# 这里的常量只用于快速拒绝病态输入（几千个 URL），避免先耗满 20 s 再报一个误导性的下载失败。
+_MAX_REMOTE_IMAGES = 1000
 _MAX_REMOTE_BYTES = 10 * 1024 * 1024
 _MAX_DOWNLOAD_CONCURRENCY = 6
 _MAX_REDIRECTS = 4
@@ -190,7 +192,9 @@ async def download_remote_images(urls: list[str]) -> list[dict[str, str]]:
     if not urls:
         return []
     if len(urls) > _MAX_REMOTE_IMAGES:
-        raise RemoteImageError(f"At most {_MAX_REMOTE_IMAGES} remote images are allowed per request")
+        raise RemoteImageError(
+            f"Too many remote image URLs in one request: {len(urls)} > {_MAX_REMOTE_IMAGES}"
+        )
 
     budget = _ByteBudget(_MAX_REMOTE_BYTES)
     semaphore = asyncio.Semaphore(_MAX_DOWNLOAD_CONCURRENCY)
