@@ -351,6 +351,28 @@ async def test_download_limits_apply_to_combined_response_bodies(
     assert not requests_to_upstream
 
 
+async def test_chat_accepts_more_than_eight_remote_images(
+    gateway, requests_to_upstream, image_transport,
+):
+    urls = [f"https://images.example/photo{index}.png" for index in range(12)]
+    downloads = image_transport([httpx.Response(200, stream=httpx.ByteStream(_PNG)) for _ in urls])
+    response = await gateway.post(
+        "/v1/chat/completions",
+        json=_chat_request(*urls).model_dump(exclude_none=True),
+    )
+    assert response.status_code == 200, response.text
+    assert len(downloads) == len(urls)
+    assert len(requests_to_upstream) == 1
+    parts = [
+        part
+        for message in requests_to_upstream[0]["request"]["contents"]
+        for part in message["parts"]
+    ]
+    inline = [part for part in parts if "inlineData" in part]
+    assert len(inline) == len(urls)
+    assert {part["inlineData"]["data"] for part in inline} == {_BASE64_PNG}
+
+
 @pytest.mark.parametrize("path", _EDIT_ROUTES)
 @pytest.mark.parametrize("multipart", [False, True])
 @pytest.mark.parametrize("accepted", [True, False])

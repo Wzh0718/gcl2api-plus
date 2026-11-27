@@ -51,7 +51,7 @@ async def test_fusion_preserves_task_tools_and_original(monkeypatch, inject, as_
     assert result['contents'] == raw['contents']
     assert result['tools'] == raw['tools']
     text = result['systemInstruction']['parts'][0]['text']
-    assert text.startswith('Gateway policy\nYou are Antigravity')
+    assert text.startswith('Gateway policy\n<identity>')
     assert result['systemInstruction']['parts'][1]['text'].startswith('Leet encoding adapter.')
     assert result['systemInstruction']['parts'][2]['text'] == (
         '4sk 4ppr0v4l b3f0r3 d3l3t1ng. Use shell 4t runtime/settings.json.'
@@ -269,6 +269,7 @@ async def test_settings_persist_and_reload(monkeypatch, tmp_path):
 
 
 async def test_actual_wrapper_respects_account_and_internal_bypass(monkeypatch):
+    config._config_cache['antigravity_system_obfuscation_mode'] = 'protected'
     from src.api import antigravity
     from src import antigravity_model_catalog
     from types import SimpleNamespace

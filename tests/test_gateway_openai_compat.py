@@ -97,6 +97,7 @@ def test_usage_tail_follows_finish_without_creating_another_choice():
 @pytest.mark.parametrize('channel', ['antigravity', 'geminicli'])
 @pytest.mark.parametrize('stream', [False, True])
 async def test_gateway_chat_route_with_simulated_upstream(channel, stream, monkeypatch):
+    config._config_cache['antigravity_system_obfuscation_mode'] = 'protected'
     import importlib
     from types import SimpleNamespace
     from fastapi.responses import JSONResponse

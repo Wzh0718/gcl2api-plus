@@ -50,6 +50,7 @@ def response(text, finish='STOP'):
 
 
 async def test_bound_workflow_encodes_prose_by_format_with_legacy_config(workflow_settings):
+    config._config_cache['antigravity_system_obfuscation_mode'] = 'protected'
     prose = 'Evaluate the product.'
     protocol = 'Use pending review then FINAL_JSON_END.\nLiteral fields must survive: unknowns.'
     request = {'model': 'gemini-2.5-flash', 'systemInstruction': {'parts': [{'text': f'{prose}\r\n\r\n{protocol}'}]},
@@ -67,6 +68,7 @@ async def test_bound_workflow_encodes_prose_by_format_with_legacy_config(workflo
 
 
 async def test_host_priority_keeps_bound_regulation_output_contract(workflow_settings):
+    config._config_cache['antigravity_system_obfuscation_mode'] = 'protected'
     from src.converter.antigravity_system_prompt import BRIDGE, STRUCTURED_OUTPUT_PRIORITY, baseline_prompt
 
     config._config_cache['antigravity_system_prompt_enabled'] = True

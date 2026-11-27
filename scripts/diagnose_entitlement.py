@@ -36,7 +36,7 @@ import httpx
 OAUTH_URL = "https://oauth2.googleapis.com/token"
 API_URL = os.getenv("ANTIGRAVITY_API_URL", "https://daily-cloudcode-pa.googleapis.com")
 STARTER_NAME = "Antigravity Starter Quota"
-DEFAULT_UA = "antigravity/hub/2.34.0 (aidev_client; os_type=linux; arch=amd64; cl=1026637980)"
+DEFAULT_UA = "antigravity/hub/2.35.2 (aidev_client; os_type=linux; arch=amd64; cl=1029311855; datacollection_opt_in=false)"
 
 
 def redact(text: str, limit: int = 300) -> str:

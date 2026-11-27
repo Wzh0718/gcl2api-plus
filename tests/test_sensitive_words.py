@@ -415,3 +415,12 @@ async def test_panel_rejects_invalid_filter_settings(values):
     with pytest.raises(HTTPException) as exc:
         await save_config(ConfigSaveRequest(config=values), token="test")
     assert exc.value.status_code == 400
+
+
+def test_default_client_keywords_cover_dsh_and_rewrite_to_antigravity():
+    from src.converter.sensitive_words import DEFAULT_CLIENT_KEYWORDS, effective_rules
+
+    rules = effective_rules([], True)
+    mapping = {name.casefold(): replacement for name, replacement in rules}
+    for name in ('Claude Code', 'Codex', 'Cursor', 'Windsurf', 'DSH', 'DeepSeek Harness'):
+        assert mapping[name.casefold()] == 'Antigravity'

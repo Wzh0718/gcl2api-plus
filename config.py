@@ -41,6 +41,7 @@ AUTO_BAN_ERROR_CODES = [403]
 ENV_MAPPINGS = {
     "ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE": "antigravity_system_obfuscation_mode",
     "ANTIGRAVITY_SYSTEM_PROMPT_ENABLED": "antigravity_system_prompt_enabled",
+    "ANTIGRAVITY_OFFICIAL_TOOL_ALIGNMENT": "antigravity_official_tool_alignment_enabled",
     "ANTIGRAVITY_SYSTEM_AS_USER_ENABLED": "antigravity_system_as_user_enabled",
     "ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED": "antigravity_system_vowel_obfuscation_enabled",
     "CODE_ASSIST_ENDPOINT": "code_assist_endpoint",
@@ -88,9 +89,20 @@ ENV_MAPPINGS = {
     "KEEPALIVE_URL": "keepalive_url",
     "KEEPALIVE_INTERVAL": "keepalive_interval",
     "CALL_RECORDS_RETENTION_DAYS": "call_records_retention_days",
+    "REMOTE_IMAGE_INLINE_MODE": "remote_image_inline_mode",
+    "REMOTE_IMAGE_INLINE_IPS": "remote_image_inline_ips",
+    "REMOTE_IMAGE_INLINE_TRUST_FORWARDED": "remote_image_inline_trust_forwarded",
 }
 
 ENV_MAPPINGS["CALL_CONTENT_CAPTURE_ENABLED"] = "call_content_capture_enabled"
+
+# ====================== 远程图片内联策略 ======================
+# all: 所有第三方 http(s) 图片一律下载后内联（历史默认）
+# ip_list: 仅当请求来源 IP 命中白名单时内联，其余原样透传 fileData
+# off: 一律不内联，全部透传
+REMOTE_IMAGE_INLINE_MODES = ("all", "ip_list", "off")
+DEFAULT_REMOTE_IMAGE_INLINE_MODE = "all"
+MAX_REMOTE_IMAGE_INLINE_IPS = 512
 
 
 # ====================== 配置系统 ======================
@@ -166,6 +178,67 @@ async def get_proxy_config():
     """Get proxy configuration."""
     proxy_url = await get_config_value("proxy", env_var="PROXY")
     return proxy_url if proxy_url else None
+
+
+def _inline_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in REMOTE_IMAGE_INLINE_MODES else DEFAULT_REMOTE_IMAGE_INLINE_MODE
+
+
+def _inline_ips(value: Any) -> list:
+    if isinstance(value, str):
+        items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple)):
+        items = [str(item) for item in value]
+    else:
+        return []
+    return [item.strip() for item in items if str(item).strip()]
+
+
+async def get_remote_image_inline_mode() -> str:
+    """Get remote image inline policy mode: all / ip_list / off."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_MODE")
+    if env_value:
+        return _inline_mode(env_value)
+    return _inline_mode(await get_config_value("remote_image_inline_mode"))
+
+
+def get_remote_image_inline_mode_sync() -> str:
+    """Read the inline mode from the loaded config cache (hot path safe)."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_MODE")
+    if env_value:
+        return _inline_mode(env_value)
+    return _inline_mode(_get_cached_config("remote_image_inline_mode"))
+
+
+async def get_remote_image_inline_ips() -> list:
+    """Get the client IP allowlist used by the ip_list inline mode."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_IPS")
+    if env_value:
+        return _inline_ips(env_value)
+    return _inline_ips(await get_config_value("remote_image_inline_ips"))
+
+
+def get_remote_image_inline_ips_sync() -> list:
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_IPS")
+    if env_value:
+        return _inline_ips(env_value)
+    return _inline_ips(_get_cached_config("remote_image_inline_ips"))
+
+
+async def get_remote_image_inline_trust_forwarded() -> bool:
+    """Trust X-Forwarded-For / X-Real-IP when resolving the client IP."""
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_TRUST_FORWARDED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(await get_config_value("remote_image_inline_trust_forwarded", False))
+
+
+def get_remote_image_inline_trust_forwarded_sync() -> bool:
+    env_value = os.getenv("REMOTE_IMAGE_INLINE_TRUST_FORWARDED")
+    if env_value:
+        return env_value.lower() in ("true", "1", "yes", "on")
+    return bool(_get_cached_config("remote_image_inline_trust_forwarded", False))
 
 
 async def get_auto_ban_enabled() -> bool:
@@ -492,11 +565,11 @@ async def get_antigravity_stream2nostream() -> bool:
     return bool(await get_config_value("antigravity_stream2nostream", False))
 
 
-# Antigravity hub 轨迹指纹（2.31.0 / CL 1017595969，官方二进制 --stamp 核验）
+# Antigravity hub 轨迹指纹（2.35.2 / CL 1029311855，官方二进制实读核验，2026-11-26）
 # 这两个键刻意不走 ENV_MAPPINGS：优先级为 面板配置 > ENV > 默认值，
 # ENV 只作部署期兜底初始值，面板随时可改（hub 通道周更，需频繁维护）。
-_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.34.0"
-_ANTIGRAVITY_HUB_CL_DEFAULT = "1026637980"
+_ANTIGRAVITY_HUB_VERSION_DEFAULT = "2.35.2"
+_ANTIGRAVITY_HUB_CL_DEFAULT = "1029311855"
 
 
 async def get_antigravity_hub_version() -> str:
@@ -1569,6 +1642,22 @@ async def get_call_records_retention_days() -> int:
         return 10
 
 
+async def get_antigravity_client_identity_normalization_enabled() -> bool:
+    """客户端 harness 身份归一化开关，默认开启。
+
+    只改写 system 里 ``You are an AI agent powered by <品牌>.`` 这类开场句与
+    DSH 专有的 ``# Runtime Context`` / ``# Tool Specifications`` 标题，不触碰
+    业务正文。命中不到时请求完全不变，因此对官方客户端与普通业务请求零影响。
+
+    Environment variable: ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION
+    """
+    value = await get_config_value(
+        'antigravity_client_identity_normalization_enabled', True,
+        env_var='ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION',
+    )
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
 async def get_antigravity_system_prompt_enabled() -> bool:
     """AGY 基础提示注入开关，默认开启。
 
@@ -1581,6 +1670,20 @@ async def get_antigravity_system_prompt_enabled() -> bool:
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
 
 
+async def get_antigravity_official_tool_alignment_enabled() -> bool:
+    """工具声明对齐到官方 agy 2.35.2 形态的开关，默认开启。
+
+    开启后 wrap_cli_request 会把客户端 tools 按来源工具集（AGY / DSH / Claude Code /
+    GPT(Codex)）的规范顺序重排、合并成单个 functionDeclarations entry，并把 schema 的
+    type/数值约束改成官方 protojson 写法。只改形态，不改工具名与参数语义。
+    """
+    value = await get_config_value(
+        'antigravity_official_tool_alignment_enabled', True,
+        env_var='ANTIGRAVITY_OFFICIAL_TOOL_ALIGNMENT',
+    )
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
 async def get_antigravity_system_as_user_enabled() -> bool:
     value = await get_config_value('antigravity_system_as_user_enabled', False, env_var='ANTIGRAVITY_SYSTEM_AS_USER_ENABLED')
     return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
@@ -1590,7 +1693,7 @@ async def get_antigravity_system_vowel_obfuscation_enabled() -> bool:
     return await get_antigravity_system_obfuscation_mode() != 'off'
 
 
-DEFAULT_SYSTEM_OBFUSCATION_MODE = 'protected'
+DEFAULT_SYSTEM_OBFUSCATION_MODE = 'off'
 
 
 async def get_antigravity_system_obfuscation_mode() -> str:
@@ -1604,4 +1707,7 @@ async def get_antigravity_system_obfuscation_mode() -> str:
     if value is not None:
         return value if value in ('off', 'full', 'protected') else 'off'
     enabled = legacy.lower() in ('true', '1', 'yes', 'on') if isinstance(legacy, str) else legacy
-    return DEFAULT_SYSTEM_OBFUSCATION_MODE if enabled is None or enabled else 'off'
+    if enabled is None:
+        return DEFAULT_SYSTEM_OBFUSCATION_MODE
+    # 旧布尔开关显式开启时仍按“智能保护”处理，避免升级后静默降级。
+    return 'protected' if enabled else 'off'

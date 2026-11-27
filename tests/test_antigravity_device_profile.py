@@ -21,7 +21,7 @@ from src.utils import build_antigravity_user_agent, get_antigravity_user_agent_f
 
 HUB_UA_RE = re.compile(
     r"^antigravity/hub/(?P<version>\d+\.\d+\.\d+) "
-    r"\(aidev_client; os_type=(?P<os>[a-z0-9]+); arch=(?P<arch>[a-z0-9]+); cl=(?P<cl>\d+)\)$"
+    r"\(aidev_client; os_type=(?P<os>[a-z0-9]+); arch=(?P<arch>[a-z0-9]+); cl=(?P<cl>\d+)(?:; datacollection_opt_in=(?P<opt_in>[a-z]+))?\)$"
 )
 
 CREDENTIALS = [

@@ -107,7 +107,7 @@ async def test_injection_without_system_and_legacy_system(key, instruction):
 async def test_custom_prefix_stays_at_system_level():
     config._config_cache.update(antigravity_system_prompt_enabled=True, antigravity_system_as_user_enabled=True, system_prompt_append='Gateway policy\n')
     result = await normalize_gemini_request(request(), mode='antigravity')
-    assert result['systemInstruction']['parts'][0]['text'].startswith('Gateway policy\nYou are Antigravity')
+    assert result['systemInstruction']['parts'][0]['text'].startswith('Gateway policy\n<identity>')
     assert all('Gateway policy' not in p.get('text', '') for p in result['contents'][0]['parts'])
     again = await normalize_gemini_request(result, mode='antigravity')
     assert again['systemInstruction'] == result['systemInstruction']
@@ -269,14 +269,15 @@ async def test_default_switches_on_official_agy_baseline(monkeypatch, legacy_ful
 
     # 注入内容必须是官方 AGY 基础模块，而不是自定义前置文本或融合产物。
     expected = PROMPT_PATH.read_text(encoding='utf-8').strip()
-    assert DEFAULT_PROMPT_VERSION == '2.31.2'
-    assert expected.startswith('You are Antigravity')
+    assert DEFAULT_PROMPT_VERSION == '2.35.2'
+    assert expected.startswith('<identity>')
     assert baseline_prompt() == expected
 
-    # 基线来源完整性：官方 2.31.2 三个模板与渲染产物都不得被替换。
+    # 基线来源完整性：2.35.2 整段基线与 2.31.2 历史模块都不得被替换。
     from src.converter.antigravity_system_prompt import PROMPT_DIR
 
     digests = {
+        'antigravity-2.35.2.txt': '7ead810a96593a0394485665cb7c3851f8b704645679c45d3cc77b7447d0c528',
         'antigravity-2.31.2.txt': '85a8a9070376c8b0a90c0c97b6001991e490a919351cf827e36a446ddacbdd9f',
         'antigravity-2.31.2/identity.tmpl': 'bd8957e589c97f9fa5d5fe3077b01c49b0329f0987bd58cf73bab123ea0a199b',
         'antigravity-2.31.2/communication_style.tmpl': '96e2f45838771003bbfb05206623bb6be4b64187eaa97a4e4d1f2d9e9de86c8f',
@@ -290,7 +291,7 @@ async def test_default_switches_on_official_agy_baseline(monkeypatch, legacy_ful
     result = await normalize_gemini_request(req, mode='antigravity')
     head = result['systemInstruction']['parts'][0]['text']
     assert head == expected + '\n\n' + BRIDGE
-    assert head.startswith('You are Antigravity')
+    assert head.startswith('<identity>')
 
 
 async def test_default_injection_keeps_the_complete_official_prefix_for_older_client_guidance():
@@ -302,3 +303,32 @@ async def test_default_injection_keeps_the_complete_official_prefix_for_older_cl
                'systemInstruction': {'parts': [{'text': guidance}]}}
     result = await normalize_gemini_request(payload, mode='antigravity')
     assert result['systemInstruction']['parts'][0]['text'] == baseline_prompt() + '\n\n' + BRIDGE
+
+
+def test_bridge_covers_every_host_adaptation_requirement():
+    """引导词必须持续覆盖宿主适配的全部约束，缺一条就是回归。"""
+    from src.converter.antigravity_system_prompt import (
+        BRIDGE,
+        BRIDGE_REQUIREMENTS,
+        validate_bridge,
+    )
+
+    assert validate_bridge() == []
+    assert len(BRIDGE_REQUIREMENTS) >= 6
+    for _, needle in BRIDGE_REQUIREMENTS:
+        assert needle in BRIDGE
+    assert '=== SESSION MODE: CALLER-MANAGED ===' in BRIDGE
+    assert "caller's system instructions define the operative" in BRIDGE
+
+
+async def test_baseline_is_the_official_2352_prompt_without_runtime_block():
+    from src.converter.antigravity_system_prompt import baseline_prompt
+
+    text = baseline_prompt('2.35.2')
+    for tag in ('<identity>', '<terminal_sandbox>', '<artifacts>', '<guidelines>',
+                '<work_efficiently>', '<communication_style>', '<slash_commands>',
+                '<messaging>'):
+        assert tag in text
+    # 运行时块（workspace / conversation / appDataDir 实例值）不得进仓库基线。
+    assert '<user_information>' not in text
+    assert 'Conversation ID:' not in text

@@ -9,7 +9,8 @@ def settings(monkeypatch):
     monkeypatch.setattr(config, '_config_initialized', True)
     # 本文件只测混淆/编码；基础提示注入显式关闭，默认开启的行为由专门用例覆盖。
     monkeypatch.setattr(config, '_config_cache', {'sensitive_word_replace_enabled': False,
-                                                 'antigravity_system_prompt_enabled': False})
+                                                 'antigravity_system_prompt_enabled': False,
+                                                 'antigravity_system_obfuscation_mode': 'protected'})
     for key in ('ANTIGRAVITY_SYSTEM_OBFUSCATION_MODE', 'ANTIGRAVITY_SYSTEM_VOWEL_OBFUSCATION_ENABLED',
                 'ANTIGRAVITY_SYSTEM_AS_USER_ENABLED', 'ANTIGRAVITY_SYSTEM_PROMPT_ENABLED', 'SYSTEM_PROMPT_APPEND',
                 'ANTIGRAVITY_WORKFLOW_CONTRACTS_FILE'):
@@ -84,7 +85,7 @@ async def test_pipeline_protects_literals_before_role_conversion_and_is_idempote
     text = '\n'.join(p.get('text', '') for p in parts)
     assert 'Use' in text and '/home/user/config.json' in text
     assert 'Leet' in text and '4/3/1/0/v' in text
-    assert result['systemInstruction']['parts'][0]['text'].startswith('Gateway policy\nYou are Antigravity')
+    assert result['systemInstruction']['parts'][0]['text'].startswith('Gateway policy\n<identity>')
     assert result['contents'][int(as_user):] == original['contents']
     assert req == original
     assert await normalize_gemini_request(result, mode='antigravity') == result
@@ -101,7 +102,8 @@ async def test_client_detection_precedes_sensitive_word_filter(monkeypatch):
 
 
 async def test_config_legacy_and_environment_priority(monkeypatch):
-    assert await config.get_antigravity_system_obfuscation_mode() == 'protected'
+    config._config_cache.pop('antigravity_system_obfuscation_mode', None)
+    assert await config.get_antigravity_system_obfuscation_mode() == 'off'
     config._config_cache['antigravity_system_vowel_obfuscation_enabled'] = False
     assert await config.get_antigravity_system_obfuscation_mode() == 'off'
     config._config_cache['antigravity_system_vowel_obfuscation_enabled'] = True

@@ -3817,7 +3817,8 @@ function _cmRateLimitText(attribution) {
     const matched = Array.isArray(attribution.rules)
         ? attribution.rules.map(rule => rules[rule]).filter(Boolean)
         : [];
-    return { label, detail: matched.length ? `${label} · ${matched.join('、')}达限` : label };
+    const recovery = attribution.reset_at ? ` · ${_cmFormatTime(attribution.reset_at)} 恢复` : '';
+    return { label: `${label}${recovery}`, detail: matched.length ? `${label} · ${matched.join('、')}达限${recovery}` : `${label}${recovery}` };
 }
 
 function _cmStatusCodeChip(code, rateLimit) {
@@ -6831,6 +6832,15 @@ function populateConfigForm() {
     setConfigField('serviceUsageApiUrl', c.service_usage_api_url || '');
     setConfigField('antigravityApiUrl', c.antigravity_api_url || '');
 
+    setConfigField('remoteImageInlineMode', c.remote_image_inline_mode || 'all');
+    setConfigField('remoteImageInlineIps', (c.remote_image_inline_ips || []).join('\n'));
+    const inlineTrustField = document.getElementById('remoteImageInlineTrustForwarded');
+    if (inlineTrustField) {
+        inlineTrustField.checked = Boolean(c.remote_image_inline_trust_forwarded);
+        inlineTrustField.disabled = AppState.envLockedFields.has('remote_image_inline_trust_forwarded');
+        inlineTrustField.classList.toggle('env-locked', inlineTrustField.disabled);
+    }
+
     document.getElementById('autoBanEnabled').checked = Boolean(c.auto_ban_enabled);
     setConfigField('autoBanErrorCodes', (c.auto_ban_error_codes || []).join(','));
     setConfigField('callsPerRotation', c.calls_per_rotation || 10);
@@ -6851,10 +6861,11 @@ function populateConfigForm() {
     for (const [id, key] of [
         ['antigravitySystemPromptEnabled', 'antigravity_system_prompt_enabled'],
         ['antigravitySystemAsUserEnabled', 'antigravity_system_as_user_enabled'],
+        ['antigravityOfficialToolAlignmentEnabled', 'antigravity_official_tool_alignment_enabled'],
     ]) {
         const field = document.getElementById(id);
         if (field) {
-            field.checked = Boolean(c[key]);
+            field.checked = c[key] !== false;
             field.disabled = AppState.envLockedFields.has(key);
             field.classList.toggle('env-locked', field.disabled);
             field.title = field.disabled ? '由环境变量控制' : '';
@@ -6862,7 +6873,7 @@ function populateConfigForm() {
     }
     const obfuscationMode = document.getElementById('antigravitySystemObfuscationMode');
     if (obfuscationMode) {
-        obfuscationMode.value = c.antigravity_system_obfuscation_mode || (c.antigravity_system_vowel_obfuscation_enabled === false ? 'off' : 'protected');
+        obfuscationMode.value = c.antigravity_system_obfuscation_mode || 'off';
         obfuscationMode.disabled = AppState.envLockedFields.has('antigravity_system_obfuscation_mode') || AppState.envLockedFields.has('antigravity_system_vowel_obfuscation_enabled');
         obfuscationMode.classList.toggle('env-locked', obfuscationMode.disabled);
         obfuscationMode.title = obfuscationMode.disabled ? '由环境变量控制' : '';
@@ -7088,6 +7099,11 @@ async function saveConfig() {
             resource_manager_api_url: getValue('resourceManagerApiUrl'),
             service_usage_api_url: getValue('serviceUsageApiUrl'),
             antigravity_api_url: getValue('antigravityApiUrl'),
+            remote_image_inline_mode: getValue('remoteImageInlineMode') || 'all',
+            remote_image_inline_ips: getValue('remoteImageInlineIps')
+                .split(/[\n,]/).map(line => line.trim()).filter(line => line && !line.startsWith('#')),
+            remote_image_inline_trust_forwarded:
+                document.getElementById('remoteImageInlineTrustForwarded')?.checked ?? false,
             auto_ban_enabled: getChecked('autoBanEnabled'),
             auto_ban_error_codes: getValue('autoBanErrorCodes').split(',')
                 .map(c => parseInt(c.trim())).filter(c => !isNaN(c)),
@@ -7125,6 +7141,7 @@ async function saveConfig() {
             system_prompt_append: document.getElementById('systemPromptAppend')?.value ?? '',
             antigravity_system_prompt_enabled: document.getElementById('antigravitySystemPromptEnabled').checked,
             antigravity_system_as_user_enabled: document.getElementById('antigravitySystemAsUserEnabled').checked,
+            antigravity_official_tool_alignment_enabled: document.getElementById('antigravityOfficialToolAlignmentEnabled').checked,
             antigravity_system_obfuscation_mode: document.getElementById('antigravitySystemObfuscationMode').value,
             prompt_fusion_enabled: document.getElementById('promptFusionEnabled').checked,
             sensitive_word_filter_mode: getValue('sensitiveWordFilterMode'),
