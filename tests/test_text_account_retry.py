@@ -158,8 +158,8 @@ async def test_request(
     "codes,names,statuses,accounts,state",
     [
         ([503], "abc", [503, 200], ["a", "b"], "sent"),
-        ([503], "abc", [503, 503, 200], ["a", "b", "b"], "sent"),
-        ([503], "abc", [503, 503, 503], ["a", "b", "b"], "sent"),
+        ([503], "abc", [503, 503, 200], ["a", "b"], "sent"),
+        ([503], "abc", [503, 503, 503], ["a", "b"], "sent"),
         ([503], "abc", [503, 502], ["a", "b"], "sent"),
         ([503], "a", [503, 503], ["a", "a"], "no_candidate"),
         ([], "abc", [503, 503], ["a", "a"], None),
@@ -169,7 +169,7 @@ async def test_request(
 async def test_antigravity_capacity_retry_order(
     monkeypatch, streaming, codes, names, statuses, accounts, state
 ):
-    """先消耗换号机会；容量型 503 才能在当前账号上额外补试一次。"""
+    """先消耗换号机会；换号后再 503 直接透传，只有无候选时才原号补试一次。"""
     _patch_common(monkeypatch, [])
     monkeypatch.setattr(
         antigravity, "get_antigravity_stream2nostream", AsyncMock(return_value=False)
@@ -219,7 +219,16 @@ async def test_antigravity_capacity_retry_order(
         else:
             yield Response(result.content, result.status_code, headers=result.headers)
 
+    demoted: list[str] = []
+
+    async def demote(filename, steps=2):
+        demoted.append(filename)
+        return 1
+
     monkeypatch.setattr(antigravity.credential_manager, "get_valid_credential", choose)
+    monkeypatch.setattr(
+        antigravity.credential_manager, "demote_antigravity_rotation", demote
+    )
     monkeypatch.setattr(antigravity, "post_async", post)
     monkeypatch.setattr(antigravity, "stream_post_async", stream)
     body = {"model": "gemini-2.5-flash", "request": {"contents": []}}
@@ -230,12 +239,18 @@ async def test_antigravity_capacity_retry_order(
         response = await antigravity.non_stream_request(body)
 
     assert sent == accounts
-    assert response.status_code == statuses[-1]
-    if statuses[-1] != 200:
+    final_status = statuses[len(accounts) - 1]
+    assert response.status_code == final_status
+    if final_status != 200:
         assert response.headers["Retry-After"] == "17"
+    # 容量型 503 既不发冷却也不锁账号：只把这个号在轮转队列里往后挪（软降权）。
     assert all(
         call.args[3] is None for call in errors.await_args_list if call.args[2] == 503
     )
+    # 每次容量型 503 都把这个号在轮转队列里往后挪（软降权），而不是冷却。
+    assert demoted == [
+        name for name, status in zip(accounts, statuses) if status == 503
+    ]
     recorder.record.assert_awaited_once()
     billed = recorder.record.await_args.kwargs
     assert billed["credential_name"] == accounts[-1]
@@ -245,7 +260,7 @@ async def test_antigravity_capacity_retry_order(
         trace = billed["text_account_retry"]
         assert trace["state"] == state
         assert [attempt["credential_name"] for attempt in trace["attempts"]] == accounts
-        assert [attempt["status_code"] for attempt in trace["attempts"]] == statuses
+        assert [attempt["status_code"] for attempt in trace["attempts"]] == statuses[:len(accounts)]
         assert (trace["attempts"][-1].get("kind") == "same_account") == (
             accounts[-1] == accounts[-2]
         )

@@ -5859,6 +5859,44 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             )
         return names
 
+    async def demote_antigravity_rotation(self, filename: str, steps: int = 2) -> int:
+        """把账号在「账号轮转队列」里往后挪 ``steps`` 位（容量型 503 的软降权）。
+
+        不做冷却、不禁用：该账号仍然可以被选中，只是要等队列里前面的号先轮过。
+        用一次容量 503 换一次「排后面」，避免同一个号在窗口内被连着反复选中。
+        返回新的 routing_turn；账号不存在或已停用时返回 0。
+        """
+        self._ensure_initialized()
+        filename = os.path.basename(filename)
+        steps = max(int(steps), 1)
+        table = self._get_table_name("antigravity")
+        try:
+            async with sqlite_connect(self._db_path) as db:
+                if self.main_postgres:
+                    await db.execute("BEGIN IMMEDIATE")
+                cursor = await db.execute(
+                    f"""UPDATE {table}
+                        SET routing_turn = (
+                                SELECT COALESCE(MAX(routing_turn), 0) + ? FROM {table}
+                            ),
+                            updated_at = unixepoch()
+                        WHERE filename = ? AND disabled = 0""",
+                    (steps, filename),
+                )
+                changed = int(getattr(cursor, "rowcount", 0) or 0)
+                await db.commit()
+                if not changed:
+                    return 0
+                async with db.execute(
+                    f"SELECT COALESCE(routing_turn, 0) FROM {table} WHERE filename = ?",
+                    (filename,),
+                ) as probe:
+                    row = await probe.fetchone()
+                return int((row or [0])[0] or 0)
+        except Exception as exc:  # noqa: BLE001 - 降权失败不能影响请求
+            log.warning(f"Error demoting rotation for {filename}: {exc}")
+            return 0
+
     async def hold_antigravity_transient(
         self,
         filename: str,

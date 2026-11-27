@@ -1432,6 +1432,15 @@ class CredentialManager:
             )
         return bool(cooled)
 
+    async def demote_antigravity_rotation(self, filename: str, steps: int = 2) -> int:
+        """容量型 503 的软降权：把账号在轮转队列里往后挪几步，不写冷却、不禁用。"""
+        adapter = getattr(self, "_storage_adapter", None)
+        demote = getattr(adapter, "demote_antigravity_rotation", None)
+        if demote is None:
+            return 0
+        return await demote(filename, steps=steps)
+
+
     def _is_permanent_refresh_failure(self, error_msg: str, status_code: Optional[int] = None) -> bool:
         """
         判断是否是凭证永久失效的错误
