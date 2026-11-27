@@ -1950,3 +1950,169 @@ async def test_image_429_all_accounts_exhausted_returns_reset_at_and_retry_after
     # 客户端拿到可执行的 Retry-After
     header = response.headers.get("retry-after")
     assert header is not None and header.isdigit() and int(header) > 3600
+
+
+@pytest.mark.asyncio
+async def test_image_502_fails_over_once(monkeypatch):
+    """502 与 429/503 同等对待：换一次账号再试。"""
+    import httpx
+
+    from src.api import antigravity
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.tried = []
+
+        async def get_valid_credential(self, **kwargs):
+            excluded = set(kwargs.get("exclude_filenames") or set())
+            for name in ("a.json", "b.json", "c.json"):
+                if name not in excluded:
+                    self.tried.append(name)
+                    return name, {
+                        "access_token": "token",
+                        "project_id": name.replace(".json", "-project"),
+                        "tier": "pro",
+                        "proxy_mode": "direct",
+                        "_image_lease_id": f"lease-{name}",
+                    }
+            return None
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            return None
+
+        async def release_image_credential(self, credential_name, lease_id):
+            return True
+
+    manager = FakeCredentialManager()
+    manager.hold_transient = AsyncMock()
+    upstream_calls = []
+
+    async def fake_resolve_dynamic_model(**kwargs):
+        return "gemini-3.1-flash-image"
+
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
+        return {"project": project, "model": model, "request": request}, f"req-{project}"
+
+    async def fake_image_post(**kwargs):
+        upstream_calls.append(kwargs)
+        if len(upstream_calls) == 1:
+            return antigravity.ImageUpstreamResult(
+                httpx.Response(502, json={"error": "bad gateway"}), "daily", ()
+            )
+        return antigravity.ImageUpstreamResult(
+            httpx.Response(200, json={"response": {"candidates": [], "usageMetadata": {}}}),
+            "daily",
+            (),
+        )
+
+    class FakeRecorder:
+        async def record(self, **kwargs):
+            return True
+
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setattr(
+        antigravity, "get_retry_config",
+        lambda: async_value({"retry_enabled": True, "max_retries": 5, "retry_interval": 0}),
+    )
+    monkeypatch.setattr(antigravity, "get_auto_ban_error_codes", lambda: async_value([]))
+    monkeypatch.setattr(antigravity, "resolve_dynamic_image_model_for_credential", fake_resolve_dynamic_model)
+    monkeypatch.setattr(antigravity, "wrap_cli_request", fake_wrap)
+    monkeypatch.setattr(antigravity, "_post_image_generate", fake_image_post)
+    monkeypatch.setattr(antigravity, "record_api_call_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "record_api_call_success", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "get_billing_recorder", lambda: async_value(FakeRecorder()))
+    monkeypatch.setattr(antigravity, "send_all_accounts_unavailable_alert", AsyncMock(return_value=True))
+
+    response = await antigravity.non_stream_request(
+        {
+            "model": "gemini-3.1-flash-image",
+            "request": {"contents": [{"role": "user", "parts": [{"text": "draw"}]}]},
+        }
+    )
+
+    assert response.status_code == 200
+    assert manager.tried == ["a.json", "b.json"]
+    assert [call["json_body"]["project"] for call in upstream_calls] == ["a-project", "b-project"]
+
+
+@pytest.mark.asyncio
+async def test_image_failover_is_capped_at_one_switch(monkeypatch):
+    """只换一次账号：3 个号全 429 时只尝试前两个，不做第三次。"""
+    import httpx
+
+    from src.api import antigravity
+
+    class FakeCredentialManager:
+        def __init__(self):
+            self.tried = []
+
+        async def get_valid_credential(self, **kwargs):
+            excluded = set(kwargs.get("exclude_filenames") or set())
+            for name in ("a.json", "b.json", "c.json"):
+                if name not in excluded:
+                    self.tried.append(name)
+                    return name, {
+                        "access_token": "token",
+                        "project_id": name.replace(".json", "-project"),
+                        "tier": "pro",
+                        "proxy_mode": "direct",
+                        "_image_lease_id": f"lease-{name}",
+                    }
+            return None
+
+        def record_image_account_outcome(self, credential_name, **kwargs):
+            return None
+
+        async def release_image_credential(self, credential_name, lease_id):
+            return True
+
+    manager = FakeCredentialManager()
+    upstream_calls = []
+
+    async def fake_resolve_dynamic_model(**kwargs):
+        return "gemini-3.1-flash-image"
+
+    async def fake_wrap(request, model, project, user_email=None, credential_key=None):
+        return {"project": project, "model": model, "request": request}, f"req-{project}"
+
+    async def fake_image_post(**kwargs):
+        upstream_calls.append(kwargs)
+        return antigravity.ImageUpstreamResult(
+            httpx.Response(
+                429,
+                json={"error": {"details": [{"reason": "QUOTA_EXHAUSTED"}]}},
+            ),
+            "daily",
+            (),
+        )
+
+    class FakeRecorder:
+        async def record(self, **kwargs):
+            return True
+
+    monkeypatch.setattr(antigravity, "credential_manager", manager)
+    monkeypatch.setattr(
+        antigravity, "get_retry_config",
+        # 配置允许 4 次尝试，图片链路仍应只换一次
+        lambda: async_value({"retry_enabled": True, "max_retries": 3, "retry_interval": 0}),
+    )
+    monkeypatch.setattr(antigravity, "get_auto_ban_error_codes", lambda: async_value([]))
+    monkeypatch.setattr(antigravity, "resolve_dynamic_image_model_for_credential", fake_resolve_dynamic_model)
+    monkeypatch.setattr(antigravity, "wrap_cli_request", fake_wrap)
+    monkeypatch.setattr(antigravity, "_post_image_generate", fake_image_post)
+    monkeypatch.setattr(antigravity, "record_api_call_error", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "record_api_call_success", AsyncMock(return_value=None))
+    monkeypatch.setattr(antigravity, "get_billing_recorder", lambda: async_value(FakeRecorder()))
+    monkeypatch.setattr(antigravity, "send_all_accounts_unavailable_alert", AsyncMock(return_value=True))
+
+    response = await antigravity.non_stream_request(
+        {
+            "model": "gemini-3.1-flash-image",
+            "request": {"contents": [{"role": "user", "parts": [{"text": "draw"}]}]},
+        }
+    )
+
+    assert response.status_code == 429
+    assert manager.tried == ["a.json", "b.json"]   # c.json 不再尝试
+    assert len(upstream_calls) == 2
+    assert response.headers.get("retry-after")

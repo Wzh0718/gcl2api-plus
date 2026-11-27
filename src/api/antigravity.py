@@ -1915,7 +1915,9 @@ async def _non_stream_image_request_inner(
     retry_config = await get_retry_config()
     retry_enabled = bool(retry_config.get("retry_enabled", True))
     configured_attempts = int(retry_config.get("max_retries", 2)) + 1
-    max_account_attempts = min(max(configured_attempts, 1), 3) if retry_enabled else 1
+    # 图片链路只换一次账号：首个账号 429/502/503 后换到下一个账号再试一次即收尾。
+    # 出图单次可达 10s，再往上堆尝试会同时放大上游压力和客户端等待，收益很小。
+    max_account_attempts = min(max(configured_attempts, 1), 2) if retry_enabled else 1
     disable_error_codes = await get_auto_ban_error_codes()
     attempted_credentials: Set[str] = set()
     region_rebinds: Dict[str, int] = {}  # 同一请求内该账号已为地区拒绝换过的出口 IP 数
@@ -2194,12 +2196,13 @@ async def _non_stream_image_request_inner(
                 account_attempt += 1
                 continue
 
-        # 429 是账号级额度/限流：换一个账号通常仍能出图（free 与 pro 的图片额度
-        # 互不相干，同一分钟里 free 号 429、pro 号 200 的情况已实测到）。
-        # 因此 429 不能像 400/403 一样直接终止；attempted_credentials 保证不重复
-        # 尝试同一个账号，换号次数仍受 max_account_attempts 约束。
+        # 429/502/503 都是「这个账号这次不行，换一个可能行」：free 与 pro 的图片
+        # 额度互不相干（同一分钟 free 号 429、pro 号 200 已实测），502/503 多为
+        # 单账号链路或容量问题。因此这三类不能像 400/403 一样直接终止，换一次账号
+        # 再试；attempted_credentials 保证不重复同一账号，max_account_attempts
+        # 已固定为 2（只切换一次）。
         retryable = status_code not in (400, 403) and (
-            status_code in (404, 429, 500, 503) or status_code in disable_error_codes
+            status_code in (404, 429, 500, 502, 503) or status_code in disable_error_codes
         )
         will_retry = retry_enabled and retryable and account_attempt < max_account_attempts
         await record_api_call_error(
@@ -2214,16 +2217,14 @@ async def _non_stream_image_request_inner(
             gateway_seconds=None if will_retry else time.monotonic() - gateway_started,
         )
 
-        if will_retry and status_code == 429:
-            reason = getattr(getattr(last_response, "rate_limit", None), "reason", "unknown")
+        if will_retry and status_code in (429, 502, 503):
+            reason = getattr(getattr(last_response, "rate_limit", None), "reason", None)
             log.warning(
-                "[ANTIGRAVITY IMAGE] 429 换号重试: "
-                f"credential={current_file}, reason={reason}, "
-                f"attempt={account_attempt}/{max_account_attempts}, model={requested_model}"
+                f"[ANTIGRAVITY IMAGE] {status_code} 换号重试: "
+                f"credential={current_file}"
+                + (f", reason={reason}" if reason else "")
+                + f", attempt={account_attempt}/{max_account_attempts}, model={requested_model}"
             )
-
-        if will_retry and status_code == 503:
-            await asyncio.sleep(retry_config["retry_interval"])
 
         if not will_retry:
             break
