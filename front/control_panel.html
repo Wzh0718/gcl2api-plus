@@ -1618,458 +1618,7 @@
             }
         }
     </style>
-    <style id="billing-dashboard-styles">
-        /* Desktop billing report — quiet, dense, and data-first. */
-        .billing-shell {
-            --billing-ink: #172033;
-            --billing-muted: #687386;
-            --billing-soft: #f5f7fa;
-            --billing-line: #dce3ec;
-            --billing-accent: #1f64d6;
-            --billing-accent-soft: #e9f1ff;
-            --billing-teal: #0b7f83;
-            color: var(--billing-ink);
-        }
-
-        .billing-header {
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-between;
-            gap: 24px;
-            padding: 6px 0 22px;
-            border-bottom: 1px solid var(--billing-line);
-        }
-
-        .billing-kicker {
-            margin: 0 0 8px;
-            color: var(--billing-accent);
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: .12em;
-        }
-
-        .billing-title {
-            margin: 0;
-            color: var(--billing-ink);
-            font-size: 28px;
-            line-height: 1.15;
-            letter-spacing: -.025em;
-        }
-
-        .billing-subtitle {
-            max-width: 58ch;
-            margin: 9px 0 0;
-            color: var(--billing-muted);
-            font-size: 13px;
-            line-height: 1.6;
-        }
-
-        .billing-header-actions {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-shrink: 0;
-        }
-
-        .billing-range-picker {
-            display: inline-flex;
-            padding: 4px;
-            border: 1px solid var(--billing-line);
-            border-radius: 9px;
-            background: var(--billing-soft);
-        }
-
-        .billing-range-button,
-        .billing-refresh-button {
-            min-height: 34px;
-            border: 0;
-            border-radius: 6px;
-            font: inherit;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background-color .18s ease, color .18s ease, border-color .18s ease;
-        }
-
-        .billing-range-button {
-            padding: 0 13px;
-            color: var(--billing-muted);
-            background: transparent;
-        }
-
-        .billing-range-button:hover,
-        .billing-range-button:focus-visible {
-            color: var(--billing-ink);
-            background: #e9edf3;
-            outline: none;
-        }
-
-        .billing-range-button.active {
-            color: #fff;
-            background: var(--billing-ink);
-        }
-
-        .billing-refresh-button {
-            padding: 0 15px;
-            color: var(--billing-accent);
-            border: 1px solid #b8cdf4;
-            background: #fff;
-        }
-
-        .billing-refresh-button:hover,
-        .billing-refresh-button:focus-visible {
-            color: #fff;
-            border-color: var(--billing-accent);
-            background: var(--billing-accent);
-            outline: none;
-        }
-
-        .billing-range-native {
-            position: absolute;
-            width: 1px;
-            height: 1px;
-            overflow: hidden;
-            clip: rect(0 0 0 0);
-            clip-path: inset(50%);
-            white-space: nowrap;
-        }
-
-        .billing-overview {
-            display: grid;
-            grid-template-columns: minmax(220px, .9fr) minmax(0, 1.7fr);
-            gap: 14px;
-            margin-top: 18px;
-        }
-
-        .billing-primary-stat,
-        .billing-stat-list,
-        .billing-panel {
-            border: 1px solid var(--billing-line);
-            border-radius: 12px;
-            background: #fff;
-        }
-
-        .billing-primary-stat {
-            display: flex;
-            min-height: 148px;
-            flex-direction: column;
-            justify-content: space-between;
-            padding: 20px;
-            background: var(--billing-ink);
-        }
-
-        .billing-label {
-            color: var(--billing-muted);
-            font-size: 12px;
-            font-weight: 700;
-        }
-
-        .billing-primary-stat .billing-label {
-            color: #b9c4d6;
-        }
-
-        .billing-primary-value {
-            margin-top: 18px;
-            color: #fff;
-            font-size: 32px;
-            font-weight: 800;
-            letter-spacing: -.035em;
-            line-height: 1;
-        }
-
-        .billing-primary-meta {
-            margin-top: 8px;
-            color: #b9c4d6;
-            font-size: 12px;
-        }
-
-        .billing-stat-list {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            padding: 4px 18px;
-        }
-
-        .billing-stat-row {
-            display: flex;
-            min-height: 70px;
-            flex-direction: column;
-            justify-content: center;
-            gap: 5px;
-            padding: 10px 14px;
-            border-bottom: 1px solid var(--billing-line);
-        }
-
-        .billing-stat-row:nth-last-child(-n + 2) {
-            border-bottom: 0;
-        }
-
-        .billing-stat-value {
-            color: var(--billing-ink);
-            font-size: 16px;
-            font-weight: 800;
-            line-height: 1.25;
-        }
-
-        .billing-report-grid {
-            display: grid;
-            grid-template-columns: minmax(0, 1.35fr) minmax(300px, .85fr);
-            gap: 14px;
-            margin-top: 14px;
-        }
-
-        .billing-panel {
-            padding: 18px;
-        }
-
-        .billing-panel-heading {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 16px;
-        }
-
-        .billing-panel-title {
-            margin: 0;
-            color: var(--billing-ink);
-            font-size: 15px;
-            font-weight: 800;
-        }
-
-        .billing-panel-note {
-            color: var(--billing-muted);
-            font-size: 11px;
-        }
-
-        .billing-trend-list,
-        .billing-ranking-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .billing-trend-row,
-        .billing-ranking-row {
-            display: grid;
-            gap: 7px;
-        }
-
-        .billing-trend-meta,
-        .billing-ranking-meta {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            color: var(--billing-muted);
-            font-size: 12px;
-        }
-
-        .billing-trend-meta strong,
-        .billing-ranking-meta strong {
-            color: var(--billing-ink);
-            font-weight: 700;
-        }
-
-        .billing-bar {
-            height: 7px;
-            overflow: hidden;
-            border-radius: 999px;
-            background: #edf1f6;
-        }
-
-        .billing-bar > span {
-            display: block;
-            height: 100%;
-            min-width: 3px;
-            border-radius: inherit;
-            background: var(--billing-accent);
-        }
-
-        .billing-ranking-row:nth-child(even) .billing-bar > span {
-            background: var(--billing-teal);
-        }
-
-        .billing-empty {
-            padding: 28px 12px;
-            color: var(--billing-muted);
-            font-size: 13px;
-            text-align: center;
-            border: 1px dashed var(--billing-line);
-            border-radius: 8px;
-            background: var(--billing-soft);
-        }
-
-        .billing-config-panel {
-            margin-top: 14px;
-        }
-
-        .billing-config-grid {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-        }
-
-        .billing-field {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .billing-field label {
-            margin: 0;
-            color: var(--billing-muted);
-            font-size: 11px;
-            font-weight: 700;
-        }
-
-        .billing-field input {
-            width: 100%;
-            box-sizing: border-box;
-            padding: 9px 10px;
-            border: 1px solid var(--billing-line);
-            border-radius: 7px;
-            color: var(--billing-ink);
-            background: #fff;
-            font: inherit;
-            font-size: 13px;
-        }
-
-        .billing-field input:focus {
-            border-color: var(--billing-accent);
-            outline: 3px solid rgba(31, 100, 214, .14);
-        }
-
-        .billing-form-row {
-            display: flex;
-            align-items: end;
-            gap: 10px;
-            margin-top: 12px;
-        }
-
-        .billing-form-row .billing-field:first-child {
-            flex: 1.3;
-        }
-
-        .billing-form-row .billing-field {
-            flex: 1;
-        }
-
-        .billing-save-button {
-            min-height: 38px;
-            padding: 0 15px;
-            border: 1px solid var(--billing-accent);
-            border-radius: 7px;
-            color: #fff;
-            background: var(--billing-accent);
-            font: inherit;
-            font-size: 12px;
-            font-weight: 800;
-            cursor: pointer;
-        }
-
-        .billing-save-button:hover,
-        .billing-save-button:focus-visible {
-            background: #174fa8;
-            outline: 3px solid rgba(31, 100, 214, .14);
-        }
-
-        .billing-model-prices {
-            display: grid;
-            gap: 7px;
-            margin-top: 14px;
-        }
-
-        .billing-model-price-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 10px 12px;
-            border: 1px solid var(--billing-line);
-            border-radius: 7px;
-            color: var(--billing-muted);
-            background: var(--billing-soft);
-            font-size: 12px;
-        }
-
-        .billing-model-price-row strong {
-            color: var(--billing-ink);
-        }
-
-        .billing-model-price-delete {
-            padding: 4px 8px;
-            border: 1px solid #e1a6a6;
-            border-radius: 5px;
-            color: #a33a3a;
-            background: #fff;
-            font: inherit;
-            font-size: 11px;
-            cursor: pointer;
-        }
-
-        .billing-model-price-delete:hover,
-        .billing-model-price-delete:focus-visible {
-            color: #fff;
-            background: #a33a3a;
-            outline: none;
-        }
-
-        @media (max-width: 860px) {
-            .billing-header {
-                align-items: flex-start;
-                flex-direction: column;
-            }
-
-            .billing-header-actions {
-                width: 100%;
-                justify-content: space-between;
-            }
-
-            .billing-report-grid,
-            .billing-overview {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        @media (max-width: 620px) {
-            .billing-header-actions,
-            .billing-form-row {
-                align-items: stretch;
-                flex-direction: column;
-            }
-
-            .billing-range-picker {
-                width: 100%;
-            }
-
-            .billing-range-button {
-                flex: 1;
-                padding: 0 6px;
-            }
-
-            .billing-stat-list,
-            .billing-config-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .billing-stat-row:nth-last-child(-n + 2) {
-                border-bottom: 1px solid var(--billing-line);
-            }
-
-            .billing-stat-row:last-child {
-                border-bottom: 0;
-            }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            .billing-range-button,
-            .billing-refresh-button,
-            .billing-save-button,
-            .billing-model-price-delete {
-                transition: none;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="./front/billing.css?v=20261127">
     <style id="api-key-management-styles">
         .api-key-shell { color: #172033; }
         .api-key-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid #dce3ec; }
@@ -2115,10 +1664,16 @@
     </style>
     <link rel="stylesheet" href="./front/control_panel.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/call_monitor.css?v=rate-limit-source">
-    <link rel="stylesheet" href="./front/config_tabs.css?v=config-layout-20261119">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=config-actions-20261127">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
     <link rel="stylesheet" href="./front/warmup.css?v=warmup-dashboard">
+    <link rel="stylesheet" href="./front/api_keys.css?v=20261127-4">
+    <link rel="stylesheet" href="./front/header.css?v=update-dot-20261127">
+    <link rel="stylesheet" href="./front/studio.css?v=20261127-buttons">
+    <link rel="stylesheet" href="./front/theme.css?v=20261127-dark-audit">
+    <script src="./front/theme.js?v=20261127"></script>
+<link rel="stylesheet" href="./front/daily_trend.css?v=20261127-dialogs">
 </head>
 
 <body>
@@ -2136,22 +1691,18 @@
 
         <!-- 主界面 -->
         <div id="mainSection" class="hidden">
-            <header class="app-header">
+            <header class="app-header console-header">
                 <div class="app-brand">
-                    <span class="app-brand-mark" aria-hidden="true">G2</span>
-                    <div>
-                        <h1>GCLI2API</h1>
-                        <p>Antigravity 服务控制台</p>
-                    </div>
+                    <span class="app-brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M22 8H12a5 5 0 0 0-5 5v7a5 5 0 0 0 5 5h8a5 5 0 0 0 5-5v-4h-9" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m21 5 4 3-4 3" stroke="#91d9ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    <div class="app-brand-wordmark"><h1>GCLI2API <span class="app-brand-tag">PLUS</span></h1><span>API GATEWAY</span></div>
+                    <div class="app-header-context"><span>Antigravity</span><strong>服务控制台</strong></div>
                 </div>
                 <div class="app-header-actions">
-                    <span id="versionInfo" class="version-info">
-                        <span id="versionText">加载中...</span>
-                    </span>
-                    <button type="button" onclick="checkForUpdates()" id="checkUpdateBtn" class="header-button">
-                        检查更新
-                    </button>
-                    <button type="button" onclick="logout()" class="header-button header-button-danger">退出登录</button>
+                    <div class="theme-switch" role="group" aria-label="界面主题"><button type="button" class="header-button" data-theme-choice="light" aria-pressed="false" aria-label="浅色主题" title="浅色主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button><button type="button" class="header-button" data-theme-choice="dark" aria-pressed="false" aria-label="深色主题" title="深色主题"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"/></svg></button></div>
+                    <a id="versionInfo" class="version-info" href="https://github.com/Wzh0718/gcl2api-plus/packages" target="_blank" rel="noopener noreferrer" aria-label="查看 gcl2api-plus 的 GitHub Packages（新窗口打开）" title="查看仓库 Packages"><span class="version-label">版本</span><span id="versionText">加载中...</span><span aria-hidden="true">↗</span></a>
+                    <button type="button" onclick="checkForUpdates()" id="checkUpdateBtn" class="header-button">检查更新</button>
+                    <span class="header-action-divider" aria-hidden="true"></span>
+                    <button type="button" onclick="logout()" class="header-button header-button-danger"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M8 4H4v12h4m4-10 4 4-4 4m-5-4h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>退出登录</button>
                 </div>
             </header>
 
@@ -2162,23 +1713,23 @@
                     <strong>控制台导航</strong>
                 </div>
                 <div class="tab-slider"></div>
-                <button type="button" class="tab active" aria-current="page" onclick="switchTab('api-keys', this)">密钥分发</button>
+                <button type="button" class="tab active" aria-current="page" onclick="switchTab('api-keys', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10ZM10 12l-7 7v2h3v-3h3v-3m6-8h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>密钥分发</button>
                 <div class="navigation-group" role="group" aria-label="账号管理">
                     <span class="navigation-group-label">账号管理</span>
-                    <button type="button" class="tab" onclick="switchTab('antigravity', this)">Antigravity 认证</button>
-                    <button type="button" class="tab" onclick="switchTab('upload', this)">凭证上传</button>
-                    <button type="button" class="tab" onclick="switchTab('antigravity-manage', this)">凭证管理</button>
+                    <button type="button" class="tab" onclick="switchTab('antigravity', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Zm-4 9 3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Antigravity 认证</button>
+                    <button type="button" class="tab" onclick="switchTab('upload', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v6h16v-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>凭证上传</button>
+                    <button type="button" class="tab" onclick="switchTab('antigravity-manage', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16v14H4zM8 9h3m-3 5h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>凭证管理</button>
                 </div>
                 <div class="navigation-group" role="group" aria-label="用量计费">
                     <span class="navigation-group-label">用量计费</span>
-                    <button type="button" class="tab" onclick="switchTab('model-stats', this)">调用统计</button>
-                    <button type="button" class="tab" onclick="switchTab('call-monitor', this)">调用监控</button>
-                    <button type="button" class="tab" onclick="switchTab('billing', this)">Token 计费</button>
+                    <button type="button" class="tab" onclick="switchTab('model-stats', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h17M7 16V9m5 7V4m5 12v-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>调用统计</button>
+                    <button type="button" class="tab" onclick="switchTab('call-monitor', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>调用监控</button>
+                    <button type="button" class="tab" onclick="switchTab('billing', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h14v18l-3-2-4 2-4-2-3 2V3Zm4 5h6m-6 4h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Token 计费</button>
                 </div>
                 <div class="navigation-group" role="group" aria-label="系统">
                     <span class="navigation-group-label">系统</span>
-                    <button type="button" class="tab" onclick="switchTab('config', this)">配置管理</button>
-                    <button type="button" class="tab" onclick="switchTab('logs', this)">实时日志</button>
+                    <button type="button" class="tab" onclick="switchTab('config', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-5 0v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>配置管理</button>
+                    <button type="button" class="tab" onclick="switchTab('logs', this)"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 6 5 5-5 5m9 1h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>实时日志</button>
                 </div>
             </nav>
 
@@ -2186,12 +1737,12 @@
             <div id="api-keysTab" class="tab-content active">
                 <div class="api-key-shell">
                     <header class="api-key-header">
-                        <div>
-                            <p class="api-key-kicker">访问控制</p>
-                            <h2>密钥分发管理</h2>
-                            <p>为 Antigravity 调用方创建独立密钥，并按金额设置不限额、手动重置或每月自动重置的额度。环境配置密钥继续保留为只读兼容入口。</p>
-                        </div>
+                        <div><p class="api-key-kicker">访问控制 / API KEYS</p><h2>密钥分发</h2>
+                        <p>管理调用方的访问权限、额度与使用策略。</p></div>
+                        <button type="button" class="api-key-primary" onclick="openApiKeyCreate()">＋ 创建密钥</button>
                     </header>
+                    <div id="apiKeyOverview" class="api-key-overview" aria-live="polite"></div>
+                    <div id="apiKeyEndpointsPanel" class="api-key-endpoints">
                 <div
                     style="background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:13px;">
                     <strong>📡 API地址（点击复制）：</strong>
@@ -2219,6 +1770,18 @@
                         (function () { var o2 = window.location.origin; document.getElementById('antOpenaiUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antClaudeUrl').textContent = o2 + '/antigravity/v1'; document.getElementById('antGeminiUrl').textContent = o2 + '/antigravity'; })();
                     </script>
                 </div>
+                    </div>
+                    <section class="api-key-directory" aria-label="密钥列表">
+                        <div class="api-key-directory-heading"><h3>全部密钥</h3><button type="button" class="api-key-refresh" onclick="loadApiKeys()">刷新列表</button></div>
+                        <div class="api-key-toolbar">
+                            <label class="api-key-search">搜索密钥<input id="apiKeySearch" type="search" autocomplete="off" spellcheck="false" placeholder="粘贴完整密钥，或搜索名称、前缀、账号、模型…" oninput="filterApiKeys()"></label>
+                            <label>状态<select id="apiKeyStatusFilter" onchange="filterApiKeys()"><option value="">全部状态</option><option value="active">可用</option><option value="disabled">已停用</option><option value="expired">已过期</option><option value="quota_exhausted">额度已用尽</option><option value="revoked">已吊销</option></select></label>
+                            <button type="button" class="api-key-refresh" onclick="clearApiKeyFilters()">清除筛选</button>
+                        </div>
+                        <p id="apiKeyResultCount" class="api-key-result-count" role="status"></p>
+                    <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
+                    </section>
+                    <dialog id="apiKeyCreatePanel" class="api-key-disclosure" aria-label="创建新密钥"><div class="api-key-panel-heading"><h3>创建新密钥</h3><button type="button" class="api-key-refresh" onclick="document.getElementById('apiKeyCreatePanel').close()">关闭</button></div>
                     <form id="apiKeyCreateForm" class="api-key-create" onsubmit="return createApiKey(event)">
                         <label>密钥名称<input id="apiKeyCreateName" type="text" maxlength="100" required placeholder="例如：研发团队"></label>
                         <label>金额额度<input id="apiKeyCreateQuota" type="number" min="0" step="0.01" placeholder="留空为不限额"></label>
@@ -2231,7 +1794,8 @@
                     </form>
                     <p id="apiKeyAccountStatus" role="status" aria-live="polite">Gemini / Claude 共用所选账号。</p>
                     <p id="apiKeyModelPolicyStatus" role="status" aria-live="polite">Key 融合设置优先于账号和全局；模型不限时沿用原有路由。</p>
-                    <div id="apiKeyList" class="api-key-list"><div class="api-key-empty">正在加载密钥…</div></div>
+                    <p id="apiKeyCreateFeedback" role="alert"></p></dialog>
+
                 </div>
             </div>
 
@@ -2902,6 +2466,7 @@
 
             <!-- 调用统计标签页 -->
             <div id="model-statsTab" class="tab-content">
+                <header class="page-intro"><span class="module-eyebrow">ANALYTICS</span><h2>调用统计</h2><p>从调用量、成功率与耗时了解服务使用情况。</p></header>
                 <div class="status info" style="margin-bottom: 15px;">
                     <strong>📊 调用统计：</strong>按账号（邮箱，含套餐级别）和模型统计 Antigravity 调用量与成功率，支持按日期（北京时间）、账号、模型、套餐筛选，图表联动刷新。
                 </div>
@@ -2912,6 +2477,7 @@
 
             <!-- 调用监控标签页 -->
             <div id="call-monitorTab" class="tab-content">
+                <header class="page-intro"><span class="module-eyebrow">OBSERVABILITY</span><h2>调用监控</h2><p>追踪每次请求，查看账号、密钥与模型的实时表现。</p></header>
                 <div class="cm-toolbar">
                     <div class="cm-views" role="tablist" aria-label="调用监控视图切换">
                         <button type="button" class="cm-chip active" data-view="account"
@@ -2983,10 +2549,11 @@
                     <div class="loading" id="configLoading" role="status">正在加载配置...</div>
                     <div id="configForm" class="hidden">
                         <section id="config-panel-general" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-general" tabindex="0">
-                        <div class="config-group">
+                        <div class="config-group server-settings">
                             <h4>服务器配置</h4>
-
-                            <div class="form-group">
+<div class="server-settings-grid">
+<div>
+<div class="form-group">
                                 <label for="host">服务器主机地址:</label>
                                 <input type="text" id="host" class="config-input"
                                     placeholder="例如: 0.0.0.0, 127.0.0.1" />
@@ -3017,60 +2584,15 @@
                                 <input type="text" id="configPassword" class="config-input" placeholder="留空使用分开的密码设置" />
                                 <small class="config-note">（兼容性保留）仅在对应的独立密码未设置时使用；留空表示不设置通用密码</small>
                             </div>
-                        </div>
-                        <div class="config-group">
-                            <h4>凭证目录</h4>
-
-                            <div class="form-group">
+<div class="form-group">
                                 <label for="credentialsDir">凭证目录路径:</label>
                                 <input type="text" id="credentialsDir" class="config-input" />
                                 <small class="config-note">存储认证文件的目录路径</small>
                             </div>
-
-
-                        </div>
-                        <div class="config-group">
-                            <h4>配置热更新说明</h4>
-
-                            <div class="form-group">
-                                <div class="config-info"
-                                    style="background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724;">
-                                    <strong>🔥 热更新配置（立即生效）：</strong>
-                                    <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                        <li><strong>网络配置：</strong>代理设置、端点配置、HTTP超时时间、最大连接数</li>
-                                        <li><strong>API配置：</strong>凭证轮换次数、错误重试设置、自动封禁配置</li>
-                                        <li><strong>密码配置：</strong>API密码、控制面板密码、通用密码</li>
-                                        <li><strong>功能配置：</strong>抗截断最大重试次数</li>
-                                    </ul>
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <div class="config-info"
-                                    style="background-color: #fff3cd; border: 1px solid #ffc107; color: #856404;">
-                                    <strong>🔄 需要重启的配置：</strong>
-                                    <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
-                                        <li><strong>服务器配置：</strong>主机地址、端口号</li>
-                                        <li><strong>目录配置：</strong>凭证目录路径、Code Assist端点</li>
-                                    </ul>
-                                </div>
-                            </div>
-
-                        </div>
-                        </section>
-                        <section id="config-panel-network" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-network" tabindex="0" hidden>
-                        <div class="config-group">
-                            <h4>全局代理</h4>
-                            <div class="form-group">
-                                <label for="proxy">代理设置:</label>
-                                <input type="text" id="proxy" class="config-input"
-                                    placeholder="例如: http://proxy:11451 或 socks5://proxy:1080" />
-                                <small class="config-note">HTTP/HTTPS/SOCKS5Endpoint，留空表示不使用代理</small>
-                            </div>
-                        </div>
-                        <div class="config-group">
-                            <h4>远程图片内联</h4>
-                            <div class="form-group">
+</div>
+<section class="server-image-settings" aria-label="远程图片内联">
+<h5>远程图片内联</h5>
+<div class="form-group">
                                 <label for="remoteImageInlineMode">内联模式:</label>
                                 <select id="remoteImageInlineMode" class="config-input">
                                     <option value="all">全部内联（默认）：所有第三方图片先下载再转发</option>
@@ -3103,45 +2625,38 @@
                                     直连暴露时开启会让白名单可被伪造。
                                 </small>
                             </div>
+</section>
+</div>
+</div>
+
+                        <div class="config-group">
+                            <h4>配置热更新说明</h4>
+
+                            <div class="form-group">
+                                <div class="config-info"
+                                    style="background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724;">
+                                    <strong>🔥 热更新配置（立即生效）：</strong>
+                                    <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                        <li><strong>网络配置：</strong>代理设置、端点配置、HTTP超时时间、最大连接数</li>
+                                        <li><strong>API配置：</strong>凭证轮换次数、错误重试设置、自动封禁配置</li>
+                                        <li><strong>密码配置：</strong>API密码、控制面板密码、通用密码</li>
+                                        <li><strong>功能配置：</strong>抗截断最大重试次数</li>
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <div class="config-info"
+                                    style="background-color: #fff3cd; border: 1px solid #ffc107; color: #856404;">
+                                    <strong>🔄 需要重启的配置：</strong>
+                                    <ul style="margin: 8px 0; padding-left: 20px; color: #212529;">
+                                        <li><strong>服务器配置：</strong>主机地址、端口号</li>
+                                        <li><strong>目录配置：</strong>凭证目录路径、Code Assist端点</li>
+                                    </ul>
+                                </div>
+                            </div>
+
                         </div>
-                        <section class="config-group proxy-console" aria-labelledby="proxyConsoleTitle">
-                            <div class="proxy-console-head">
-                                <div>
-                                    <span class="proxy-kicker">LIVE NETWORK</span>
-                                    <h4 id="proxyConsoleTitle">代理组与实时导入</h4>
-                                    <p>代理节点写入 主数据库 后立即可用于下一次 Antigravity 请求，无需重启服务。</p>
-                                </div>
-                                <strong id="proxyGroupSummary" class="proxy-summary">正在读取代理组…</strong>
-                            </div>
-                            <div class="proxy-console-grid">
-                                <div class="proxy-editor-card">
-                                    <h5>创建代理组</h5>
-                                    <label>组名称<input id="proxyGroupName" class="config-input" placeholder="例如：香港主线路"></label>
-                                    <label>说明<input id="proxyGroupDescription" class="config-input" placeholder="可选，用于区分用途"></label>
-                                    <label>切换策略<select id="proxyGroupStrategy" class="config-input"><option value="round_robin">轮询</option><option value="failover">故障优先</option><option value="random">随机</option></select></label>
-                                    <label class="proxy-check"><input id="proxyGroupExclusive" type="checkbox" checked> 一账号一节点，强制独立出口与健康检查</label>
-                                    <button type="button" class="proxy-primary-action" onclick="createProxyGroup()">创建代理组</button>
-                                </div>
-                                <div class="proxy-editor-card">
-                                    <h5>实时导入节点</h5>
-                                    <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
-                                    <details>
-                                        <summary>从 PX6 API Key 获取已有代理</summary>
-                                        <p class="config-note">填写 PX6 API Key 读取并导入已有代理。保存到期时间后，请求前会检查并在到期前 24 小时切换到有效备用 IP；没有备用时保留当前 IP 至到期，请及时续费或补充节点。续费或购买后需重新导入。Key 仅用于本次读取，不保存。</p>
-                                        <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
-                                        <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
-                                        <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
-                                        <button id="proxyPX6PreviewButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies()">验证并查看已有 IP</button>
-                                        <button id="proxyPX6ImportButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies(true)">导入目标代理组</button>
-                                        <div id="proxyPX6Result" role="status" aria-live="polite"></div>
-                                    </details>
-                                    <label>代理列表<textarea id="proxyImportContent" class="proxy-textarea" placeholder="可粘贴 Clash YAML、ss:// URI 或每行一个代理：\n- name: 住宅号池2\n  type: ss\n  server: host\n  port: 31002\n  cipher: aes-256-gcm\n  password: pass\nname|socks5://127.0.0.1:7891"></textarea></label>
-                                    <label class="proxy-check"><input id="proxyImportReplace" type="checkbox"> 替换该组已有节点</label>
-                                    <button type="button" class="proxy-secondary-action" onclick="importProxyGroupNodes()">导入并立即生效</button>
-                                </div>
-                            </div>
-                            <div id="proxyGroupList" class="proxy-group-list" role="list" aria-live="polite"></div>
-                        </section>
                         <div class="config-group">
                             <h4>端点配置</h4>
 
@@ -3196,6 +2711,51 @@
                                 <small class="config-note">Google Antigravity API端点地址，用于反重力模式</small>
                             </div>
                         </div>
+
+                        </section>
+                        <section id="config-panel-network" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-network" tabindex="0" hidden>
+
+
+                        <section class="config-group proxy-console" aria-labelledby="proxyConsoleTitle">
+                            <p class="config-note">全局代理入口已关闭，保存配置后清除原全局代理。需要代理的账号请使用代理组或独立代理。</p>
+                            <div class="proxy-console-head">
+                                <div>
+                                    <span class="proxy-kicker">LIVE NETWORK</span>
+                                    <h4 id="proxyConsoleTitle">代理组与实时导入</h4>
+                                    <p>代理节点写入 主数据库 后立即可用于下一次 Antigravity 请求，无需重启服务。</p>
+                                </div>
+                                <strong id="proxyGroupSummary" class="proxy-summary">正在读取代理组…</strong>
+                            </div>
+                            <div class="proxy-console-grid">
+                                <div class="proxy-editor-card">
+                                    <h5>创建代理组</h5>
+                                    <label>组名称<input id="proxyGroupName" class="config-input" placeholder="例如：香港主线路"></label>
+                                    <label>说明<input id="proxyGroupDescription" class="config-input" placeholder="可选，用于区分用途"></label>
+                                    <label>切换策略<select id="proxyGroupStrategy" class="config-input"><option value="round_robin">轮询</option><option value="failover">故障优先</option><option value="random">随机</option></select></label>
+                                    <label class="proxy-check"><input id="proxyGroupExclusive" type="checkbox" checked> 一账号一节点，强制独立出口与健康检查</label>
+                                    <button type="button" class="proxy-primary-action" onclick="createProxyGroup()">创建代理组</button>
+                                </div>
+                                <div class="proxy-editor-card">
+                                    <h5>实时导入节点</h5>
+                                    <label>目标代理组<select id="proxyImportGroupId" class="config-input"><option value="">选择代理组</option></select></label>
+                                    <details>
+                                        <summary>从 PX6 API Key 获取已有代理</summary>
+                                        <p class="config-note">填写 PX6 API Key 读取并导入已有代理。保存到期时间后，请求前会检查并在到期前 24 小时切换到有效备用 IP；没有备用时保留当前 IP 至到期，请及时续费或补充节点。续费或购买后需重新导入。Key 仅用于本次读取，不保存。</p>
+                                        <label>PX6 API Key<input id="proxyPX6ApiKey" class="config-input" type="password" autocomplete="new-password" spellcheck="false" placeholder="填写 PX6 账户中的 API Key"></label>
+                                        <label>连接协议<select id="proxyPX6Protocol" class="config-input"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select></label>
+                                        <label class="proxy-check"><input id="proxyPX6Replace" type="checkbox"> 替换该组已有节点</label>
+                                        <button id="proxyPX6PreviewButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies()">验证并查看已有 IP</button>
+                                        <button id="proxyPX6ImportButton" type="button" class="proxy-secondary-action" onclick="fetchPX6Proxies(true)">导入目标代理组</button>
+                                        <div id="proxyPX6Result" role="status" aria-live="polite"></div>
+                                    </details>
+                                    <label>代理列表<textarea id="proxyImportContent" class="proxy-textarea" placeholder="可粘贴 Clash YAML、ss:// URI 或每行一个代理：\n- name: 住宅号池2\n  type: ss\n  server: host\n  port: 31002\n  cipher: aes-256-gcm\n  password: pass\nname|socks5://127.0.0.1:7891"></textarea></label>
+                                    <label class="proxy-check"><input id="proxyImportReplace" type="checkbox"> 替换该组已有节点</label>
+                                    <button type="button" class="proxy-secondary-action" onclick="importProxyGroupNodes()">导入并立即生效</button>
+                                </div>
+                            </div>
+                            <div id="proxyGroupList" class="proxy-group-list" role="list" aria-live="polite"></div>
+                        </section>
+
                         </section>
                         <section id="config-panel-credentials" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-credentials" tabindex="0" hidden>
                         <div class="config-group">
@@ -3247,8 +2807,9 @@
                         </div>
                         </section>
                         <section id="config-panel-models" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-models" tabindex="0" hidden>
-                        <div class="config-group">
+                        <div class="config-group compatibility-settings">
                             <h4>兼容性配置</h4>
+<div class="compatibility-grid">
 
                             <div class="form-group">
                                 <label>
@@ -3483,9 +3044,8 @@
                                 <small class="config-note">账号某模型剩余额度比例低于该值时本轮不用它（默认 0.05 = 5%）；快照 15 分钟内有效，全部低于阈值时自动回退不避让</small>
                             </div>
 
-                        </div>
-                        <div class="config-group">
-                            <h4>抗截断配置</h4>
+                        <div class="form-group compatibility-truncation">
+                            <h5>输出抗截断</h5>
 
                             <div class="form-group">
                                 <label for="antiTruncationMaxAttempts">抗截断最大重试次数:</label>
@@ -3505,6 +3065,9 @@
                                 </div>
                             </div>
                         </div>
+</div>
+</div>
+
                         </section>
                         <section id="config-panel-content" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-content" tabindex="0" hidden>
                         <div class="config-group">
@@ -3609,8 +3172,7 @@
                                     placeholder="留空则不启用，例如: https://your-app.example.com/keepalive" />
                                 <small class="config-note">配置后服务会定期向该 URL 发送 GET 请求以保持在线；留空则禁用保活 <span
                                         style="color: #28a745;">✓ 支持热更新</span></small>
-                                <button type="button" onclick="autoSetKeepaliveUrl()"
-                                    style="margin-top:6px; padding:4px 12px; font-size:13px; cursor:pointer;">一键设置保活</button>
+                                <button type="button" class="config-action-button" onclick="autoSetKeepaliveUrl()">一键设置保活</button>
                             </div>
 
                             <div class="form-group">
@@ -3806,6 +3368,7 @@
     <!-- 引入公共JavaScript模块 -->
     <script src="./front/common.js?v=rt-multiline-20261127"></script>
 
+    <script src="./front/config_ui.js?v=20261127-spacing"></script>
 </body>
 
 </html>

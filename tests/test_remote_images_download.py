@@ -56,7 +56,8 @@ async def test_rejects_above_image_cap_without_touching_the_network(monkeypatch)
         await remote_images.download_remote_images(urls)
 
     assert str(excinfo.value) == (
-        f"At most {remote_images._MAX_REMOTE_IMAGES} remote images are allowed per request"
+        f"Too many remote image URLs in one request: "
+        f"{remote_images._MAX_REMOTE_IMAGES + 1} > {remote_images._MAX_REMOTE_IMAGES}"
     )
     assert not calls
 

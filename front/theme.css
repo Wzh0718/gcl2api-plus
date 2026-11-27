@@ -1,0 +1,156 @@
+:root {
+    color-scheme: light;
+    --ui-bg: #eaf0f7;
+    --ui-surface: #f9fbfe;
+    --theme-button-border: #94a8c3;
+    --theme-button-ink: #294e80;
+}
+html, body { background: var(--ui-bg); }
+.tabs, .tab-content.active { background: var(--ui-surface); }
+.theme-switch { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--theme-button-border); border-radius: 9px; }
+.console-header .theme-switch button { min-height: 28px; padding: 0 9px; border: 0; border-radius: 5px; box-shadow: none; }
+/* Secondary controls are outlined, without a tinted fill. */
+#mainSection :is(.btn-secondary,.pagination-btn,.action-btn,.filter-btn,.billing-refresh-button,.billing-range-button,.api-key-refresh,.cred-btn,.batch-btn,.download-all-btn,.warmup-button,.message-modal-btn,.cm-chip,.cm-toggle):not(.active),
+#mainSection .tabs .tab:not(.active),
+#mainSection .config-category-tab:not([aria-selected="true"]),
+.console-header .header-button {
+    background: transparent !important;
+    color: var(--theme-button-ink) !important;
+    border-color: var(--theme-button-border) !important;
+    box-shadow: none;
+}
+.console-header .theme-switch button[aria-pressed="true"] { background: #245ab5 !important; color: #fff !important; }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --ui-bg: #16191d; --ui-surface: #1b1e23; --ui-surface-subtle: #23272e; --ui-surface-hover: #2c313a;
+    --ui-ink: #d7dae0; --ui-muted: #abb2bf; --ui-faint: #8b929e;
+    --ui-border: #3e4452; --ui-border-strong: #515866;
+    --ui-accent: #61afef; --ui-accent-strong: #8cc8f7; --ui-accent-soft: #253342; --ui-focus: #61afef80;
+    --ui-success: #98c379; --ui-success-soft: #28362b; --ui-danger: #e06c75; --ui-danger-soft: #3c282d;
+    --ui-warning: #e5c07b; --ui-warning-soft: #383127;
+    --theme-button-border: #515866; --theme-button-ink: #abb2bf;
+}
+html[data-theme="dark"] :is(body,.tab-content,.api-key-shell,dialog) { color: var(--ui-ink) !important; }
+html[data-theme="dark"] :is(.tabs,.tab-content.active,.card,.config-group,.api-key-card,.api-key-create,.api-key-disclosure,.cm-toolbar,.cm-table-wrap,.cm-key-group,.cred-card,.usage-card,.warmup-panel,.warmup-card,.account-usage-card,.stats-kpi,.billing-summary-card,.stats-chart-card,.billing-panel,.stat-item,.file-list,.file-item,.proxy-editor-card,.proxy-group-card,.proxy-node-card,.login-form,dialog,.modal-content,.message-modal,.account-usage-dialog,.cm-request-dialog,.warmup-dialog) {
+    background: var(--ui-surface) !important; color: var(--ui-ink) !important; border-color: var(--ui-border) !important;
+}
+html[data-theme="dark"] :is(h1,h2,h3,h4,h5,legend,label,.config-title,.stat-number,.stats-kpi-value,.billing-kpi-value,.billing-summary-card strong,.api-key-metrics strong,.api-key-overview strong,.cred-filename,.usage-filename,.model-stats-title,.billing-panel-title) { color: var(--ui-ink) !important; }
+html[data-theme="dark"] :is(p,small,.config-note,.module-eyebrow,.api-key-kicker,.api-key-kind,.api-key-card code,.api-key-metrics span,.api-key-overview span,.api-key-result-count,.api-key-batch-toolbar span,.stat-label,.stats-kpi-label,.cm-group-bar,.cred-info,.usage-info,.app-header-context span,.app-header-context strong,.version-info,.navigation-group-label,.tabs-heading > span) { color: var(--ui-muted) !important; }
+html[data-theme="dark"] #mainSection :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { background: #1d1f23 !important; color: var(--ui-ink) !important; border-color: var(--ui-border-strong) !important; }
+html[data-theme="dark"] :is(.api-key-overview,.api-key-limits,#apiKeyBatchPanel,.manage-actions,.filter-container,.model-stats-controls,.model-stats-filters,.modal-header,.message-modal-header,.upload-area,.cm-count,.config-info,#logContainer,pre) { background: var(--ui-surface-subtle) !important; color: var(--ui-muted) !important; border-color: var(--ui-border) !important; }
+html[data-theme="dark"] #mainSection :is(th,td) { border-color: var(--ui-border) !important; color: var(--ui-ink); }
+html[data-theme="dark"] #mainSection th { background: #23272e !important; color: var(--ui-muted); }
+html[data-theme="dark"] #mainSection tbody tr { background: transparent; }
+html[data-theme="dark"] #mainSection tbody tr:hover { background: #2c313a; }
+html[data-theme="dark"] #api-keysTab .api-key-endpoints > div { background: #202b37 !important; border-color: #405468 !important; }
+html[data-theme="dark"] #api-keysTab .api-key-endpoints :is(strong,code) { color: #8cc8f7 !important; }
+html[data-theme="dark"] #api-keysTab .api-key-endpoints code { background: #293c4e !important; }
+html[data-theme="dark"] #mainSection :is(.status.success,.api-key-status.status-active) { background: #28362b !important; color: #98c379 !important; border-color: #465a40 !important; }
+html[data-theme="dark"] #mainSection .status.error { background: #3c282d !important; color: #e06c75 !important; border-color: #75424a !important; }
+html[data-theme="dark"] #mainSection .status.warning { background: #383127 !important; color: #e5c07b !important; border-color: #6a573e !important; }
+html[data-theme="dark"] #mainSection .status.info { background: #253342 !important; color: #8cc8f7 !important; border-color: #405468 !important; }
+html[data-theme="dark"] #mainSection :is(.btn-danger,.btn.danger,.cred-btn.delete,.batch-delete,.api-key-actions .danger),
+html[data-theme="dark"] .console-header .header-button-danger { color: #e06c75 !important; border-color: #97535b !important; background: transparent !important; }
+html[data-theme="dark"] #antigravityTab > .form-group,
+html[data-theme="dark"] #oauthTab > .form-group,
+html[data-theme="dark"] #uploadTab > div:not(.hidden) { background: var(--ui-surface) !important; border-color: var(--ui-border) !important; color: var(--ui-ink) !important; }
+html[data-theme="dark"] .console-header { border-color: var(--ui-border); }
+html[data-theme="dark"] #mainSection :is(.config-group,.card,.cm-toolbar,.cm-table-wrap,.cm-key-group,.stats-kpi,.stats-chart-card,.billing-panel,.billing-stat-list,.billing-primary-stat,.cred-card,.usage-card,.warmup-dashboard,.model-stats-details,.page-intro,.config-toolbar,.config-group h4,.tabs-heading,.navigation-group,.api-key-overview > div) { border-color: var(--ui-border) !important; }
+html[data-theme="dark"] .tabs-heading strong { color: var(--ui-ink); }
+html[data-theme="dark"] .cm-views { background: transparent; gap: 4px; }
+html[data-theme="dark"] :is(.cm-counter,.cm-counter b) { color: var(--ui-muted); }
+html[data-theme="dark"] #api-keysTab .api-key-endpoints { color: #8cc8f7; }
+html[data-theme="dark"] #api-keysTab .api-key-usage-metric .api-key-progress,
+html[data-theme="dark"] .stats-bar-track { background: #343a45; }
+html[data-theme="dark"] #mainSection .cm-chip.active .cm-count { background: #fff; color: #214f9b; }
+html[data-theme="dark"] #mainSection :is(.billing-primary-stat,.billing-stat-list,.billing-overview) { background: var(--ui-surface-subtle) !important; border-color: var(--ui-border) !important; }
+html[data-theme="dark"] :is(.billing-primary-value,.billing-stat-value,.billing-trend-meta strong,.billing-ranking-meta strong) { color: var(--ui-ink) !important; }
+html[data-theme="dark"] :is(.billing-label,.billing-primary-meta,.billing-panel-note,.billing-trend-meta,.billing-ranking-meta) { color: var(--ui-muted) !important; }
+@media (max-width: 600px) {
+    .console-header .app-header-actions { justify-content: flex-start; }
+    .console-header .header-action-divider { display: none; }
+    .console-header .version-info { display: none; }
+}
+
+/* One Dark Pro Night Flat: neutral chrome, restrained blue accents. */
+html[data-theme="dark"] #mainSection :is(.tabs,.tab-content.active) { background: #16191d !important; }
+html[data-theme="dark"] #mainSection :is(.tabs .tab.active,.config-category-tab[aria-selected="true"],.cm-chip.active,.cm-toggle.active,.filter-btn.active,.billing-range-button.active) {
+    background: #2c313a !important; color: #d7dae0 !important; border-color: #61afef !important; box-shadow: inset 3px 0 #61afef;
+}
+html[data-theme="dark"] #mainSection :is(.btn,.refresh-btn,.upload-btn,.auth-btn,.billing-save-button,.api-key-primary) {
+    background: #315e88 !important; border-color: #497ba6 !important; color: #fff !important;
+}
+html[data-theme="dark"] #mainSection button:not(:disabled):hover { border-color: #61afef !important; }
+.theme-switch { gap: 4px; padding: 3px; border-radius: 20px; }
+.console-header .theme-switch button { width: 30px; height: 30px; min-height: 30px; padding: 0; border-radius: 50%; }
+.console-header .theme-switch button svg { width: 17px; height: 17px; }
+html[data-theme="dark"] .console-header .theme-switch button[aria-pressed="true"] { background: #3e4452 !important; color: #e5c07b !important; }
+.console-header .theme-switch button[aria-pressed="false"] { color: var(--ui-muted) !important; }
+
+/* Disclosure surfaces follow the same palette as the charts they accompany. */
+html[data-theme="dark"] #mainSection .model-stats-details {
+    background: var(--ui-surface) !important;
+    color: var(--ui-ink);
+    border-color: var(--ui-border) !important;
+}
+html[data-theme="dark"] #mainSection .model-stats-details summary { color: var(--ui-ink); }
+html[data-theme="dark"] #mainSection .model-stats-details :is(table,thead,tbody) { background: transparent; color: var(--ui-ink); }
+.model-stats-details > summary { padding: 4px 2px; font-weight: 500; }
+.model-stats-details[open] > summary { margin-bottom: 16px; }
+
+/* Light palette: neutral paper surfaces with restrained chrome. */
+:root[data-theme="light"] {
+    --ui-bg: #f1f2f4; --ui-surface: #fcfcfd; --ui-surface-subtle: #f5f6f7;
+    --ui-surface-hover: #eceef2; --ui-ink: #292d35; --ui-muted: #626a77; --ui-faint: #7c8490;
+    --ui-border: #d9dce2; --ui-border-strong: #b8bec9;
+    --theme-button-border: #b8bec9; --theme-button-ink: #424b59;
+}
+html[data-theme="light"] #mainSection :is(.tabs,.tab-content.active) {
+    background: #fcfcfd; border-color: #d9dce2; box-shadow: 0 2px 8px #232a3504;
+}
+html[data-theme="light"] #mainSection :is(.config-group,.card,.cm-toolbar,.cm-table-wrap,.cm-key-group,.stats-kpi,.stats-chart-card,.billing-panel,.billing-stat-list,.billing-primary-stat,.cred-card,.usage-card,.warmup-dashboard,.model-stats-details,.api-key-card) {
+    border-color: #d9dce2 !important;
+    background: #fcfcfd !important;
+    box-shadow: none !important;
+}
+html[data-theme="light"] #mainSection :is(.page-intro,.config-toolbar,.config-group h4,.tabs-heading,.navigation-group,.api-key-overview > div,.billing-header) { border-color: #d9dce2 !important; }
+html[data-theme="light"] #mainSection :is(.api-key-overview,.manage-actions,.filter-container,.model-stats-controls,.model-stats-filters,.billing-primary-stat,.cm-views) { background: #f1f3f5 !important; border-color: #d9dce2 !important; }
+html[data-theme="light"] #mainSection th { background: #f1f3f5 !important; color: #626a77; border-color: #d9dce2 !important; }
+html[data-theme="light"] #mainSection td { border-color: #e1e4e9 !important; }
+html[data-theme="light"] #mainSection :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { border-color: #c9ced7 !important; color: #292d35 !important; }
+html[data-theme="light"] :is(.config-note,.config-group small,.page-intro p,.api-key-result-count,.stat-label,.stats-kpi-label) { color: #69717e !important; }
+html[data-theme="light"] #mainSection :is(.tabs .tab.active,.config-category-tab[aria-selected="true"],.cm-chip.active,.cm-toggle.active) {
+    background: #285eae !important; border-color: #285eae !important; color: #fff !important; box-shadow: none;
+}
+html[data-theme="light"] .console-header { border-color: #d0d5dd; }
+html[data-theme="light"] #mainSection button:not(:disabled):hover { border-color: #557aa9; }
+html[data-theme="light"] #mainSection .model-stats-details summary { color: #424b59; }
+
+/* Audited dynamic views: grouped rows, detail panels, badges and mobile notices. */
+html[data-theme="dark"] #mainSection .cm-table tbody tr:is(.cm-group-row,.cm-group-more) td { background: #23272e !important; }
+html[data-theme="dark"] #mainSection .cm-table tbody tr.cm-group-row:hover td { background: #2c313a !important; }
+html[data-theme="dark"] #mainSection :is(.cm-group-toggle,.cm-key-text,.cm-child-cell,.stats-bar-label,.stats-bar-value,.cred-email,.stat-number),
+html[data-theme="dark"] #uploadTab h4,
+html[data-theme="dark"] #antigravityTab .form-group > div:first-child { color: var(--ui-ink) !important; }
+html[data-theme="dark"] #mainSection :is(.cm-group-btn,.cm-page-btn,.cm-telemetry-link,.proxy-secondary-action) { background: transparent !important; color: var(--theme-button-ink) !important; border: 1px solid var(--theme-button-border); }
+html[data-theme="dark"] #mainSection :is(.cm-group-accounts,.cm-badge-protocol,.cm-badge-transport,.cm-badge-mode,.proxy-policy-badge,.proxy-summary,.billing-empty,.billing-range-picker) { background: var(--ui-surface-subtle) !important; color: var(--ui-muted) !important; border-color: var(--ui-border) !important; }
+html[data-theme="dark"] :is(.stats-bar,.billing-bar) { background: #343a45 !important; }
+html[data-theme="dark"] #mainSection :is(.cm-badge-ok,.cm-code-ok) { background: #28362b !important; color: #98c379 !important; }
+html[data-theme="dark"] #mainSection :is(.cm-badge-fail,.cm-code-error,.api-key-status.status-quota_exhausted,.api-key-status.status-revoked) { background: #3c282d !important; color: #e06c75 !important; }
+html[data-theme="dark"] #mainSection :is(.api-key-status.status-disabled,.api-key-status.status-expired,.tier-ultra) { background: #383127 !important; color: #e5c07b !important; }
+html[data-theme="dark"] #mainSection :is(.cm-rate-ok,.stats-rate-ok) { color: #98c379 !important; }
+html[data-theme="dark"] #mainSection :is(.cm-rate-bad,.stats-rate-bad) { color: #e06c75 !important; }
+html[data-theme="dark"] #mainSection :is([style*="color: #666"],[style*="color:#666"],[style*="color: #495057"],[style*="color: #424242"],[style*="color: #212529"]) { color: var(--ui-muted) !important; }
+html[data-theme="dark"] #mainSection :is([style*="background: #f8f9fa"],[style*="background-color: #f8f9fa"],[style*="background: #fafafa"],[style*="background-color: #fafafa"]) { background: var(--ui-surface-subtle) !important; color: var(--ui-ink) !important; }
+html[data-theme="dark"] #configForm [style*="background-color"],
+html[data-theme="dark"] #configForm [style*="background:"] { background: var(--ui-surface-subtle) !important; color: var(--ui-muted) !important; border-color: var(--ui-border) !important; }
+html[data-theme="dark"] #configForm :is([style*="background-color"],[style*="background:"]) :is(strong,li) { color: inherit !important; }
+html[data-theme="dark"] #antigravity-manageTab strong { color: var(--ui-ink); }
+html[data-theme="dark"] #mainSection [style*="color: #0c5460"],
+html[data-theme="dark"] .stats-donut-legend span,
+html[data-theme="dark"] .message-modal-body { color: var(--ui-ink) !important; }
+html[data-theme="dark"] :is(dialog,.message-modal) :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { background: #1d1f23 !important; color: var(--ui-ink) !important; border-color: var(--ui-border-strong) !important; }
+html[data-theme="dark"] :is(dialog,.message-modal) :is(button.secondary,button[value=cancel],.message-modal-btn,.proxy-dialog-close,.message-modal-close) { background: transparent !important; color: var(--ui-muted) !important; border-color: var(--ui-border-strong) !important; }
+html[data-theme="dark"] :is(.telemetry-notice,.telemetry-facts,.cm-telemetry-event) { background: var(--ui-surface-subtle) !important; border-color: var(--ui-border) !important; color: var(--ui-muted) !important; }
+html[data-theme="dark"] :is(.telemetry-notice strong,.telemetry-facts dd) { color: var(--ui-ink) !important; }
+html[data-theme="dark"] .stats-donut circle[stroke="#e9ecef"] { stroke: #343a45; }
