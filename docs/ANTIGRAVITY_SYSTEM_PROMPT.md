@@ -115,6 +115,43 @@ schema 的 `type` 改成大写枚举、数值约束改成字符串（`"minLength
 关闭时请求逐字节不变。规则、各家顺序表与识别逻辑见 `src/converter/tool_alignment.py`，
 用例见 `tests/test_tool_alignment.py`。
 
+## 客户端身份归一化（默认开启）
+
+面板键 `antigravity_client_identity_normalization_enabled`，环境变量
+`ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION`。开启后，在敏感词过滤之后、注入写回之前，
+对客户端 system 做三处改写：
+
+| 原文 | 改写后 |
+| --- | --- |
+| `You are [an] [AI] agent powered by <品牌>.`（part 开头） | `You are a coding assistant.` |
+| `operating inside/within <品牌>` | `operating inside the host application` |
+| `# Runtime Context` / `# Tool Specifications`（同一 part 内） | `# Environment` / `# Tools` |
+
+身份句只在 part 开头匹配，正文里引用同句式不改；标题只在命中身份句的 part 内改写。
+业务正文、工具说明、路径和输出约定逐字节保留；未命中时返回原对象，请求完全不变。
+实现见 `src/converter/client_identity.py`，用例见 `tests/test_client_identity.py`。
+
+内置词库同时补了 `DeepSeek Harness` / `DSH Agent` / `DSH`（统一替换为 `Antigravity`），
+两层叠加：词库先换品牌，归一化再把句式收成中性句。
+
+### 实测依据（2026-11-27，free 号池）
+
+同一把 key、同一账号、`gemini-2.5-flash-lite`，每个臂只改一个维度：
+
+| 变量 | 结果 |
+| --- | --- |
+| codex / Claude Code / ChatGPT / Gemini CLI / 中性 persona | 200 |
+| `You are an AI agent powered by DeepSeek Harness.` | **429 `RESOURCE_EXHAUSTED`** |
+| 同句品牌换成 Antigravity / OpenAI / Google / DSH | 200 |
+| 单独一行 `DeepSeek Harness`，或 `You are DeepSeek, …` | 200 |
+| `# Runtime Context`、`# Tool Specifications` 标题 | 200 |
+| 16 个非官方 DSH 工具名 | 200 |
+
+即判据是 `[you are …] powered by … DeepSeek Harness` 这条身份声明本身（大小写不敏感），
+与工具集、markdown 标题无关。加规则或开启本功能后，同一批请求全部转为 200。
+复现与消融脚本见 `scripts/diagnose_client_fingerprint.py`，报告见
+`reports/dsh-429-identity-2026-11-27.md`。
+
 ## 与其他配置的关系
 
 - 在协议转换后执行；OpenAI Chat/Responses、Anthropic Messages、Gemini 的生成请求共享规范化入口，流式与非流式使用相同转换。
@@ -122,4 +159,5 @@ schema 的 `type` 改成大写枚举、数值约束改成字符串（`"minLength
 - 原有全局 `system_prompt_append` 在本功能后执行：仅当原始客户端 system 含非空文本时，前置到最终 system 第一个文本 part；不随客户端 system 转移。仅角色转换、最终无 system 时，旧前置功能仍不主动创建 system。
 - 原有全局兼容模式可能在协议转换阶段已将 system 改为 user；本功能不会再将这些 user 消息挪动或重复包装。需要本功能的明确指导包装时，关闭全局兼容模式。
 - 角色转换不改工具名称、参数和调用结果顺序；原有协议规范化仍执行。
-- 基础提示注入默认开启（用户方要求）；它仍是提示词兼容选项，不构成对 429 或账号停用的解决方案，也不能替代出口、负载和凭证层面的治理。
+- 基础提示注入默认开启（用户方要求）；它是提示词兼容选项，不构成对账号停用的解决方案，也不能替代出口、负载和凭证层面的治理。
+- 与其他提示词选项不同，身份归一化对「第三方 harness 身份句触发的 429」是已实测的确定性修复（见上节）；对配额型、并发型 429 无效。
