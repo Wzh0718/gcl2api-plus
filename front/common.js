@@ -4250,7 +4250,7 @@ function _cmModelCell(row) {
     const fellBack = requested !== executed;
     const normalized = !!upstream && upstream !== executed;
     if (!fellBack && !normalized) {
-        return `<td title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</td>`;
+        return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(executed)}">${_cmEscape(executed) || '-'}</div></td>`;
     }
 
     const segments = [_cmEscape(requested) || '-'];
@@ -4263,7 +4263,7 @@ function _cmModelCell(row) {
         segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
         tips.push(`上游物理: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`);
     }
-    return `<td title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</td>`;
+    return `<td>${_cmRequestModeCell(row)}<div class="cm-model-name" title="${_cmEscape(tips.join('\n'))}">${segments.join(' → ')}</div></td>`;
 }
 
 function _cmRequestModeCell(row) {
@@ -4276,7 +4276,7 @@ function _cmRequestModeCell(row) {
     const modeLabels = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
     const tags = [`<span class="cm-badge cm-badge-protocol">${_cmEscape(protocolLabels[protocol] || protocol)}</span>`];
     if (transport) tags.push(`<span class="cm-badge cm-badge-transport">${transport === 'stream' ? '流式' : '非流式'}</span>`);
-    if (mode) tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
+    if (mode && mode !== 'normal') tags.push(`<span class="cm-badge cm-badge-mode">${_cmEscape(modeLabels[mode] || mode)}</span>`);
     return `<div class="cm-mode-tags">${tags.join(' ')}</div>`;
 }
 
@@ -4753,7 +4753,6 @@ function _cmRenderRealtime(records) {
         return `<tr>
             <td class="cm-key-cell" title="API Key ID: ${_cmEscape(row.api_key_id)}">${_cmEscape(row.api_key_name || '未命名密钥')}</td>
             ${_cmModelCell(row)}
-            <td>${_cmRequestModeCell(row)}</td>
             <td>${taskService}</td>
             <td>${retry?.status ?? _cmStatusCodeChip(row.status_code, row.request_features?.rate_limit ?? null)}</td>
             <td>${statusCell}</td>
@@ -4769,7 +4768,7 @@ function _cmRenderRealtime(records) {
     }).join('');
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
-            <th>密钥名称</th><th>模型</th><th>协议 / 模式</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
+            <th>密钥名称</th><th>模型 / 协议</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
             <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>遥测</th><th>请求详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -7655,9 +7654,10 @@ function renderBillingRanking(items, nameKey, currency) {
     return items.map((item, index) => {
         const tokens = Number(item.total_tokens) || 0;
         const width = Math.max(3, Math.round(tokens / maxTokens * 100));
+        const name = nameKey === 'credential_name' ? (item.user_email?.trim() || item.credential_name) : item[nameKey];
         return `<div class="billing-ranking-row">
-            <div class="billing-ranking-meta"><strong>${index + 1}. ${escapeHtml(item[nameKey])}</strong><span>${formatBillingNumber(tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, currency))}</span></div>
-            <div class="billing-bar" role="img" aria-label="${escapeHtml(item[nameKey])} ${formatBillingNumber(tokens)} tokens"><span style="width:${width}%"></span></div>
+            <div class="billing-ranking-meta"><strong>${index + 1}. ${escapeHtml(name)}</strong><span>${formatBillingNumber(tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, currency))}</span></div>
+            <div class="billing-bar" role="img" aria-label="${escapeHtml(name)} ${formatBillingNumber(tokens)} tokens"><span style="width:${width}%"></span></div>
         </div>`;
     }).join('');
 }
@@ -7800,7 +7800,7 @@ async function loadBillingDashboard({ includePricing = true, silent = false } = 
             );
         } else {
             document.getElementById('billingTrend').innerHTML = quotaPeriodView ? quotaDetailMessage : ((summary.daily_trend || []).map(item => `<div>${escapeHtml(item.billing_date)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, billingCurrency))}</div>`).join('') || '暂无数据');
-            document.getElementById('billingAccounts').innerHTML = quotaPeriodView ? quotaDetailMessage : ((accounts.items || []).map(item => `<div>${escapeHtml(item.credential_name)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
+            document.getElementById('billingAccounts').innerHTML = quotaPeriodView ? quotaDetailMessage : ((accounts.items || []).map(item => `<div>${escapeHtml(item.user_email?.trim() || item.credential_name)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
             document.getElementById('billingModels').innerHTML = quotaPeriodView ? quotaDetailMessage : ((models.items || []).map(item => `<div>${escapeHtml(item.model)}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据');
             document.getElementById('billingKeys').innerHTML = (keys.items || []).map(item => `<div>${escapeHtml(apiKeyName(item.api_key_id))}: ${formatBillingNumber(item.total_tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, item.currency))}</div>`).join('') || '暂无数据';
         }
