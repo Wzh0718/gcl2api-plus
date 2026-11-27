@@ -3817,7 +3817,8 @@ function _cmRateLimitText(attribution) {
     const matched = Array.isArray(attribution.rules)
         ? attribution.rules.map(rule => rules[rule]).filter(Boolean)
         : [];
-    return { label, detail: matched.length ? `${label} · ${matched.join('、')}达限` : label };
+    const recovery = attribution.reset_at ? ` · ${_cmFormatTime(attribution.reset_at)} 恢复` : '';
+    return { label: `${label}${recovery}`, detail: matched.length ? `${label} · ${matched.join('、')}达限${recovery}` : `${label}${recovery}` };
 }
 
 function _cmStatusCodeChip(code, rateLimit) {

@@ -161,7 +161,41 @@ async def test_real_request_paths_persist_retry_after_cooldown(
     billed = record.await_args.kwargs
     assert billed["status_code"] == 429
     assert billed["credential_name"] == "account.json"
-    assert billed["rate_limit"].as_dict() == {"source": "upstream", "reason": attribution}
-    manager.get_valid_credential.assert_awaited_once()
+    rate_limit = billed["rate_limit"].as_dict()
+    assert rate_limit["source"] == "upstream"
+    assert rate_limit["reason"] == attribution
+    # 所有 429 出口都把恢复时刻一并落库（图片、流式、非流式一致）
+    assert rate_limit["reset_at"] == NOW + 180
+    if transport == "image":
+        # 429 改为可换号重试：单账号池第二次选号发现已尝试过才终止
+        assert manager.get_valid_credential.await_count == 2
+    else:
+        manager.get_valid_credential.assert_awaited_once()
     assert errors.await_count == 1
     assert errors.await_args.args[3] == NOW + 180
+
+
+def test_rate_limit_dict_carries_reset_deadline():
+    from src.rate_limits import RateLimit, with_reset_at
+
+    base = RateLimit("upstream", "quota_exhausted")
+    assert base.as_dict() == {"source": "upstream", "reason": "quota_exhausted"}
+    attached = with_reset_at(base, NOW + 128 * 3600)
+    assert attached.as_dict() == {
+        "source": "upstream",
+        "reason": "quota_exhausted",
+        "reset_at": round(NOW + 128 * 3600, 3),
+    }
+    # 无 deadline 时保持原样，不写入假的时间
+    assert with_reset_at(base, None) is base
+    assert with_reset_at(None, NOW) is None
+
+
+def test_retry_after_seconds_from_deadline():
+    from src.rate_limits import retry_after_seconds
+
+    assert retry_after_seconds(NOW + 120, now=NOW) == "120"
+    assert retry_after_seconds(NOW + 0.4, now=NOW) == "1"   # 至少 1 秒
+    assert retry_after_seconds(NOW - 10, now=NOW) == "1"    # 过期也只是 1 秒
+    assert retry_after_seconds(None) is None
+    assert retry_after_seconds(float("inf"), now=NOW) is None
