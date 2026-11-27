@@ -12,7 +12,8 @@ import pytest
 FRONT = Path(__file__).resolve().parents[1] / "front"
 REPLAY = """
 window.onload = () => {};
-(async () => {
+document.addEventListener('DOMContentLoaded', async () => {
+try {
     const lowKey = 'antigravity_pacing_min_interval_seconds';
     const highKey = 'antigravity_pacing_max_interval_seconds';
     const low = document.getElementById('antigravityPacingMinIntervalSeconds');
@@ -27,6 +28,9 @@ window.onload = () => {};
     window.fetch = async (url, options) => {
         if (options?.method === 'POST') {
             const saved = JSON.parse(options.body).config;
+            // Match /config/save normalization before /config/get reads it back.
+            saved.text_account_retry_status_codes = saved.text_account_retry_status_codes
+                .split(',').map(value => Number(value.trim()));
             writes.push(saved);
             values = {...values, ...saved};
             return new Response(JSON.stringify({saved_config: saved}));
@@ -52,7 +56,7 @@ window.onload = () => {};
         tab.classList.remove('active'); tab.style.display = 'none';
     });
     const tab = low.closest('.tab-content');
-    tab.classList.add('active'); tab.style.display = 'block';
+    tab.classList.add('active'); tab.style.removeProperty('display');
     switchConfigTab('models');
     ttft.value = '1.5';
     await saveConfig();
@@ -67,7 +71,8 @@ window.onload = () => {};
     values = {...values, [lowKey]: 2, [highKey]: 10};
     await loadConfig();
     await document.fonts.ready;
-    low.closest('.form-group').previousElementSibling.scrollIntoView({block: 'start', behavior: 'instant'});
+    window.revealCompatibilityField?.(low);
+    low.scrollIntoView({block: 'center', behavior: 'instant'});
     snapshot.labels = [low, high].map(field => document.querySelector(`label[for="${field.id}"]`).textContent);
     snapshot.visible = [low, high, ttft].every(field => field.getBoundingClientRect().height > 0);
     snapshot.controlsFit = [low, high, ttft].every(field => {
@@ -76,7 +81,10 @@ window.onload = () => {};
     });
     snapshot.viewport = innerWidth;
     document.getElementById('test-result').textContent = JSON.stringify(snapshot);
-})().catch(error => document.getElementById('test-result').textContent = String(error.stack));
+} catch (error) {
+    document.getElementById('test-result').textContent = String(error.stack);
+}
+});
 """
 
 
