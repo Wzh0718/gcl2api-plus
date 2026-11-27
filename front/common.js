@@ -2560,19 +2560,139 @@ function readApiKeyLimits(container) {
     return limits;
 }
 
+function openApiKeyCreate() {
+    const panel = document.getElementById('apiKeyCreatePanel');
+    if (!panel.open) panel.showModal();
+    document.getElementById('apiKeyCreateName').focus();
+}
+
+function toggleApiKeyPanel(button) {
+    let panel = document.getElementById(button.getAttribute('aria-controls'));
+    if (!panel) return;
+    if (panel.tagName !== 'DIALOG') {
+        const dialog = document.createElement('dialog');
+        dialog.id = panel.id;
+        dialog.className = 'api-key-settings-dialog';
+        dialog.setAttribute('aria-label', panel.id === 'apiKeyBatchPanel' ? '批量限流设置' : '管理密钥设置');
+        const heading = document.createElement('div');
+        heading.className = 'api-key-panel-heading';
+        const title = document.createElement('h3');
+        title.textContent = panel.id === 'apiKeyBatchPanel' ? '批量限流设置' : '管理密钥设置';
+        const close = document.createElement('button');
+        close.type = 'button'; close.className = 'api-key-refresh'; close.textContent = '关闭';
+        close.addEventListener('click', () => dialog.close());
+        heading.append(title, close);
+        dialog.append(heading, ...panel.childNodes);
+        const status = document.createElement('p'); status.className = 'api-key-dialog-feedback'; status.setAttribute('role', 'status');
+        dialog.append(status);
+        panel.replaceWith(dialog); panel = dialog;
+        panel.addEventListener('close', () => { button.setAttribute('aria-expanded', 'false'); if (button.isConnected) button.focus(); });
+    }
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.setAttribute('aria-expanded', 'true');
+    if (!panel.open) panel.showModal();
+}
+
+function apiKeyDialogFeedback(container, message, error = false) {
+    const dialog = container?.closest('dialog') || container?.querySelector('dialog[open]');
+    const status = dialog?.querySelector('.api-key-dialog-feedback');
+    if (status) { status.textContent = message; status.dataset.error = String(error); }
+}
+
+let apiKeySearchTimer;
+let apiKeySearchRequest;
+let apiKeySearchVersion = 0;
+
+function clearApiKeyFilters() {
+    document.getElementById('apiKeySearch').value = '';
+    document.getElementById('apiKeyStatusFilter').value = '';
+    filterApiKeys();
+}
+
+function apiKeyMatches(item, query, status) {
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const account = (AppState.apiKeyAccounts || []).find(a => a.filename === item.claude_credential_name);
+    const text = [item.name, item.key_prefix, `gcli_${item.key_prefix}_`, item.claude_credential_name,
+        account?.email, item.allowed_model].filter(Boolean).join(' ').toLocaleLowerCase();
+    return (!status || item.effective_status === status) && terms.every(term => text.includes(term));
+}
+
+function filterApiKeys() {
+    clearTimeout(apiKeySearchTimer);
+    apiKeySearchRequest?.abort();
+    const version = ++apiKeySearchVersion;
+    const query = (document.getElementById('apiKeySearch')?.value || '').trim();
+    const status = document.getElementById('apiKeyStatusFilter')?.value || '';
+    // A pasted full key is verified server-side; its prefix alone is not proof of a match.
+    if (/^gcli_[^_]+_.+$/.test(query)) {
+        applyApiKeyFilter(() => false, '正在精确检索完整密钥…');
+        apiKeySearchTimer = setTimeout(async () => {
+            const controller = new AbortController();
+            apiKeySearchRequest = controller;
+            try {
+                const response = await fetch('./api-keys/lookup', {
+                    method: 'POST', headers: {...getAuthHeaders(), 'Content-Type': 'application/json'},
+                    body: JSON.stringify({api_key: query}), signal: controller.signal, cache: 'no-store'
+                });
+                const result = await readJsonResponse(response, '完整密钥检索失败');
+                if (version !== apiKeySearchVersion) return;
+                applyApiKeyFilter(item => item.id === result.id && (!status || item.effective_status === status));
+            } catch (error) {
+                if (version !== apiKeySearchVersion || error.name === 'AbortError') return;
+                applyApiKeyFilter(() => false, '完整密钥检索失败，请重试。');
+            }
+        }, 250);
+        return;
+    }
+    applyApiKeyFilter(item => apiKeyMatches(item, query, status));
+}
+
+function applyApiKeyFilter(matches, message = '') {
+    let visible = 0;
+    for (const item of (AppState.apiKeyDirectoryItems || [])) {
+        const card = document.getElementById(`api-key-card-${item.id}`);
+        if (!card) continue;
+        card.hidden = !matches(item);
+        if (!card.hidden) visible++;
+        else {
+            const checkbox = card.querySelector('[data-select-key]');
+            if (checkbox) checkbox.checked = false;
+        }
+    }
+    const count = document.getElementById('apiKeyResultCount');
+    if (count) count.textContent = message || `显示 ${visible} / ${(AppState.apiKeyDirectoryItems || []).length} 把密钥`;
+    const empty = document.getElementById('apiKeyNoResults');
+    if (empty) empty.hidden = visible > 0 || !!message;
+    updateApiKeySelection();
+}
+
+async function fetchAllApiKeys() {
+    const items = new Map();
+    let page = 1;
+    while (true) {
+        const response = await fetch(`./api-keys?page_size=100&page=${page}`, {headers: getAuthHeaders()});
+        const data = await readJsonResponse(response, '加载密钥失败');
+        for (const item of (data.items || [])) items.set(item.id, item);
+        if (!data.items?.length || page * 100 >= data.total || data.items.length < 100) break;
+        page++;
+    }
+    return {items: [...items.values()]};
+}
+
 function updateApiKeySelection() {
-    const choices = Array.from(document.querySelectorAll('#apiKeyList [data-select-key]'));
+    const choices = Array.from(document.querySelectorAll('#apiKeyList article:not([hidden]) [data-select-key]'));
     const count = choices.filter(input => input.checked).length;
     const batch = document.getElementById('apiKeyBatch');
-    batch.querySelector('[data-selected-count]').textContent = `已选 ${count} 把密钥`;
-    batch.querySelector('button').disabled = count === 0;
+    if (!batch) return;
+    batch.querySelector('[data-selected-count]').textContent = `已选 ${count} 把密钥${count > 100 ? '，每次最多选择 100 把' : ''}`;
+    batch.querySelector('button').disabled = count === 0 || count > 100;
     const all = batch.querySelector('[data-select-all]');
     all.checked = choices.length > 0 && count === choices.length;
     all.indeterminate = count > 0 && count < choices.length;
 }
 
 function selectAllApiKeys(checked) {
-    document.querySelectorAll('#apiKeyList [data-select-key]').forEach(input => { input.checked = checked; });
+    document.querySelectorAll('#apiKeyList article:not([hidden]) [data-select-key]').forEach((input, index) => { input.checked = checked && index < 100; });
     updateApiKeySelection();
 }
 
@@ -2580,8 +2700,9 @@ async function saveBatchKeyLimits(button) {
     const keyIds = Array.from(document.querySelectorAll('#apiKeyList [data-select-key]:checked'), input => input.value);
     const batch = button.closest('fieldset[data-batch]');
     const limits = readApiKeyLimits(batch);
-    if (!keyIds.length || !limits) return;
+    if (!keyIds.length || keyIds.length > 100 || !limits) return;
     batch.disabled = true;
+    apiKeyDialogFeedback(batch, '正在保存…');
     try {
         const response = await fetch('./api-keys/batch-limits', {
             method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
@@ -2591,6 +2712,7 @@ async function saveBatchKeyLimits(button) {
         showStatus(`已保存 ${result.updated} 把密钥的限流设置`, 'success');
         await loadApiKeys({silent: true});
     } catch (error) {
+        apiKeyDialogFeedback(batch, `保存失败：${error.message}`, true);
         showStatus(`批量保存失败: ${error.message}`, 'error');
     } finally {
         batch.disabled = false;
@@ -2600,16 +2722,23 @@ async function saveBatchKeyLimits(button) {
 function renderApiKeys(items) {
     const list = document.getElementById('apiKeyList');
     if (!list) return;
-    if (!items.length) {
-        list.innerHTML = '<div class="api-key-empty">暂无密钥，创建后即可分发给 Antigravity 调用方。</div>';
-        return;
-    }
+    AppState.apiKeyDirectoryItems = items;
+    const overview = document.getElementById('apiKeyOverview');
+    if (overview) overview.innerHTML = [
+        ['密钥总数', items.length],
+        ['可用', items.filter(item => item.effective_status === 'active').length],
+        ['需关注', items.filter(item => ['expired', 'quota_exhausted'].includes(item.effective_status)).length],
+        ['已停用 / 吊销', items.filter(item => ['disabled', 'revoked'].includes(item.effective_status)).length]
+    ].map(([label, count]) => `<div><span>${label}</span><strong>${count}</strong></div>`).join('');
     const editableKey = items.find(item => item.kind === 'managed' && item.status !== 'revoked');
-    const batch = editableKey ? `<fieldset id="apiKeyBatch" data-batch class="api-key-card"><legend>批量设置</legend>
-        <label><input type="checkbox" data-select-all onchange="selectAllApiKeys(this.checked)"> 全选列表中的可编辑密钥</label>
+    const batch = editableKey ? `<div class="api-key-batch"><div class="api-key-batch-toolbar"><button type="button" class="api-key-refresh" aria-expanded="false" aria-controls="apiKeyBatchPanel" onclick="toggleApiKeyPanel(this)">批量限流设置</button><span>仅对勾选的密钥生效 · 每次最多 100 把</span></div><div id="apiKeyBatchPanel" hidden><fieldset id="apiKeyBatch" data-batch class="api-key-card"><legend>批量设置</legend>
+        <label><input type="checkbox" data-select-all onchange="selectAllApiKeys(this.checked)"> 选择当前结果（最多 100 把）</label>
         ${apiKeyLimitEditor({limit_enabled: true, limit_schedule: editableKey.limit_schedule}, '批量密钥级限流')}
         <div class="api-key-actions"><button type="button" class="api-key-primary" disabled onclick="saveBatchKeyLimits(this)">保存到所选密钥</button>
-        <span data-selected-count aria-live="polite">已选 0 把密钥</span></div></fieldset>` : '';
+        <span data-selected-count aria-live="polite">已选 0 把密钥</span></div></fieldset></div></div>` : '';
+    const activeDialog = list.querySelector('dialog[open]');
+    const returnControl = activeDialog?.id;
+    activeDialog?.close();
     list.innerHTML = batch + items.map(item => {
         const managed = item.kind === 'managed';
         const editable = managed && item.status !== 'revoked';
@@ -2622,24 +2751,24 @@ function renderApiKeys(items) {
         return `<article class="api-key-card" id="api-key-card-${escapeHtml(item.id)}">
             <div class="api-key-card-head">
                 <div>
-                    <span class="api-key-kind">${managed ? 'MANAGED KEY' : 'LEGACY KEY'}</span>
+                    <span class="api-key-kind">${managed ? '独立密钥' : '环境密钥 · 只读'}</span>
                     <h3>${editable ? `<label><input type="checkbox" data-select-key value="${escapeHtml(item.id)}" onchange="updateApiKeySelection()"> ${escapeHtml(item.name)}</label>` : escapeHtml(item.name)}</h3>
                     <code>${escapeHtml(prefix)}</code>
                 </div>
-                <span class="api-key-status status-${escapeHtml(item.effective_status)}">${escapeHtml(apiKeyStatusLabel(item.effective_status))}</span>
             </div>
+                <span class="api-key-status status-${escapeHtml(item.effective_status)}">${escapeHtml(apiKeyStatusLabel(item.effective_status))}</span>
             <div class="api-key-metrics">
                 <div class="api-key-usage-metric">
                     <span>已用额度</span>
                     <strong>${escapeHtml(formatBillingNumber(item.quota_tokens_used))} Tokens</strong>
                     <small>花费 ${escapeHtml(formatApiKeyAmount(item.quota_used, item.currency))}</small>
+            ${limit === null ? '' : `<div class="api-key-progress" aria-label="额度使用 ${Math.round(percent)}%"><span style="width:${percent}%"></span></div>`}
                 </div>
                 <div><span>剩余额度</span><strong>${escapeHtml(formatApiKeyAmount(item.quota_remaining, item.currency))}</strong></div>
                 <div><span>重置策略</span><strong>${escapeHtml(resetText)}</strong></div>
                 <div><span>到期时间</span><strong>${escapeHtml(formatApiKeyDate(item.expires_at))}</strong></div>
             </div>
-            ${limit === null ? '' : `<div class="api-key-progress" aria-label="额度使用 ${Math.round(percent)}%"><span style="width:${percent}%"></span></div>`}
-            ${editable ? `<div class="api-key-editor">
+            ${editable ? `<div class="api-key-quick-actions"><button type="button" class="api-key-refresh api-key-toggle" onclick="setApiKeyEnabled('${escapeHtml(item.id)}', ${item.status !== 'disabled'})">${item.status === 'disabled' ? '启用' : '停用'}</button><button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button><button type="button" class="api-key-refresh" aria-expanded="false" aria-controls="api-key-settings-${escapeHtml(item.id)}" onclick="toggleApiKeyPanel(this)">管理设置</button></div><div id="api-key-settings-${escapeHtml(item.id)}" class="api-key-settings" hidden><div class="api-key-editor">
                 <label>名称<input data-field="name" type="text" maxlength="100" value="${escapeHtml(item.name)}"></label>
                 <label>金额额度（${escapeHtml(item.currency)}）<input data-field="quota_amount" type="number" min="0" step="0.01" value="${quotaAmount === null ? '' : escapeHtml(quotaAmount)}" placeholder="留空为不限额"></label>
                 <label>重置方式<select data-field="reset_mode"><option value="manual"${item.reset_mode === 'manual' ? ' selected' : ''}>手动重置</option><option value="monthly"${item.reset_mode === 'monthly' ? ' selected' : ''}>每月重置</option></select></label>
@@ -2650,25 +2779,26 @@ function renderApiKeys(items) {
             </div>
             ${apiKeyLimitEditor(item, '密钥级限流')}
             <div class="api-key-actions">
-                <button type="button" class="api-key-primary" onclick="copyApiKey('${escapeHtml(item.id)}', this)"${item.secret_available ? '' : ' disabled title="旧密钥未保存可恢复密文"'}>${item.secret_available ? '复制密钥' : '旧密钥不可恢复'}</button>
                 <button type="button" class="api-key-primary" onclick="saveApiKey('${escapeHtml(item.id)}')">保存设置</button>
-                <button type="button" onclick="setApiKeyEnabled('${escapeHtml(item.id)}', ${item.status !== 'disabled'})">${item.status === 'disabled' ? '启用' : '停用'}</button>
                 ${item.reset_mode === 'manual' ? `<button type="button" onclick="resetApiKeyQuota('${escapeHtml(item.id)}')">重置额度</button>` : ''}
                 <button type="button" class="danger" onclick="revokeApiKey('${escapeHtml(item.id)}')">吊销</button>
-            </div>` : `<p class="api-key-readonly">${managed ? '该密钥已吊销，仅保留历史账单。' : '环境配置密钥继续兼容原有调用，只读且不受额度限制。'}</p>`}
+            </div></div>` : `<p class="api-key-readonly">${managed ? '该密钥已吊销，仅保留历史账单。' : '环境配置密钥继续兼容原有调用，只读且不受额度限制。'}</p>`}
         </article>`;
-    }).join('');
+    }).join('') + `<div id="apiKeyNoResults" class="api-key-empty" hidden><strong>${items.length ? '没有匹配的密钥' : '创建第一把密钥'}</strong><p>${items.length ? '试试其他关键词，或清除状态筛选。' : '为每个调用方分配独立密钥，分别管理额度与权限。'}</p></div>`;
+    filterApiKeys();
+    if (returnControl) [...list.querySelectorAll('[aria-controls]')].find(button => button.getAttribute('aria-controls') === returnControl)?.focus();
 }
 
 async function loadApiKeys({ silent = false } = {}) {
     if (AppState.apiKeysLoading) return;
     AppState.apiKeysLoading = true;
+    const refresh = document.querySelector('#api-keysTab .api-key-refresh');
+    if (refresh) refresh.disabled = true;
     const list = document.getElementById('apiKeyList');
     if (list && !silent) list.innerHTML = '<div class="api-key-empty">正在加载密钥…</div>';
     try {
         const [data] = await Promise.all([
-            fetch('./api-keys?page_size=100', { headers: getAuthHeaders() })
-                .then(response => readJsonResponse(response, '加载密钥失败')),
+            fetchAllApiKeys(),
             loadApiKeyAccounts(),
             loadApiKeyPolicyModels()
         ]);
@@ -2680,6 +2810,7 @@ async function loadApiKeys({ silent = false } = {}) {
         if (!silent) showStatus(`密钥加载失败: ${error.message}`, 'error');
     } finally {
         AppState.apiKeysLoading = false;
+        if (refresh) refresh.disabled = false;
     }
 }
 
@@ -2702,6 +2833,11 @@ async function createApiKey(event) {
         prompt_fusion_mode: document.getElementById('apiKeyCreateFusionMode')?.value || 'inherit',
         allowed_model: document.getElementById('apiKeyCreateAllowedModel')?.value || ''
     };
+    const submit = document.querySelector('#apiKeyCreateForm button[type=submit]');
+    if (submit?.disabled) return false;
+    if (submit) { submit.disabled = true; submit.textContent = '创建中…'; }
+    const feedback = document.getElementById('apiKeyCreateFeedback');
+    if (feedback) feedback.textContent = '';
     try {
         const response = await fetch('./api-keys', {
             method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
@@ -2709,10 +2845,14 @@ async function createApiKey(event) {
         });
         await readJsonResponse(response, '创建密钥失败');
         document.getElementById('apiKeyCreateForm')?.reset();
+        document.getElementById('apiKeyCreatePanel').close();
         showStatus('密钥已创建，可随时在列表中复制', 'success');
         await loadApiKeys({ silent: true });
     } catch (error) {
+        if (feedback) feedback.textContent = `创建密钥失败：${error.message}`;
         showStatus(`创建密钥失败: ${error.message}`, 'error');
+    } finally {
+        if (submit) { submit.disabled = false; submit.textContent = '创建密钥'; }
     }
     return false;
 }
@@ -2849,10 +2989,14 @@ async function patchApiKey(apiKeyId, payload, successMessage) {
 async function saveApiKey(apiKeyId) {
     const card = document.getElementById(`api-key-card-${apiKeyId}`);
     if (!card) return;
+    if (card.dataset.saving === 'true') return;
     const quotaValue = card.querySelector('[data-field="quota_amount"]')?.value.trim() || '';
     try {
         const limits = readApiKeyLimits(card);
         if (!limits) return;
+        card.dataset.saving = 'true';
+        apiKeyDialogFeedback(card, '正在保存…');
+        card.querySelectorAll('dialog .api-key-actions button').forEach(button => button.disabled = true);
         await patchApiKey(apiKeyId, {
             ...limits,
             name: card.querySelector('[data-field="name"]')?.value.trim(),
@@ -2864,7 +3008,11 @@ async function saveApiKey(apiKeyId) {
             allowed_model: card.querySelector('[data-field="allowed_model"]')?.value || ''
         }, '密钥设置已保存');
     } catch (error) {
+        apiKeyDialogFeedback(card, `保存失败：${error.message}`, true);
         showStatus(`保存失败: ${error.message}`, 'error');
+    } finally {
+        delete card.dataset.saving;
+        card.querySelectorAll('dialog .api-key-actions button').forEach(button => button.disabled = false);
     }
 }
 
@@ -4769,7 +4917,7 @@ function _aggregateStatsRows(rows, keyFn, initFn) {
 
 // 只统计 Antigravity 模式
 const statsTabState = {
-    mode: 'antigravity', date: '', credential: '', model: '', tier: '', rawStats: [],
+    mode: 'antigravity', date: null, credential: '', model: '', tier: '', rawStats: [],
     autoRefresh: true, detailsOpen: false, lastUpdated: null
 };
 
@@ -4990,6 +5138,10 @@ function renderStatsView() {
 async function loadModelStatsTab(options = {}) {
     const section = document.getElementById('modelStatsTabContent');
     if (!section) return;
+    // 首次打开默认查询北京时间今天；空字符串仍表示用户主动选择“全部”。
+    if (statsTabState.date === null) {
+        statsTabState.date = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    }
     // silent：自动刷新触发时不打断当前视图（不显示加载占位、失败保留旧数据）
     const silent = !!options.silent;
 
@@ -6799,6 +6951,7 @@ async function loadConfig() {
             AppState.envLockedFields = new Set(data.env_locked || []);
 
             populateConfigForm();
+            window.refreshCompatibilitySummary?.();
             form.classList.remove('hidden');
             showStatus('配置加载成功', 'success');
         } else {
@@ -6868,7 +7021,6 @@ function populateConfigForm() {
     setConfigField('configPanelPassword', c.panel_password || '');
     setConfigField('configPassword', c.password ?? '');
     setConfigField('credentialsDir', c.credentials_dir || '');
-    setConfigField('proxy', c.proxy || '');
     setConfigField('codeAssistEndpoint', c.code_assist_endpoint || '');
     setConfigField('oauthProxyUrl', c.oauth_proxy_url || '');
     setConfigField('googleapisProxyUrl', c.googleapis_proxy_url || '');
@@ -7009,7 +7161,7 @@ function renderCaptureSettings() {
         <div style="${grid}">${controls(commonKeys)}</div>
         ${Object.entries(labels).map(([name, label]) => `<fieldset style="margin:12px 0;padding:12px;min-width:0;"><legend>${label}</legend>
             <div style="${grid}">${controls(policyKeys.filter(key => key.startsWith(`request_capture_${name}_`)))}</div></fieldset>`).join('')}
-        <button type="button" onclick="refreshCaptureStatus(this)">刷新容量与丢弃状态</button>
+        <button type="button" class="config-action-button" onclick="refreshCaptureStatus(this)">刷新容量与丢弃状态</button>
         <div id="captureStorageStatus" role="status" aria-live="polite"></div>
         <h4>导出排查证据</h4>
         <p class="config-note">填写采集 ID，或填写完整凭证文件名。单次导出有大小与条数限制，不包含认证请求头。</p>
@@ -7018,7 +7170,7 @@ function renderCaptureSettings() {
             <div class="form-group"><label for="captureExportAccount">凭证文件名<input id="captureExportAccount" class="config-input" maxlength="256" placeholder="ag_….json"></label></div>
             <div class="form-group"><label for="captureExportSince">起始时间（本地时间）<input id="captureExportSince" class="config-input" type="datetime-local"></label></div>
         </div>
-        <button type="button" onclick="exportCaptureFromSettings(this)">下载证据包</button>`;
+        <button type="button" class="config-action-button" onclick="exportCaptureFromSettings(this)">下载证据包</button>`;
 }
 
 async function refreshCaptureStatus(button) {
@@ -7094,6 +7246,7 @@ function applyAccountUsageDefaults() {
 }
 
 async function saveConfig() {
+    if (document.querySelector('[onclick="saveConfig()"]')?.disabled) return;
     try {
         const getValue = (id, def = '') => document.getElementById(id)?.value.trim() || def;
         const getInt = (id, def = 0) => parseInt(document.getElementById(id)?.value) || def;
@@ -7112,6 +7265,8 @@ async function saveConfig() {
             const field = document.getElementById(id);
             const value = field.valueAsNumber;
             if (!Number.isSafeInteger(value) || value < 0) {
+                window.revealCompatibilityField?.(field);
+                window.setConfigSaveFeedback?.('error', '参数有误，请检查展开的设置');
                 field.focus();
                 showStatus('账号用量上限须填写非负整数，填 0 表示不限', 'error');
                 return;
@@ -7124,6 +7279,8 @@ async function saveConfig() {
             const field = document.getElementById(id);
             const value = field.valueAsNumber;
             if (!Number.isFinite(value) || value < 0 || value > 600) {
+                window.revealCompatibilityField?.(field);
+                window.setConfigSaveFeedback?.('error', '参数有误，请检查展开的设置');
                 field.focus();
                 showStatus('动态发起间隔须填写 0–600 之间的秒数', 'error');
                 return;
@@ -7132,6 +7289,8 @@ async function saveConfig() {
         }
         if (pacingIntervals.antigravity_pacing_max_interval_seconds > 0
                 && pacingIntervals.antigravity_pacing_max_interval_seconds < pacingIntervals.antigravity_pacing_min_interval_seconds) {
+            window.revealCompatibilityField?.(document.getElementById('antigravityPacingMaxIntervalSeconds'));
+            window.setConfigSaveFeedback?.('error', '动态间隔上限须不小于下限');
             document.getElementById('antigravityPacingMaxIntervalSeconds').focus();
             showStatus('动态发起间隔上限必须不小于下限，填 0 关闭动态间隔', 'error');
             return;
@@ -7145,7 +7304,8 @@ async function saveConfig() {
             password: getValue('configPassword'),
             code_assist_endpoint: getValue('codeAssistEndpoint'),
             credentials_dir: getValue('credentialsDir'),
-            proxy: getValue('proxy'),
+            // 全局代理入口已关闭；保存时清除旧的全局代理，账号代理策略独立保留。
+            proxy: '',
             oauth_proxy_url: getValue('oauthProxyUrl'),
             googleapis_proxy_url: getValue('googleapisProxyUrl'),
             resource_manager_api_url: getValue('resourceManagerApiUrl'),
@@ -7226,6 +7386,7 @@ async function saveConfig() {
             delete config.dingtalk_webhook_url;
         }
 
+        window.setConfigSaveFeedback?.('saving', '正在保存配置…');
         const response = await fetch('./config/save', {
             method: 'POST',
             headers: getAuthHeaders(),
@@ -7248,11 +7409,15 @@ async function saveConfig() {
                 showStatus(message, 'success');
             }
 
-            setTimeout(() => loadConfig(), 1000);
+            await loadConfig();
+            window.setConfigSaveFeedback?.('success', data.restart_required?.length ? '✓ 保存成功，部分配置需重启生效' : '✓ 配置保存成功');
+            window.refreshCompatibilitySummary?.();
         } else {
+            window.setConfigSaveFeedback?.('error', '保存失败，请检查错误提示后重试');
             showStatus(`保存配置失败: ${data.detail || data.error || '未知错误'}`, 'error');
         }
     } catch (error) {
+        window.setConfigSaveFeedback?.('error', '网络错误，未确认保存成功，请重试');
         showStatus(`网络错误: ${error.message}`, 'error');
     }
 }
@@ -7397,16 +7562,26 @@ function billingEmpty(message = '暂无账单数据') {
 }
 
 function renderBillingTrend(items, currency) {
-    if (!items.length) return billingEmpty();
-    const maxTokens = Math.max(...items.map(item => Number(item.total_tokens) || 0), 1);
-    return items.map(item => {
-        const tokens = Number(item.total_tokens) || 0;
-        const width = Math.max(3, Math.round(tokens / maxTokens * 100));
-        return `<div class="billing-trend-row">
-            <div class="billing-trend-meta"><strong>${escapeHtml(item.billing_date)}</strong><span>${formatBillingNumber(tokens)} tokens · ${escapeHtml(formatBillingCost(item.total_cost, currency))}</span></div>
-            <div class="billing-bar" role="img" aria-label="${escapeHtml(item.billing_date)} ${formatBillingNumber(tokens)} tokens"><span style="width:${width}%"></span></div>
-        </div>`;
-    }).join('');
+    if (!items.length) return billingEmpty('所选范围暂无每日账单');
+    const number = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+    const days = [...items].sort((a, b) => String(a.billing_date).localeCompare(String(b.billing_date)));
+    const values = days.map(day => number(day.total_tokens));
+    const total = values.reduce((sum, value) => sum + value, 0);
+    const peak = Math.max(...values);
+    const ceiling = peak || 1;
+    const x = index => days.length === 1 ? 300 : 62 + index * 500 / (days.length - 1);
+    const y = value => 180 - value / ceiling * 140;
+    const points = values.map((value, index) => `${x(index)},${y(value)}`).join(' ');
+    const grid = [0, .5, 1].map(part => `<line x1="62" x2="562" y1="${y(ceiling * part)}" y2="${y(ceiling * part)}" class="daily-grid"/><text x="52" y="${y(ceiling * part) + 4}" text-anchor="end">${formatBillingNumber(peak * part)}</text>`).join('');
+    const labels = days.map((day, index) => index === 0 || index === days.length - 1 || (days.length > 4 && index === Math.floor(days.length / 2))
+        ? `<text x="${x(index)}" y="207" text-anchor="middle">${escapeHtml(String(day.billing_date).slice(-5))}</text>` : '').join('');
+    const dots = days.map((day, index) => `<circle cx="${x(index)}" cy="${y(values[index])}" r="4" tabindex="0" role="img" aria-label="${escapeHtml(day.billing_date)}，${formatBillingNumber(values[index])} Tokens，${escapeHtml(formatBillingCost(day.total_cost, currency))}"><title>${escapeHtml(day.billing_date)} · ${formatBillingNumber(values[index])} Tokens · ${escapeHtml(formatBillingCost(day.total_cost, currency))}</title></circle>`).join('');
+    return `<div class="daily-trend">
+        <div class="daily-summary"><div><span>累计用量</span><strong>${formatBillingNumber(total)} <small>Tokens</small></strong></div><div><span>单日峰值</span><strong>${formatBillingNumber(peak)}</strong></div><div><span>累计费用</span><strong>${escapeHtml(formatBillingCost(days.reduce((sum, day) => sum + number(day.total_cost), 0), currency))}</strong></div></div>
+        <div class="daily-chart-label"><span>每日 Token 用量</span><span>${days.length} 个账单日</span></div>
+        <svg class="daily-chart" viewBox="0 0 600 220" role="group" aria-label="每日 Token 用量走势，详细数据见下方每日明细">${grid}<polygon points="${x(0)},180 ${points} ${x(days.length - 1)},180" class="daily-area"/><polyline points="${points}" class="daily-line"/>${dots}${labels}</svg>
+        <details class="daily-details"><summary>每日明细 · ${days.length} 天</summary><div class="daily-table-wrap"><table><thead><tr><th>日期</th><th>Tokens</th><th>费用</th></tr></thead><tbody>${days.map((day,index) => `<tr><td>${escapeHtml(day.billing_date)}</td><td>${formatBillingNumber(values[index])}</td><td>${escapeHtml(formatBillingCost(day.total_cost,currency))}</td></tr>`).join('')}</tbody></table></div></details>
+    </div>`;
 }
 
 function renderBillingRanking(items, nameKey, currency) {
@@ -7459,7 +7634,7 @@ function buildBillingQuotaPeriodDashboard(item) {
 }
 
 async function loadBillingDashboard({ includePricing = true, silent = false } = {}) {
-    if (AppState.billingRefreshInFlight) return;
+    if (AppState.billingRefreshInFlight) { AppState.billingRefreshPending = true; return; }
     AppState.billingRefreshInFlight = true;
     const rangeSelect = document.getElementById('billingRange');
     const apiKeyId = document.getElementById('billingApiKeyFilter')?.value || '';
@@ -7517,6 +7692,8 @@ async function loadBillingDashboard({ includePricing = true, silent = false } = 
             if (existingIndex >= 0) AppState.apiKeyItems[existingIndex] = primaryData;
             else AppState.apiKeyItems.push(primaryData);
         }
+        if (range !== (document.getElementById('billingRange')?.value || 'today')
+                || apiKeyId !== (document.getElementById('billingApiKeyFilter')?.value || '')) return;
         const summary = dashboard.summary || {};
         const accounts = dashboard.accounts || { items: [] };
         const models = dashboard.models || { items: [] };
@@ -7583,6 +7760,10 @@ async function loadBillingDashboard({ includePricing = true, silent = false } = 
         if (!silent) showStatus(`计费看板加载失败: ${error.message}`, 'error');
     } finally {
         AppState.billingRefreshInFlight = false;
+        if (AppState.billingRefreshPending) {
+            AppState.billingRefreshPending = false;
+            loadBillingDashboard();
+        }
     }
 }
 
@@ -7861,11 +8042,22 @@ function updateCooldownDisplays() {
 // 版本信息管理
 // =====================================================================
 
-// 获取并显示版本信息（不检查更新）
+function updateVersionIndicator(data) {
+    const link = document.getElementById('versionInfo');
+    if (!link) return;
+    const available = data.success === true && data.check_update !== false && data.has_update === true;
+    link.classList.toggle('has-update', available);
+    link.title = available ? `发现不同版本：v${data.latest_version || '最新'}，点击查看 Packages` : '查看仓库 Packages';
+    link.setAttribute('aria-label', available ? '发现新版本，查看仓库 Packages（新窗口打开）' : '查看仓库 Packages（新窗口打开）');
+}
+
+// 首屏静默检查更新，同时展示当前版本。
+
 async function fetchAndDisplayVersion() {
     try {
         const response = await fetch('./version/info');
         const data = await response.json();
+        updateVersionIndicator(data);
 
         const versionText = document.getElementById('versionText');
 
@@ -7873,12 +8065,15 @@ async function fetchAndDisplayVersion() {
             // 只显示版本号
             versionText.textContent = `v${data.version}`;
             versionText.title = `完整版本: ${data.full_hash}\n提交信息: ${data.message}\n提交时间: ${data.date}`;
-            versionText.style.cursor = 'help';
+            versionText.style.cursor = 'pointer';
+            fetch('./version/info?check_update=true').then(response => response.json())
+                .then(updateVersionIndicator).catch(() => updateVersionIndicator({ success: false }));
         } else {
             versionText.textContent = '未知版本';
             versionText.title = data.error || '无法获取版本信息';
         }
     } catch (error) {
+        updateVersionIndicator({ success: false });
         console.error('获取版本信息失败:', error);
         const versionText = document.getElementById('versionText');
         if (versionText) {
@@ -7902,6 +8097,7 @@ async function checkForUpdates() {
         // 调用API检查更新
         const response = await fetch('./version/info?check_update=true');
         const data = await response.json();
+        updateVersionIndicator(data);
 
         if (data.success) {
             if (data.check_update === false) {
@@ -7939,6 +8135,7 @@ async function checkForUpdates() {
             showStatus(`检查更新失败: ${data.error}`, 'error');
         }
     } catch (error) {
+        updateVersionIndicator({ success: false });
         console.error('检查更新失败:', error);
         showStatus(`检查更新失败: ${error.message}`, 'error');
     } finally {
