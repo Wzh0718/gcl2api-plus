@@ -4,6 +4,7 @@ import config
 import pytest
 
 from src.converter.client_identity import identity_hits, normalize_client_identity
+from src.converter.antigravity_system_prompt import baseline_prompt
 from src.converter.gemini_fix import normalize_gemini_request
 
 DSH_SYSTEM = (
@@ -96,7 +97,7 @@ async def test_pipeline_system_has_no_harness_fingerprint():
     assert '# Runtime Context' not in text
     assert '# Tool Specifications' not in text
     # 官方基线仍然完整在前
-    official = 'You are Antigravity, a powerful agentic AI coding assistant'
+    official = baseline_prompt()
     assert text.lstrip().startswith(official)
     assert text.index(official) < text.index('You are a coding assistant.')
 
@@ -133,4 +134,4 @@ async def test_default_keyword_rewrite_then_identity_normalization(monkeypatch):
     )
     assert 'DeepSeek Harness' not in text
     assert 'powered by' not in text.lower()
-    assert text.lstrip().startswith('You are Antigravity, a powerful agentic AI coding assistant')
+    assert text.lstrip().startswith(baseline_prompt())
