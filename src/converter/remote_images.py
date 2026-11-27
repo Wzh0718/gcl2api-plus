@@ -9,7 +9,8 @@ import httpx
 
 
 # 上游（AGY / Gemini 2.5 端点）对“直传 http(s) 图片 URL”限制为每请求 10 张，而内联（inlineData）
-# 只受请求体大小约束（Gemini API 内联上限 20 MB，官方文档给出的单请求图片数上限是数千张）。
+# 只受请求体大小约束（Gemini API 文档口径 20 MB；AGY 通道实测 36 MiB 请求体、60 张内联图片仍返回
+# 200，见 docs/ANTIGRAVITY_IMAGE_API.md）。
 # 因此本地不再设产品级张数限制：真正的闸门是请求级 10 MiB 字节预算、20 s 总超时和 6 路并发。
 # 这里的常量只用于快速拒绝病态输入（几千个 URL），避免先耗满 20 s 再报一个误导性的下载失败。
 _MAX_REMOTE_IMAGES = 1000
