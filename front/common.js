@@ -4304,11 +4304,18 @@ function _cmRequestModeCell(row) {
 
 // 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
 const CM_KEY_ACCOUNT_LIMIT = 50;
-const CM_ACCOUNT_TIER_HEADER = '<th title="该记录归属账号在凭证库中最近保存的档位，不是调用发生时的快照">账号档位</th>';
+const CM_ACCOUNT_TIER_TITLE = '凭证库最近保存的档位，不是调用发生时的快照';
+const CM_ACCOUNT_TIER_HEADER = `<th title="${CM_ACCOUNT_TIER_TITLE}">账号档位</th>`;
 const CM_ACCOUNT_TIER_LABELS = new Map([['free', 'Free'], ['pro', 'Pro'], ['ultra', 'Ultra']]);
 
 function _cmAccountTierCell(row) {
     return `<td>${CM_ACCOUNT_TIER_LABELS.get(row?.account_tier) || '—'}</td>`;
+}
+
+function _cmAccountTierBadge(tier) {
+    const label = CM_ACCOUNT_TIER_LABELS.get(tier);
+    if (!label) return '';
+    return `<span class="cm-account-tier" data-tier="${tier}" title="${CM_ACCOUNT_TIER_TITLE}">${label}</span>`;
 }
 
 function _cmKeyModelHtml(row) {
@@ -4504,7 +4511,10 @@ function _cmTextRetryCells(row) {
         : _cmStatusCodeChip(attempt.status_code);
     const lines = retry.attempts.map((attempt, index) => {
         const stage = attempt.kind === 'same_account' ? '原号重试' : index ? '备选账号' : '原账号';
-        const fields = [stage, _cmMask(attempt.user_email || attempt.credential_name, String), outcome(attempt, index)];
+        const fields = [stage, _cmMask(attempt.user_email || attempt.credential_name, String)];
+        const tier = CM_ACCOUNT_TIER_LABELS.get(attempt.account_tier);
+        if (tier) fields.push(tier);
+        fields.push(outcome(attempt, index));
         if (attempt.model) fields.push(`请求模型 ${attempt.model}`);
         if (index === retry.attempts.length - 1 && row.upstream_model) fields.push(`响应模型 ${row.upstream_model}`);
         if (attempt.elapsed_ms != null) fields.push(`${attempt.elapsed_ms} ms`);
@@ -4518,6 +4528,7 @@ function _cmTextRetryCells(row) {
     return {
         status: _cmTooltipTrigger(codes, tooltipLines, `${outcomes}，${label}，查看重试详情`, true),
         account: _cmMask(first.user_email || first.credential_name),
+        accountTier: first.account_tier,
         details: `<h4>文本换号 · ${label}</h4><ol>${lines.map(line => `<li>${_cmEscape(line)}</li>`).join('')}</ol>`,
     };
 }
@@ -4772,6 +4783,7 @@ function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
         const retry = _cmTextRetryCells(row);
         const account = retry?.account ?? _cmMask(row.user_email || row.credential_name);
+        const tier = retry ? retry.accountTier : row.account_tier;
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         const statusCell = row.success
@@ -4787,8 +4799,9 @@ function _cmRenderRealtime(records) {
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${account}">${account}${retry ? '' : _cmWarmupBadge(row)}</td>
-            ${_cmAccountTierCell(row)}
+            <td class="cm-key-cell cm-realtime-account" title="账号: ${account}">
+                <span class="cm-account-label">${account}${_cmAccountTierBadge(tier)}${retry ? '' : _cmWarmupBadge(row)}</span>
+            </td>
             <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
         </tr>`;
@@ -4796,7 +4809,7 @@ function _cmRenderRealtime(records) {
     return `<div class="cm-table-wrap"><table class="cm-table">
         <thead><tr>
             <th>密钥名称</th><th>模型 / 协议</th><th>推理/服务</th><th>最近状态</th><th>状态</th>
-            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th>账号</th>${CM_ACCOUNT_TIER_HEADER}<th>遥测</th><th>请求详情</th>
+            <th>总耗时</th><th>时间</th><th>用量</th><th>花费</th><th class="cm-realtime-account">账号</th><th>遥测</th><th>请求详情</th>
         </tr></thead>
         <tbody>${body}</tbody>
     </table></div>`;

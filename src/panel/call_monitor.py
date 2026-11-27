@@ -391,6 +391,7 @@ async def call_monitor_realtime(
                 {
                     **attempt,
                     "user_email": retry_accounts[attempt["credential_name"]].get("user_email", ""),
+                    "account_tier": retry_accounts[attempt["credential_name"]].get("account_tier"),
                 }
                 for attempt in retry["attempts"]
             ]
