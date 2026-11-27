@@ -24,6 +24,7 @@ from src.panel import config_routes
         ([429, 502], [502, 200], "abc", True, ["a", "b"]),
         ([429, 502], [502, 429], "abc", True, ["a", "b"]),
         ([429, 502], [503, 429], "abc", True, ["a", "a"]),
+        ([429, 502, 503], [503, 200], "abc", True, ["a", "b"]),
         ([429, 502], [429, 503], "abc", True, ["a", "b"]),
         ([429, 502], [502], "a", True, ["a"]),
         ([429, 502], [502], "lookup_error", True, ["a"]),
@@ -152,6 +153,104 @@ async def test_request(
             )
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "codes,names,statuses,accounts,state",
+    [
+        ([503], "abc", [503, 200], ["a", "b"], "sent"),
+        ([503], "abc", [503, 503, 200], ["a", "b", "b"], "sent"),
+        ([503], "abc", [503, 503, 503], ["a", "b", "b"], "sent"),
+        ([503], "abc", [503, 502], ["a", "b"], "sent"),
+        ([503], "a", [503, 503], ["a", "a"], "no_candidate"),
+        ([], "abc", [503, 503], ["a", "a"], None),
+        ([429, 503], "abc", [429, 503], ["a", "b"], "sent"),
+    ],
+)
+async def test_antigravity_capacity_retry_order(
+    monkeypatch, streaming, codes, names, statuses, accounts, state
+):
+    """先消耗换号机会；容量型 503 才能在当前账号上额外补试一次。"""
+    _patch_common(monkeypatch, [])
+    monkeypatch.setattr(
+        antigravity, "get_antigravity_stream2nostream", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        antigravity,
+        "get_retry_config",
+        AsyncMock(
+            return_value={
+                "text_codes": codes,
+                "retry_enabled": True,
+                "max_retries": 1,
+                "retry_interval": 0,
+            }
+        ),
+    )
+    recorder = AsyncMock()
+    errors = AsyncMock()
+    monkeypatch.setattr(
+        antigravity, "get_billing_recorder", AsyncMock(return_value=recorder)
+    )
+    monkeypatch.setattr(antigravity, "record_api_call_error", errors)
+
+    async def choose(**kwargs):
+        for name in names:
+            if name not in kwargs.get("exclude_filenames", set()):
+                return name, {"access_token": name, "project_id": name}
+        return None
+
+    sent = []
+
+    async def post(**kwargs):
+        sent.append(kwargs["headers"]["Authorization"].removeprefix("Bearer "))
+        status = statuses[len(sent) - 1]
+        error = {"code": status, "message": "No capacity available for model"}
+        if status == 503:
+            error["status"] = "UNAVAILABLE"
+            error["details"] = [{"reason": "MODEL_CAPACITY_EXHAUSTED"}]
+        return httpx.Response(
+            status, json={"error": error}, headers={"Retry-After": "17"}
+        )
+
+    async def stream(**kwargs):
+        result = await post(**kwargs)
+        if result.status_code == 200:
+            yield 'data: {"candidates": []}\n\n'
+        else:
+            yield Response(result.content, result.status_code, headers=result.headers)
+
+    monkeypatch.setattr(antigravity.credential_manager, "get_valid_credential", choose)
+    monkeypatch.setattr(antigravity, "post_async", post)
+    monkeypatch.setattr(antigravity, "stream_post_async", stream)
+    body = {"model": "gemini-2.5-flash", "request": {"contents": []}}
+    if streaming:
+        chunks = [item async for item in antigravity.stream_request(body)]
+        response = chunks[-1] if isinstance(chunks[-1], Response) else Response()
+    else:
+        response = await antigravity.non_stream_request(body)
+
+    assert sent == accounts
+    assert response.status_code == statuses[-1]
+    if statuses[-1] != 200:
+        assert response.headers["Retry-After"] == "17"
+    assert all(
+        call.args[3] is None for call in errors.await_args_list if call.args[2] == 503
+    )
+    recorder.record.assert_awaited_once()
+    billed = recorder.record.await_args.kwargs
+    assert billed["credential_name"] == accounts[-1]
+    if state is None:
+        assert "text_account_retry" not in billed
+    else:
+        trace = billed["text_account_retry"]
+        assert trace["state"] == state
+        assert [attempt["credential_name"] for attempt in trace["attempts"]] == accounts
+        assert [attempt["status_code"] for attempt in trace["attempts"]] == statuses
+        assert (trace["attempts"][-1].get("kind") == "same_account") == (
+            accounts[-1] == accounts[-2]
+        )
+
+
 async def test_config_reload(monkeypatch):
     """通过面板保存后，下一个请求立即使用新规则；非法输入不覆盖旧值。"""
     values = {}
@@ -174,7 +273,7 @@ async def test_config_reload(monkeypatch):
         )
     monkeypatch.setattr(config, "_config_cache", {})
     monkeypatch.setattr(config, "_config_initialized", True)
-    assert (await utils.get_retry_config())["text_codes"] == [429, 502]
+    assert (await utils.get_retry_config())["text_codes"] == [429, 502, 503]
     for raw, wanted in [("503, 502,503", [503, 502]), ("", [])]:
         request = config_routes.ConfigSaveRequest(config={key: raw})
         await config_routes.save_config(request, "test")
