@@ -1569,6 +1569,22 @@ async def get_call_records_retention_days() -> int:
         return 10
 
 
+async def get_antigravity_client_identity_normalization_enabled() -> bool:
+    """客户端 harness 身份归一化开关，默认开启。
+
+    只改写 system 里 ``You are an AI agent powered by <品牌>.`` 这类开场句与
+    DSH 专有的 ``# Runtime Context`` / ``# Tool Specifications`` 标题，不触碰
+    业务正文。命中不到时请求完全不变，因此对官方客户端与普通业务请求零影响。
+
+    Environment variable: ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION
+    """
+    value = await get_config_value(
+        'antigravity_client_identity_normalization_enabled', True,
+        env_var='ANTIGRAVITY_CLIENT_IDENTITY_NORMALIZATION',
+    )
+    return value.lower() in ('true', '1', 'yes', 'on') if isinstance(value, str) else bool(value)
+
+
 async def get_antigravity_system_prompt_enabled() -> bool:
     """AGY 基础提示注入开关，默认开启。
 

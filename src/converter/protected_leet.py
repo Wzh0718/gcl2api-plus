@@ -163,7 +163,9 @@ def detect_client_profile(text):
         return 'codex'
     if re.search(r'(?im)^\s*you are claude code\b', text) and ('official cli' in lower or '<env>' in lower):
         return 'claude_code'
-    if re.search(r'(?im)^\s*you are dsh\b', text) and re.search(r'(?im)^#+\s+(?:tools|runtime context)\b', text):
+    if re.search(
+        r'(?im)^\s*(?:you are dsh\b|you are an ai agent powered by deepseek harness\b)', text
+    ) and re.search(r'(?im)^#+\s+(?:tools|runtime context|tool specifications)\b', text):
         return 'dsh'
     if re.search(r'(?im)^\s*you are .*?\boperating inside pi\b', text) and (
         'coding agent harness' in lower or 'available tools:' in lower

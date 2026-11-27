@@ -145,6 +145,7 @@ async def prepare_antigravity_system_prompt(
     request: dict, *, client_profile: str | None = None, api_key_id: str | None = None,
 ) -> dict:
     from config import (
+        get_antigravity_client_identity_normalization_enabled,
         get_antigravity_system_prompt_enabled,
         get_antigravity_system_as_user_enabled,
         get_antigravity_system_obfuscation_mode,
@@ -162,6 +163,7 @@ async def prepare_antigravity_system_prompt(
     inject = await get_antigravity_system_prompt_enabled()
     as_user = await get_antigravity_system_as_user_enabled()
     obfuscation_mode = await get_antigravity_system_obfuscation_mode()
+    identity_normalization = await get_antigravity_client_identity_normalization_enabled()
     result = _PreparedRequest(request)
     result.workflow_contract = workflow
     result.system_obfuscation_mode = obfuscation_mode
@@ -179,7 +181,7 @@ async def prepare_antigravity_system_prompt(
     )
     structured = workflow is not None or result.preserve_output_format
     obfuscate = obfuscation_mode != 'off'
-    if not inject and not as_user and not obfuscate and not structured:
+    if not inject and not as_user and not obfuscate and not structured and not identity_normalization:
         return result
     instruction = original_instruction
     if isinstance(instruction, str):
@@ -199,6 +201,11 @@ async def prepare_antigravity_system_prompt(
             host_part, *caller_parts = caller_parts
     if inject and host_part is None:
         host_part = {'text': _host_prefix()}
+
+    if identity_normalization and caller_parts:
+        from src.converter.client_identity import normalize_client_identity
+
+        caller_parts = normalize_client_identity(caller_parts)
 
     if obfuscate:
         profile = client_profile or detect_client_profile(system_text)
@@ -225,7 +232,7 @@ async def prepare_antigravity_system_prompt(
         result.pop('systemInstruction', None)
         result.pop('system_instructions', None)
 
-    if host_part is not None or workflow is not None or (not as_user and obfuscate and caller_parts != parts):
+    if host_part is not None or workflow is not None or (not as_user and caller_parts != parts):
         system_parts = []
         if host_part is not None:
             system_parts.append(host_part)
