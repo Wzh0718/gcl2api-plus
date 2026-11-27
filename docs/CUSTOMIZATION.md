@@ -232,7 +232,7 @@ Redis 侧状态自愈，没有额外清理任务：
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
 | `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 发送前无可用凭证或首次有效响应超时时，只尝试链内后续文本模型；逗号分隔，留空关闭 | 空（关闭） |
-| `ANTIGRAVITY_TTFT_FALLBACK_SECONDS` ★ | 首次有效响应超时降级阈值（整数秒，0–86400）；0 仅关闭延迟降级 | `30` |
+| `ANTIGRAVITY_TTFT_FALLBACK_SECONDS` ★ | 首次有效响应超时降级阈值（整数秒，0–86400）；0 仅关闭延迟降级。已因错误码换号后，若触发此超时则返回 504，不再发起模型降级请求 | `30` |
 | `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按请求原子轮转，历史及分钟次数不参与选号 | `15` |
 | `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |
 | `ANTIGRAVITY_FLEET_ENABLED` ★ | 全池闸门开关（面板优先，默认关闭） | `false` |
@@ -284,7 +284,8 @@ Redis 侧状态自愈，没有额外清理任务：
 
 | 变量 | 作用 | 默认值 |
 | --- | --- | --- |
-| `RETRY_429_ENABLED` | 可恢复错误重试开关（Antigravity 上游 403 和 429 直接返回） | `true` |
+| `RETRY_429_ENABLED` | 可恢复错误重试总开关（含文本换号重试） | `true` |
+| 面板 `text_account_retry_status_codes` | Antigravity / GeminiCLI 文本换号状态码。修改后新请求生效；清空停用此规则。400/401/403 保留原有校验和认证处理，不可配置。命中后仅换一个账号、同模型重试一次，已输出的流和图片不参与。 | `429,502` |
 | `RETRY_429_MAX_RETRIES` | 可恢复错误最大重试次数 | `5` |
 | `RETRY_429_INTERVAL` | 可恢复错误重试间隔（秒） | `1` |
 | `AUTO_BAN` | 命中错误码自动封禁凭证；Antigravity 明确 TOS_VIOLATION 不受此开关影响，始终立即禁用 | `false` |
@@ -294,6 +295,8 @@ Redis 侧状态自愈，没有额外清理任务：
 | `COMPATIBILITY_MODE` | 兼容模式：system 消息全部转 user，可避免流式空回但可能降低理解 | `false` |
 | `RETURN_THOUGHTS_TO_FRONTEND` | 是否把思维链返回前端，关闭则过滤 | `true` |
 | `ANTHROPIC_DEBUG` | Anthropic 协议转换调试日志 | `true` |
+
+Antigravity 文本换号在「调用监控 → 实时」的同一行显示两次上游状态和账号；「查看详情」显示每次的模型、耗时及已知的限流原因和 Retry-After。无需开启正文采集。无备选、选中未发送和已发送但未收到响应分别标识；历史无摘要的记录保持原样。调用数、成功率和费用仍按整次请求计算。
 
 ### Redis（可选，共享状态）
 

@@ -64,6 +64,9 @@ from src.antigravity_dynamic_warmup import (
 )
 
 # 导入共同的基础功能
+from src.api.text_retry import alternate_account, text_retry_decision
+from src.api.text_retry_trace import TextRetryTrace
+from src.api.text_retry import is_image_request as is_antigravity_image_request
 from src.api.utils import (
     check_should_auto_ban,
     handle_auto_ban,
@@ -604,30 +607,6 @@ def build_antigravity_headers(
     return headers
 
 
-def is_antigravity_image_request(
-    model_name: str, request_payload: Optional[Dict[str, Any]] = None
-) -> bool:
-    """Detect image generation without relying only on the public model alias."""
-    if "image" in (model_name or "").lower():
-        return True
-    payload = request_payload or {}
-    generation_config = payload.get("generationConfig") or {}
-    if not isinstance(generation_config, dict):
-        return False
-    modalities = generation_config.get("responseModalities") or generation_config.get(
-        "response_modalities"
-    )
-    if isinstance(modalities, list) and any(
-        str(modality).upper() == "IMAGE" for modality in modalities
-    ):
-        return True
-    response_format = generation_config.get("responseFormat") or {}
-    return bool(
-        generation_config.get("imageConfig")
-        or generation_config.get("image_config")
-        or (isinstance(response_format, dict) and response_format.get("image"))
-    )
-
 
 def build_dynamic_image_model_candidates(model_name: str) -> List[str]:
     """Return same-tier image aliases, preserving the requested model first."""
@@ -921,13 +900,25 @@ def _account_pool_429() -> Response:
     return response
 
 
-def _mark_upstream_429(response, error_body, *, request_id, credential_name, model, upstream_request):
+def _annotate_upstream_error(
+    response: Response,
+    error_body: str,
+    *,
+    request_id: str,
+    credential_name: str,
+    model: str,
+    upstream_request: dict[str, Any],
+    image_request: bool = False,
+) -> None:
+    """将错误响应绑定到产生它的请求，避免未发送的备选账号覆盖结算归属。"""
     if response.status_code == 429:
         response.rate_limit = upstream_rate_limit(error_body)
-        response.rate_limit_attempt = {
-            "request_id": request_id, "credential_name": credential_name,
-            "model": model, "upstream_request": upstream_request,
-        }
+    elif image_request:
+        return
+    response.billing_attempt = {
+        "request_id": request_id, "credential_name": credential_name,
+        "model": model, "upstream_request": upstream_request,
+    }
 
 
 def _billing_response_fields(response, status_code, request_id, credential_name, model, upstream_request):
@@ -936,10 +927,18 @@ def _billing_response_fields(response, status_code, request_id, credential_name,
         "upstream_request": upstream_request,
         "status_code": response.status_code if response is not None else status_code,
     }
+    fields.update(getattr(response, "billing_attempt", {}))
     if fields["status_code"] == 429 and (attribution := getattr(response, "rate_limit", None)) is not None:
         fields["rate_limit"] = attribution
-        fields.update(getattr(response, "rate_limit_attempt", {}))
     return fields
+
+
+def _alternate_first_output_timeout() -> Response:
+    return Response(
+        content=json.dumps({"error": "换号重试等待上游首次响应超时"}),
+        status_code=504,
+        media_type="application/json",
+    )
 
 
 def _upstream_403_to_503(response: Any) -> Any:
@@ -1394,6 +1393,7 @@ async def _stream_request_inner(
             recorder = await get_billing_recorder()
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
+                **({"text_account_retry": retry_trace.snapshot()} if retry_trace else {}),
                 usage_metadata=usage_metadata, success=success, api_key_id=api_key_id,
                 task_type="image" if image_request else "chat",
                 gateway_seconds=time.monotonic() - gateway_started,
@@ -1474,11 +1474,15 @@ async def _stream_request_inner(
             final_payload["project"] = new_project_id
         return True
 
+    retry_trace = None
+    used_alternate = False
+    sent_attempts = 0
     attempt = 0
     capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉（每请求一次）
     while attempt <= max_retries:
         success_recorded = False  # 标记是否已记录成功
         need_retry = False  # 标记是否需要重试
+        alternate_ready = False
         same_account_retry = False  # 地区拒绝换 IP 后，用同一账号重试
         capacity_same_account_retry = False  # 本次同号重试是否由容量 503 触发
         usage_attempt = None
@@ -1540,13 +1544,20 @@ async def _stream_request_inner(
                     f"[PACING] 本次上游尝试前置等待 {pacing_waited:.2f}s（未计入上游耗时）"
                 )
 
+            if used_alternate:
+                last_error_response = None
+            sent_attempts += 1
             admission.started()
+            if used_alternate:
+                retry_trace.sending(current_file, final_payload.get("model") or model_name)
             output = stream
             if deadline is not None:
                 output = gate_first_output(stream, deadline.timer, next_model)
             async for chunk in output:
                 # 判断是否是Response对象
                 if isinstance(chunk, Response):
+                    if success_recorded and not image_request:
+                        max_retries = attempt
                     status_code = chunk.status_code
                     last_error_response = chunk  # 记录最后一次错误
 
@@ -1556,8 +1567,13 @@ async def _stream_request_inner(
                         error_body = chunk.body.decode('utf-8') if isinstance(chunk.body, bytes) else str(chunk.body)
                     except Exception:
                         error_body = ""
-                    _mark_upstream_429(chunk, error_body, request_id=request_id, credential_name=current_file,
-                                       model=model_name, upstream_request=final_payload)
+                    _annotate_upstream_error(
+                        chunk, error_body, request_id=request_id, credential_name=current_file,
+                        model=model_name, upstream_request=final_payload, image_request=image_request,
+                    )
+                    response_elapsed = time.monotonic() - attempt_started
+                    if used_alternate:
+                        retry_trace.respond(status_code, response_elapsed, chunk)
                     # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
                     upstream_503 = (
                         classify_antigravity_503(status_code, error_body)
@@ -1572,7 +1588,14 @@ async def _stream_request_inner(
                         )
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
-                    if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
+                    allow_alternate = text_retry_decision(
+                        retry_config, status_code, image=image_request
+                    )
+                    if (
+                        allow_alternate is not None
+                        or status_code == 403
+                        or _is_retryable_status(status_code, DISABLE_ERROR_CODES)
+                    ):
                         log.warning(
                             f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), "
                             f"凭证: {current_file}, "
@@ -1611,7 +1634,7 @@ async def _stream_request_inner(
                         stream_final_failure = (
                             attempt >= max_retries
                             or not retry_config["retry_enabled"]
-                            or status_code in (403, 429)
+                            or (status_code in (403, 429) and not allow_alternate)
                         )
                         await record_api_call_error(
                             credential_manager, current_file, status_code,
@@ -1626,7 +1649,8 @@ async def _stream_request_inner(
                         # 再失败就透传上游 503。
                         if _should_retry_same_account(
                             requested=(
-                                upstream_503 is not None
+                                not used_alternate
+                                and upstream_503 is not None
                                 and upstream_503.retry_same_account
                             ),
                             already_retried=capacity_retry_used,
@@ -1660,8 +1684,44 @@ async def _stream_request_inner(
                             yield chunk
                             return
 
+                        if allow_alternate is not None:
+                            if status_code not in (403, 503):
+                                await handle_error_with_retry(
+                                    credential_manager, status_code, current_file,
+                                    False, attempt, max_retries,
+                                    mode="antigravity", error_text=error_body or "",
+                                )
+                            if (
+                                not success_recorded
+                                and allow_alternate
+                                and sent_attempts == 1
+                                and attempt < max_retries
+                                and not is_model_capacity_exhausted(status_code, error_body or "")
+                            ):
+                                max_retries = attempt
+                                retry_trace = TextRetryTrace(
+                                    current_file, final_payload.get("model") or model_name,
+                                    chunk, response_elapsed,
+                                )
+                                candidate = await alternate_account(
+                                    credential_manager, "antigravity", model_name, current_file,
+                                    credential_data, retry_interval,
+                                )
+                                retry_trace.selected(candidate[0] if candidate else None, model_name)
+                                if candidate and await apply_cred_result(candidate):
+                                    used_alternate = True
+                                    max_retries = attempt + 1
+                                    alternate_ready = True
+                                    break
+                            await record_billing_once(False, response=chunk)
+                            await _alert_all_accounts_unavailable_if_needed(model_name, attempted_credentials)
+                            yield _upstream_403_to_503(chunk)
+                            return
+
                         if (
                             classified_403 is not None
+                            and not used_alternate
+                            and not success_recorded
                             and classified_403.rebind_retry
                             and region_rebinds.get(current_file, 0) < _REGION_REBIND_LIMIT
                         ):
@@ -1741,6 +1801,8 @@ async def _stream_request_inner(
                         return
                 else:
                     # 不是Response，说明是真流，直接yield返回
+                    if used_alternate and not success_recorded:
+                        retry_trace.respond(200, time.monotonic() - attempt_started)
                     done = consume_usage_chunk(chunk)
                     next_model = None
                     # 只在第一个chunk时记录成功
@@ -1760,7 +1822,13 @@ async def _stream_request_inner(
                         await record_billing_once(True, status_code=200)
                     yield chunk
 
+            if alternate_ready:
+                attempt += 1
+                continue
+
             # 流式请求完成，检查结果
+            if used_alternate and not need_retry:
+                retry_trace.respond(200, time.monotonic() - attempt_started)
             if success_recorded:
                 if native and usage_remainder:
                     consume_usage_chunk("\n")
@@ -1849,6 +1917,10 @@ async def _stream_request_inner(
                 continue  # 重试
 
         except FirstOutputTimeoutError:
+            if used_alternate:
+                await record_billing_once(False, status_code=504)
+                yield _alternate_first_output_timeout()
+                return
             log.info(f"[ANTIGRAVITY] {model_name} 首字等待超过 {seconds} 秒，切换到 {next_model}")
             raise
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
@@ -1860,7 +1932,7 @@ async def _stream_request_inner(
                 await release_dynamic_warmup_slot(slot_holder)
             await record_local_capture(slot_holder, model_name, reason=exc.rate_limit.reason)
             rate_limited_credentials.add(slot_holder)
-            if exc.rate_limit.reason == "account_usage_limit":
+            if not used_alternate and exc.rate_limit.reason == "account_usage_limit":
                 # A locally rejected candidate consumed no upstream attempt.
                 if await refresh_credential_fast():
                     continue
@@ -1871,7 +1943,10 @@ async def _stream_request_inner(
                 if await refresh_credential_fast():
                     attempt += 1
                     continue
-            response = _credential_slot_backpressure_response(exc)
+            response = (
+                last_error_response if used_alternate and last_error_response is not None
+                else _credential_slot_backpressure_response(exc)
+            )
             await record_billing_once(False, response=response)
             yield response
             return
@@ -1880,6 +1955,8 @@ async def _stream_request_inner(
                 await record_billing_once(False, response=last_error_response)
                 yield last_error_response
                 return
+            if success_recorded and not image_request:
+                max_retries = attempt
             log.error(f"[ANTIGRAVITY STREAM] 流式请求异常: {e}, 凭证: {current_file}")
             if attempt < max_retries:
                 log.info(f"[ANTIGRAVITY STREAM] 异常后重试 (attempt {attempt + 2}/{max_retries + 1})...")
@@ -1897,12 +1974,12 @@ async def _stream_request_inner(
                     yield _upstream_403_to_503(last_error_response)
                 else:
                     # 如果没有记录到错误响应，返回500错误
+                    await record_billing_once(False, status_code=500)
                     yield Response(
                         content=json.dumps({"error": f"流式请求异常: {str(e)}"}),
                         status_code=500,
                         media_type="application/json"
                     )
-                    await record_billing_once(False)
                 return
         finally:
             if admission is not None:
@@ -2201,7 +2278,7 @@ async def _non_stream_image_request_inner(
         except (CredentialSlotWaitTimeout, AccountUsageLimitReached) as exc:
             await record_local_capture(current_file, requested_model, reason=exc.rate_limit.reason)
             last_response = _credential_slot_backpressure_response(exc)
-            last_response.rate_limit_attempt = {
+            last_response.billing_attempt = {
                 "request_id": last_request_id, "credential_name": current_file,
                 "model": requested_model, "upstream_request": final_payload,
             }
@@ -2278,8 +2355,10 @@ async def _non_stream_image_request_inner(
             status_code=status_code,
             headers=get_decoded_response_headers(response.headers),
         )
-        _mark_upstream_429(last_response, error_text, request_id=last_request_id, credential_name=current_file,
-                           model=requested_model, upstream_request=final_payload)
+        _annotate_upstream_error(
+            last_response, error_text, request_id=last_request_id, credential_name=current_file,
+            model=requested_model, upstream_request=final_payload, image_request=True,
+        )
         last_was_capacity = is_image_model_capacity_exhausted(
             status_code, error_text
         )
@@ -2568,6 +2647,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
             recorder = await get_billing_recorder()
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
+                **({"text_account_retry": retry_trace.snapshot()} if retry_trace else {}),
                 usage_metadata=usage_metadata,
                 success=success,
                 api_key_id=api_key_id,
@@ -2638,6 +2718,9 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
             final_payload["project"] = new_project_id
         return True
 
+    retry_trace = None
+    used_alternate = False
+    sent_attempts = 0
     attempt = 0
     capacity_retry_used = False  # 容量型 503 的一次原号重试已用掉
     while attempt <= max_retries:
@@ -2682,7 +2765,12 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                 )
 
             mark_stage("post_enter")
+            if used_alternate:
+                last_error_response = None
+            sent_attempts += 1
             admission.started()
+            if used_alternate:
+                retry_trace.sending(current_file, final_payload.get("model") or model_name)
             deadline = FirstOutputDeadline(settings[1]) if next_model else None
             post = post_async(
                 url=target_url,
@@ -2705,6 +2793,8 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                 response = await post
             mark_stage("post_exit")
             upstream_elapsed = time.monotonic() - attempt_started
+            if used_alternate:
+                retry_trace.respond(response.status_code, upstream_elapsed)
             if usage_attempt and response.status_code not in (403, 429):
                 await usage_attempt.confirm_response(response)
             mark_stage("usage_confirmed")
@@ -2793,8 +2883,12 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     error_text = response.text
                 except Exception:
                     pass
-                _mark_upstream_429(last_error_response, error_text, request_id=request_id,
-                                   credential_name=current_file, model=model_name, upstream_request=final_payload)
+                _annotate_upstream_error(
+                    last_error_response, error_text, request_id=request_id,
+                    credential_name=current_file, model=model_name, upstream_request=final_payload,
+                )
+                if used_alternate:
+                    retry_trace.respond(status_code, upstream_elapsed, last_error_response)
                 # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
                 upstream_503 = (
                     classify_antigravity_503(status_code, error_text)
@@ -2807,7 +2901,14 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         credential_manager, status_code, current_file
                     )
 
-                if status_code == 403 or _is_retryable_status(status_code, DISABLE_ERROR_CODES):
+                allow_alternate = text_retry_decision(
+                    retry_config, status_code, image=False
+                )
+                if (
+                    allow_alternate is not None
+                    or status_code == 403
+                    or _is_retryable_status(status_code, DISABLE_ERROR_CODES)
+                ):
                     log.warning(
                         f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), "
                         f"凭证: {current_file}, "
@@ -2846,7 +2947,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     ns_final_failure = (
                         attempt >= max_retries
                         or not retry_config["retry_enabled"]
-                        or status_code in (403, 429)
+                        or (status_code in (403, 429) and not allow_alternate)
                     )
                     await record_api_call_error(
                         credential_manager, current_file, status_code,
@@ -2861,7 +2962,8 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     # 再失败就透传上游 503。
                     if _should_retry_same_account(
                         requested=(
-                            upstream_503 is not None
+                            not used_alternate
+                            and upstream_503 is not None
                             and upstream_503.retry_same_account
                         ),
                         already_retried=capacity_retry_used,
@@ -2892,8 +2994,41 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         )
                         return last_error_response
 
+                    if allow_alternate is not None:
+                        if status_code not in (403, 503):
+                            await handle_error_with_retry(
+                                credential_manager, status_code, current_file,
+                                False, attempt, max_retries,
+                                mode="antigravity", error_text=error_text or "",
+                            )
+                        if (
+                            allow_alternate
+                            and sent_attempts == 1
+                            and attempt < max_retries
+                            and not is_model_capacity_exhausted(status_code, error_text or "")
+                        ):
+                            max_retries = attempt
+                            retry_trace = TextRetryTrace(
+                                current_file, final_payload.get("model") or model_name,
+                                last_error_response, upstream_elapsed,
+                            )
+                            candidate = await alternate_account(
+                                credential_manager, "antigravity", model_name, current_file,
+                                credential_data, retry_interval,
+                            )
+                            retry_trace.selected(candidate[0] if candidate else None, model_name)
+                            if candidate and await apply_cred_result(candidate):
+                                used_alternate = True
+                                max_retries = attempt + 1
+                                attempt += 1
+                                continue
+                        await record_billing_once(False, response=last_error_response)
+                        await _alert_all_accounts_unavailable_if_needed(model_name, attempted_credentials)
+                        return _upstream_403_to_503(last_error_response)
+
                     if (
                         classified_403 is not None
+                        and not used_alternate
                         and classified_403.rebind_retry
                         and region_rebinds.get(current_file, 0) < _REGION_REBIND_LIMIT
                     ):
@@ -3006,7 +3141,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                 await release_dynamic_warmup_slot(slot_holder)
             await record_local_capture(slot_holder, model_name, reason=exc.rate_limit.reason)
             rate_limited_credentials.add(slot_holder)
-            if exc.rate_limit.reason == "account_usage_limit":
+            if not used_alternate and exc.rate_limit.reason == "account_usage_limit":
                 # A locally rejected candidate consumed no upstream attempt.
                 if await refresh_credential_fast():
                     continue
@@ -3017,10 +3152,16 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                 if await refresh_credential_fast():
                     attempt += 1
                     continue
-            response = _credential_slot_backpressure_response(exc)
+            response = (
+                last_error_response if used_alternate and last_error_response is not None
+                else _credential_slot_backpressure_response(exc)
+            )
             await record_billing_once(False, response=response)
             return response
         except FirstOutputTimeoutError:
+            if used_alternate:
+                await record_billing_once(False, status_code=504)
+                return _alternate_first_output_timeout()
             raise
         except Exception as e:
             if last_error_response is not None and last_error_response.status_code in (403, 429):
@@ -3042,7 +3183,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     )
                     return _upstream_403_to_503(last_error_response)
                 else:
-                    await record_billing_once(False)
+                    await record_billing_once(False, status_code=500)
                     return Response(
                         content=json.dumps({"error": f"非流式请求异常: {str(e)}"}),
                         status_code=500,

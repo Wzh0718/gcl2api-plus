@@ -508,7 +508,8 @@ class BillingRecorder:
                     gateway_seconds: Optional[float] = None,
                     upstream_model: Optional[str] = None,
                     request_model: Optional[str] = None,
-                    upstream_request: Optional[dict] = None) -> bool:
+                    upstream_request: Optional[dict] = None,
+                    text_account_retry: Optional[dict] = None) -> bool:
         if not request_id:
             return False
         from src.request_timing import database_timing_scope, mark_stage, measure_phase
@@ -566,6 +567,7 @@ class BillingRecorder:
                     model_name=model,
                     request_model=request_model or "",
                     upstream_request=upstream_request,
+                    text_account_retry=text_account_retry,
                     upstream_model=upstream_model or "",
                     task_type=task_type or ("image" if "image" in (model or "").lower() else "chat"),
                     success=success,
