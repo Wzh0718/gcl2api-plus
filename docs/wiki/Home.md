@@ -2,9 +2,9 @@
 
 [gcl2api-plus](https://github.com/Wzh0718/gcl2api-plus) 提供 Antigravity 与 Vertex 接入、独立 API Key、用量计费和多账号凭证管理。
 
-## 版本与适用范围
+## 文档说明
 
-本组文档更新于 2026-11-27。控制台重设计目前位于 [PR #141](https://github.com/Wzh0718/gcl2api-plus/pull/141)，尚未合并或发布。下面涉及深浅主题、完整密钥检索、设置弹窗和新配置位置的说明，适用于该 PR 的预览版本。已经安装的镜像可能仍显示旧版界面。
+本组文档更新于 2026-11-27，介绍控制台操作、密钥管理、配置位置与版本更新。
 
 不要用 README 的提交活跃度判断是否已经发布镜像。可安装版本请查看 [Packages](https://github.com/Wzh0718/gcl2api-plus/packages)。
 
