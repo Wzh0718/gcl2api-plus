@@ -3823,14 +3823,14 @@ function _cmEscape(value) {
 
 // 脱敏：保留首尾少量字符，中间打码
 // 长标识（API Key / 账号文件名）保留前 8 后 4，避免多个账号被打码成同一个名字
-function _cmMask(value) {
+function _cmMask(value, escape = _cmEscape) {
     const s = String(value ?? '');
     if (!s) return '-';
-    if (!callMonitorState.mask) return _cmEscape(s);
+    if (!callMonitorState.mask) return escape(s);
     if (s === 'env') return 'env（默认密钥）';
-    if (s.length <= 6) return _cmEscape(s[0] + '****');
-    if (s.length <= 16) return _cmEscape(s.slice(0, 4) + '****' + s.slice(-3));
-    return _cmEscape(s.slice(0, 8) + '****' + s.slice(-4));
+    if (s.length <= 6) return escape(s[0] + '****');
+    if (s.length <= 16) return escape(s.slice(0, 4) + '****' + s.slice(-3));
+    return escape(s.slice(0, 8) + '****' + s.slice(-4));
 }
 
 function _cmFormatTime(ts) {
@@ -3897,9 +3897,13 @@ function _cmLatencyCell(row) {
     }
     if (row.timing_id && Object.keys(phases).length) tip.push(`timing_id ${row.timing_id}`);
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
-    return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(tip.join('\n'))}"
+    return _cmTooltipTrigger(_cmEscape(visible), tip, `总耗时 ${visible}，查看耗时明细`);
+}
+
+function _cmTooltipTrigger(contentHtml, lines, ariaLabel, multiline = false) {
+    return `<button type="button" class="cm-latency-trigger" data-latency-tip="${_cmEscape(lines.join('\n'))}"${multiline ? ' data-tip-multiline' : ''}
         onmouseenter="showCallMonitorLatency(this)" onfocus="showCallMonitorLatency(this)"
-        onclick="showCallMonitorLatency(this)" aria-label="总耗时 ${visible}，查看耗时明细">${visible}</button>`;
+        onclick="showCallMonitorLatency(this)" aria-label="${_cmEscape(ariaLabel)}">${contentHtml}</button>`;
 }
 
 let callMonitorLatencyTooltip = null;
@@ -3917,8 +3921,10 @@ function showCallMonitorLatency(trigger) {
     tooltip.setAttribute('role', 'tooltip');
     const body = document.createElement('div');
     body.className = 'cm-latency-tooltip-body';
+    const multiline = trigger.dataset.tipMultiline !== undefined;
+    if (multiline) body.classList.add('cm-retry-tooltip-body');
     trigger.dataset.latencyTip.split('\n').forEach((text, index) => {
-        if (index) body.append(' · ');
+        if (index && !multiline) body.append(' · ');
         const metric = document.createElement('span');
         metric.textContent = text;
         body.append(metric);
@@ -4475,24 +4481,28 @@ function _cmTextRetryCells(row) {
     if (!retry?.attempts?.length) return null;
     const labels = {sent: '换号 1 次', no_candidate: '无备选账号', not_sent: '未发送', selection_failed: '选取账号失败'};
     const label = labels[retry.state] || '未记录';
-    const account = attempt => _cmMask(attempt.user_email || attempt.credential_name);
-    const status = (attempt, index) => index > 0 && retry.state === 'not_sent' ? '未发送'
-        : attempt.status_code == null ? '未收到响应' : _cmStatusCodeChip(attempt.status_code, attempt.rate_limit);
-    const rows = retry.attempts.map((attempt, index) => {
-        const fields = [index ? '备选账号' : '原账号', account(attempt), status(attempt, index)];
-        if (attempt.model) fields.push(`请求模型 ${_cmEscape(attempt.model)}`);
-        if (index > 0 && retry.state === 'sent' && row.upstream_model) fields.push(`响应模型 ${_cmEscape(row.upstream_model)}`);
-        if (attempt.elapsed_ms != null) fields.push(`${_cmEscape(attempt.elapsed_ms)} ms`);
-        if (attempt.rate_limit) fields.push(_cmEscape(_cmRateLimitText(attempt.rate_limit).detail));
-        if (attempt.retry_after) fields.push(`Retry-After: ${_cmEscape(attempt.retry_after)}`);
-        return `<li>${fields.join(' · ')}</li>`;
+    const first = retry.attempts[0];
+    const outcome = (attempt, index) => index === 1 && retry.state === 'not_sent' && attempt.kind !== 'same_account'
+        ? '未发送' : attempt.status_code == null ? '未收到响应' : `HTTP ${attempt.status_code}`;
+    const status = (attempt, index) => attempt.status_code == null ? _cmEscape(outcome(attempt, index))
+        : _cmStatusCodeChip(attempt.status_code);
+    const lines = retry.attempts.map((attempt, index) => {
+        const stage = attempt.kind === 'same_account' ? '原号重试' : index ? '备选账号' : '原账号';
+        const fields = [stage, _cmMask(attempt.user_email || attempt.credential_name, String), outcome(attempt, index)];
+        if (attempt.model) fields.push(`请求模型 ${attempt.model}`);
+        if (index === retry.attempts.length - 1 && row.upstream_model) fields.push(`响应模型 ${row.upstream_model}`);
+        if (attempt.elapsed_ms != null) fields.push(`${attempt.elapsed_ms} ms`);
+        if (attempt.rate_limit) fields.push(_cmRateLimitText(attempt.rate_limit).detail);
+        if (attempt.retry_after) fields.push(`Retry-After: ${attempt.retry_after}`);
+        return fields.join(' · ');
     });
+    const codes = retry.attempts.map(status).join(' → ');
+    const outcomes = retry.attempts.map(outcome).join(' → ');
+    const tooltipLines = ['no_candidate', 'selection_failed'].includes(retry.state) ? [label, ...lines] : lines;
     return {
-        status: retry.attempts.map(status).join(' → '),
-        accounts: retry.state === 'not_sent' && retry.attempts.length > 1
-            ? `${account(retry.attempts[0])} <small>备选 ${account(retry.attempts[1])} 未发送</small>`
-            : `${retry.attempts.map(account).join(' → ')} <small>${label}</small>`,
-        details: `<h4>文本换号 · ${label}</h4><ol>${rows.join('')}</ol>`,
+        status: _cmTooltipTrigger(codes, tooltipLines, `${outcomes}，${label}，查看重试详情`, true),
+        account: _cmMask(first.user_email || first.credential_name),
+        details: `<h4>文本换号 · ${label}</h4><ol>${lines.map(line => `<li>${_cmEscape(line)}</li>`).join('')}</ol>`,
     };
 }
 
@@ -4745,6 +4755,7 @@ async function showCallMonitorTelemetry(index) {
 function _cmRenderRealtime(records) {
     const body = records.map((row, index) => {
         const retry = _cmTextRetryCells(row);
+        const account = retry?.account ?? _cmMask(row.user_email || row.credential_name);
         const taskService = `${_cmTaskLabel(row.task_type)} / ${_cmEscape(row.channel || 'antigravity')}`;
         const tokensTip = `输入 ${_cmFormatTokens(row.input_tokens)} / 输出 ${_cmFormatTokens(row.output_tokens)} / 缓存 ${_cmFormatTokens(row.cache_tokens)} / 思考 ${_cmFormatTokens(row.thought_tokens)}`;
         const statusCell = row.success
@@ -4761,7 +4772,7 @@ function _cmRenderRealtime(records) {
             <td>${_cmFormatTime(row.created_at)}</td>
             <td title="${tokensTip}">${_cmFormatTokens(row.total_tokens)}</td>
             <td>${_cmFormatCost(row.total_cost, row.currency)}</td>
-            <td class="cm-key-cell" title="账号: ${_cmMask(row.user_email || row.credential_name)}">${retry?.accounts ?? _cmMask(row.user_email || row.credential_name)}${_cmWarmupBadge(row)}</td>
+            <td class="cm-key-cell" title="账号: ${account}">${account}${retry ? '' : _cmWarmupBadge(row)}</td>
             ${_cmAccountTierCell(row)}
             <td>${_cmTelemetryCell(row, index)}</td>
             <td>${_cmRequestFeatureCell(row, index)}</td>
@@ -7107,7 +7118,7 @@ function populateConfigForm() {
     setConfigField('callsPerRotation', c.calls_per_rotation || 10);
 
     document.getElementById('retry429Enabled').checked = Boolean(c.retry_429_enabled);
-    setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502]).join(','));
+    setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502, 503]).join(','));
     setConfigField('retry429MaxRetries', c.retry_429_max_retries ?? 5);
     setConfigField('retry429Interval', c.retry_429_interval || 0.1);
 

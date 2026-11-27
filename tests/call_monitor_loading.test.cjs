@@ -4,10 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-test('retry monitoring shows both identities, distinct outcomes and masked details', () => {
+test('retry status triggers masked details while the account column shows the first account', () => {
     const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
-    const context = vm.createContext({callMonitorState: {mask: false}});
-    for (const name of ['_cmEscape', '_cmMask', '_cmRateLimitText', '_cmStatusCodeChip', '_cmTextRetryCells', '_cmRequestFeatureCell']) {
+    const context = vm.createContext({
+        callMonitorState: {mask: false}, CM_ACCOUNT_TIER_HEADER: '',
+        ...Object.fromEntries(['_cmTaskLabel', '_cmFormatTokens', '_cmModelCell', '_cmRequestModeCell', '_cmLatencyCell', '_cmFormatTime', '_cmFormatCost', '_cmAccountTierCell', '_cmTelemetryCell'].map(name => [name, () => ''])),
+        _cmWarmupBadge: () => 'settled-account-badge',
+    });
+    for (const name of ['_cmEscape', '_cmMask', '_cmRateLimitText', '_cmStatusCodeChip', '_cmTooltipTrigger', '_cmTextRetryCells', '_cmRequestFeatureCell', '_cmRenderRealtime']) {
         const start = source.indexOf(`function ${name}(`);
         vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
     }
@@ -15,12 +19,25 @@ test('retry monitoring shows both identities, distinct outcomes and masked detai
         {user_email: 'first@example.test', status_code: 429, elapsed_ms: 17, model: '<test>', retry_after: '12', rate_limit: {source: 'upstream', reason: 'quota_exhausted'}},
         {credential_name: 'backup@example.test', status_code: 200, elapsed_ms: 27},
     ]};
-    const row = {request_features: {text_account_retry: retry}};
+    const row = {credential_name: 'backup@example.test', request_features: {text_account_retry: retry}};
     const cells = context._cmTextRetryCells(row);
-    assert.match(cells.accounts, /first@example.test → backup@example.test/);
-    assert.match(cells.status, /429.* → .*200/);
+    assert.equal(cells.account, 'first@example.test');
+    const visibleStatus = cells.status.split('查看重试详情">')[1];
+    assert.equal(visibleStatus.replace(/<[^>]*>/g, ''), '429 → 200');
+    assert.match(cells.status, /data-latency-tip="原账号 · first@example\.test · HTTP 429/);
+    assert.match(cells.status, /备选账号 · backup@example\.test · HTTP 200/);
+    assert.match(cells.status, /onmouseenter="showCallMonitorLatency\(this\)"/);
+    assert.match(cells.status, /onclick="showCallMonitorLatency\(this\)"/);
+    const rendered = context._cmRenderRealtime([row]);
+    assert.match(rendered, /<td><button[^>]*data-tip-multiline/);
+    assert.match(rendered, /<td class="cm-key-cell" title="账号: first@example\.test">first@example\.test<\/td>/);
+    assert.doesNotMatch(rendered, /settled-account-badge|title="账号: backup@example\.test"/);
     assert.match(cells.details, /配额耗尽.*Retry-After: 12/);
     assert.match(cells.details, /&lt;test&gt;/);
+    retry.attempts.push({credential_name: 'backup@example.test', kind: 'same_account', status_code: 200});
+    assert.match(context._cmTextRetryCells(row).details, /原号重试 · backup@example.test · HTTP 200/);
+    assert.equal(context._cmTextRetryCells(row).account, 'first@example.test');
+    retry.attempts.pop();
     assert.match(context._cmRequestFeatureCell(row, 0), /查看详情/);
     context.callMonitorState.mask = true;
     assert.doesNotMatch(JSON.stringify(context._cmTextRetryCells(row)), /first@example|backup@example/);
@@ -28,10 +45,10 @@ test('retry monitoring shows both identities, distinct outcomes and masked detai
     assert.match(context._cmTextRetryCells(row).status, /未收到响应/);
     retry.state = 'not_sent';
     assert.match(context._cmTextRetryCells(row).status, /未发送/);
-    assert.doesNotMatch(context._cmTextRetryCells(row).accounts, /→|换号 1 次/);
+    assert.doesNotMatch(context._cmTextRetryCells(row).account, /→|换号 1 次|备选/);
     retry.state = 'no_candidate';
     retry.attempts.pop();
-    assert.match(context._cmTextRetryCells(row).accounts, /无备选账号/);
+    assert.match(context._cmTextRetryCells(row).status, /data-latency-tip="无备选账号/);
     assert.equal(context._cmTextRetryCells({}), null);
 });
 
