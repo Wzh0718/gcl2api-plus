@@ -3852,12 +3852,6 @@ function _cmAttempts(row) {
     return Number.isFinite(attempts) && attempts >= 2 ? attempts : 0;
 }
 
-function _cmAttemptsBadge(row) {
-    const attempts = _cmAttempts(row);
-    if (!attempts) return '';
-    return `<span class="cm-attempts" aria-label="上游尝试 ${attempts} 次">×${attempts}</span>`;
-}
-
 function _cmLatencyCell(row) {
     const measured = value => value !== null && value !== undefined
         && Number.isFinite(Number(value)) && Number(value) >= 0;
@@ -3913,7 +3907,7 @@ function _cmLatencyCell(row) {
     }
     if (row.timing_id && Object.keys(phases).length) tip.push(`timing_id ${row.timing_id}`);
     if (!hasTotal) tip.push(`总耗时未采集；网关耗时参考 ${format(row.gateway_seconds)}`);
-    return _cmTooltipTrigger(_cmAttemptsBadge(row) + _cmEscape(visible), tip, `总耗时 ${visible}${attempts ? `，上游尝试 ${attempts} 次` : ""}，查看耗时明细`);
+    return _cmTooltipTrigger(_cmEscape(visible), tip, `总耗时 ${visible}${attempts ? `，上游尝试 ${attempts} 次` : ""}，查看耗时明细`);
 }
 
 function _cmTooltipTrigger(contentHtml, lines, ariaLabel, multiline = false) {
@@ -4582,15 +4576,24 @@ function _cmCompactTexts(texts) {
 }
 
 // 「最近状态」和「状态」合成一列：一次请求的最终结果只写一遍（码 + 判定）。
+// 结果列：状态码胶囊本身就是判定（绿=成功、红=失败），成功不再写「成功」二字；
+// 重试过的请求把尝试次数做成状态码右上角的 ×N，不再占耗时列。
 function _cmResultCell(row) {
     const retry = _cmTextRetryCells(row);
     const code = row.status_code ?? row.last_status_code;
     const chip = retry?.status ?? _cmStatusCodeChip(code, row.request_features?.rate_limit ?? null);
+    const attempts = Number(row?.timing_details?.attempts);
+    // 同状态连击时换号链路已压成「503×2」，不要再叠一个 ×2 上标；只有链路本身
+    // 说不出次数（如 503 → 200）才补右上角。
+    const chainAlreadyCounts = !!retry && /×\d+/.test(retry.status);
+    const attemptsSup = Number.isFinite(attempts) && attempts >= 2 && !chainAlreadyCounts
+        ? `<sup class="cm-attempts-sup" title="上游尝试 ${attempts} 次（同一请求内重试/换号，仅保留最终结果）">×${attempts}</sup>`
+        : '';
     const success = row.success ?? row.last_success;
-    const verdict = success === null || success === undefined
-        ? ''
-        : `<span class="cm-verdict ${success ? 'is-ok' : 'is-fail'}">${success ? '成功' : '失败'}</span>`;
-    return `<td class="cm-result-cell">${chip}${verdict}</td>`;
+    const verdict = success === false
+        ? '<span class="cm-verdict is-fail">失败</span>'
+        : '';
+    return `<td class="cm-result-cell">${chip}${attemptsSup}${verdict}</td>`;
 }
 
 function _cmTextRetryCells(row) {
