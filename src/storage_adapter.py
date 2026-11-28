@@ -104,7 +104,7 @@ class StorageBackend(Protocol):
     async def batch_update_credential_network(self, filenames: List[str], **kwargs) -> Dict[str, Any]: ...
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
     async def update_antigravity_account_health(self, filename: str, **updates) -> Dict[str, Any]: ...
-    async def hold_antigravity_transient(self, filename: str, seconds: float = 600, status_code: Optional[int] = None) -> float: ...
+    async def hold_antigravity_transient(self, filename: str, seconds: float = 600, status_code: Optional[int] = None, *, relay_failure: bool = False) -> float: ...
     async def demote_antigravity_rotation(self, filename: str, steps: int = 2) -> int: ...
     async def recover_expired_transient_holds(self) -> list[str]: ...
     async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False) -> bool: ...
@@ -312,12 +312,21 @@ class StorageAdapter:
         return await self._backend.update_antigravity_account_health(filename, **updates)
 
     async def hold_antigravity_transient(
-        self, filename: str, seconds: float = 600, status_code: Optional[int] = None
+        self,
+        filename: str,
+        seconds: float = 600,
+        status_code: Optional[int] = None,
+        *,
+        relay_failure: bool = False,
     ) -> float:
-        """上游 5xx 的就地冷却：不封号，只在窗口内跳过该账号并累计错误计数。"""
+        """上游 5xx 的就地冷却：不封号，只在窗口内跳过该账号并累计错误计数。
+
+        ``relay_failure`` 为真时表示 502 由侧车合成（上游未应答），只压短窗口。
+        """
         self._ensure_initialized()
         return await self._backend.hold_antigravity_transient(
-            filename, seconds=seconds, status_code=status_code
+            filename, seconds=seconds, status_code=status_code,
+            relay_failure=relay_failure,
         )
 
 

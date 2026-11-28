@@ -949,7 +949,8 @@ class CredentialManager:
         error_message: Optional[str] = None,
         upstream_seconds: Optional[float] = None,
         gateway_seconds: Optional[float] = None,
-        error_source: str = "generation"
+        error_source: str = "generation",
+        record_error_state: bool = True,
     ):
         """
         记录API调用结果
@@ -991,12 +992,13 @@ class CredentialManager:
                 elif error_message:
                     error_messages[str(error_code)] = error_message
 
-                state_updates = {
-                    "error_codes": [error_code],
-                    "error_messages": error_messages,
-                }
+                if record_error_state:
+                    state_updates = {
+                        "error_codes": [error_code],
+                        "error_messages": error_messages,
+                    }
 
-                await self.update_credential_state(credential_name, state_updates, mode=mode)
+                    await self.update_credential_state(credential_name, state_updates, mode=mode)
 
                 # 设置模型级冷却
                 if cooldown_until is not None and model_name:
@@ -1031,6 +1033,8 @@ class CredentialManager:
         credential_name: str,
         status_code: Optional[int] = None,
         mode: str = "antigravity",
+        seconds: Optional[float] = None,
+        relay_failure: bool = False,
     ) -> float:
         """上游 5xx：把账号放回冷却窗口，等窗口过去再参与轮转。
 
@@ -1038,13 +1042,18 @@ class CredentialManager:
         不改 ``disabled``，账号只是暂时不被选中。
         """
         await self._ensure_initialized()
-        from config import get_antigravity_transient_hold_seconds
+        if seconds is None:
+            from config import get_antigravity_transient_hold_seconds
 
-        seconds = await get_antigravity_transient_hold_seconds()
+            seconds = await get_antigravity_transient_hold_seconds()
         if seconds <= 0:
             return 0.0
+        # 短冷却（侧车合成 502）走 relay 分支：只压窗口，不推进 5xx 阶梯。
         return await self._storage_adapter.hold_antigravity_transient(
-            credential_name, seconds=seconds, status_code=status_code
+            credential_name,
+            seconds=seconds,
+            status_code=status_code,
+            relay_failure=relay_failure,
         )
 
     async def _should_refresh_token(self, credential_data: Dict[str, Any], mode: str = "geminicli") -> bool:

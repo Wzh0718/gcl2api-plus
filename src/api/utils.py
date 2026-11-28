@@ -3,6 +3,7 @@ Base API Client - 共用的 API 客户端基础功能
 提供错误处理、自动封禁、重试逻辑等共同功能
 """
 
+import inspect
 import json
 import re
 import time
@@ -27,6 +28,47 @@ from src.stream_guard import aclose_quietly
 
 
 # ==================== 错误检查与处理 ====================
+
+# 侧车（native/agytransport）在自己合成 502 时写入该响应头：上游一个字节都没
+# 返回，属于传输层失败，不是上游 5xx。两者必须分开处理，否则一次请求级的连接
+# 抖动会把经手的每个账号都按「上游 5xx」冷藏半天（实测 6 个账号 × 12h）。
+RELAY_FAILURE_HEADER = "x-agy-relay-failure"
+# 传输层失败的就地冷却：只让这个账号在短窗口内不被再次选中，不动 12h 阶梯。
+RELAY_FAILURE_HOLD_SECONDS = 60.0
+
+
+def relay_failure_tag(headers) -> str:
+    """读取侧车写入的传输层失败标签；非侧车合成 502 返回空串。"""
+    if not headers:
+        return ""
+    try:
+        value = headers.get(RELAY_FAILURE_HEADER)
+    except Exception:  # noqa: BLE001 - 头读取失败不能影响错误处理
+        return ""
+    return str(value).strip() if value else ""
+
+
+def is_relay_transport_failure(headers=None, error_text: str = "") -> bool:
+    """判断一次失败是否由侧车传输层合成，而非上游真实响应。"""
+    if relay_failure_tag(headers):
+        return True
+    # 兼容标记头上线前的旧镜像：正文是侧车固定串，且不是上游 JSON/HTML。
+    text = (error_text or "").lstrip()
+    return text.startswith("upstream request failed")
+
+
+def strip_relay_failure_header(headers):
+    """从待转发给客户端的响应头里摘掉内部标记。"""
+    if not headers:
+        return headers
+    for key in list(headers.keys()):
+        if str(key).lower() == RELAY_FAILURE_HEADER:
+            try:
+                del headers[key]
+            except Exception:  # noqa: BLE001 - 只做尽力清理
+                pass
+    return headers
+
 
 async def check_should_auto_ban(status_code: int) -> bool:
     """
@@ -72,17 +114,32 @@ async def hold_transient_account(
     credential_manager: CredentialManager,
     status_code: int,
     credential_name: str,
+    *,
+    relay_failure: bool = False,
 ) -> None:
     """Place the account in a short cooldown instead of banning it.
 
     Never raises: a failed hold must not turn a retryable 5xx into a request
-    failure. The window is chosen by ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``.
+    failure. A real upstream 5xx uses ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``;
+    a relay-synthesized transport failure only benches the account for
+    ``RELAY_FAILURE_HOLD_SECONDS`` because the upstream never answered.
     """
     hold = getattr(credential_manager, "hold_transient", None)
     if hold is None or not credential_name:
         return
+    kwargs = {"status_code": status_code, "mode": "antigravity"}
+    # 只传 target 实现真正声明的参数：既能给支持短冷却的实现传窗口，
+    # 也不会让只接受旧签名的实现（含测试替身）因多余关键字报错。
     try:
-        await hold(credential_name, status_code=status_code, mode="antigravity")
+        accepted = inspect.signature(hold).parameters
+    except (TypeError, ValueError):
+        accepted = {}
+    if "seconds" in accepted:
+        kwargs["seconds"] = RELAY_FAILURE_HOLD_SECONDS if relay_failure else None
+    if "relay_failure" in accepted:
+        kwargs["relay_failure"] = relay_failure
+    try:
+        await hold(credential_name, **kwargs)
     except Exception as exc:  # noqa: BLE001 - retry path must stay intact
         log.warning(
             f"[ANTIGRAVITY TRANSIENT] hold failed for {credential_name}: "
@@ -99,6 +156,7 @@ async def handle_error_with_retry(
     max_retries: int,
     mode: str = "geminicli",
     error_text: str = "",
+    relay_failure: bool = False,
 ) -> bool:
     """
     处理错误并判断是否重试；等待由调用方的凭证切换阶段统一执行。
@@ -125,6 +183,21 @@ async def handle_error_with_retry(
     # AGY 400 is a request error, not sufficient evidence to disable an account.
     # Retrying the same invalid payload across the pool can disable every account.
     if mode == "antigravity" and status_code == 400:
+        return False
+
+    # 侧车合成 502（上游未应答）只说明这一跳没谈成：短冷却 + 换号，不计入
+    # 「上游 5xx」的半天冷藏，避免一次连接抖动连坐多个账号。
+    if mode == "antigravity" and relay_failure:
+        await hold_transient_account(
+            credential_manager, status_code, credential_name, relay_failure=True
+        )
+        can_retry = retry_enabled and attempt < max_retries
+        if can_retry:
+            log.info(
+                f"[{mode.upper()} RETRY] relay transport failure {status_code}; "
+                f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
+            )
+            return True
         return False
 
     # 上游 5xx 触发账号冷却；503 按连续失败窗口退避，其余使用配置时长。
@@ -230,7 +303,8 @@ async def record_api_call_error(
     model_name: Optional[str] = None,
     error_message: Optional[str] = None,
     upstream_seconds: Optional[float] = None,
-    gateway_seconds: Optional[float] = None
+    gateway_seconds: Optional[float] = None,
+    record_error_state: bool = True
 ) -> None:
     """
     记录API调用错误
@@ -256,7 +330,8 @@ async def record_api_call_error(
             model_name=model_name,
             error_message=error_message,
             upstream_seconds=upstream_seconds,
-            gateway_seconds=gateway_seconds
+            gateway_seconds=gateway_seconds,
+            record_error_state=record_error_state,
         )
         if mode == "antigravity" and status_code == 429:
             from src.antigravity_dynamic_warmup import note_dynamic_warmup_outcome
