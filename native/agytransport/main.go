@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,78 @@ import (
 )
 
 const maxRequestBody = 256 << 20
+
+// relayFailureHeader marks a 502 this relay synthesized itself. The upstream
+// returned nothing at all, so the status must not be read as an upstream 5xx:
+// callers use it to keep a transport hiccup off the account's cooldown.
+const relayFailureHeader = "X-Agy-Relay-Failure"
+
+// maxFailureReasonBytes bounds the diagnostic suffix so a pathological error
+// string cannot become a large response body or log line.
+const maxFailureReasonBytes = 300
+
+// compactFailureReason renders a single-line, bounded copy of err. A
+// *url.Error wrapper is unwrapped so the transport cause survives instead of
+// being buried behind a repeated method and URL.
+func compactFailureReason(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		err = urlErr.Err
+	}
+	text := strings.Join(strings.Fields(err.Error()), " ")
+	if len(text) > maxFailureReasonBytes {
+		text = text[:maxFailureReasonBytes] + "..."
+	}
+	return text
+}
+
+func isProxyLayerFailure(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "proxyconnect") ||
+		strings.Contains(lower, "proxy connect") ||
+		strings.Contains(lower, "socks")
+}
+
+func isTimeoutFailure(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// failureTag classifies a transport-level failure into a stable short tag.
+// "proxy-*" means the proxy hop itself failed; the caller may then hold that
+// node against the account. Every other tag is origin-side or client-side.
+func failureTag(err error) string {
+	text := compactFailureReason(err)
+	if errors.Is(err, context.Canceled) {
+		return "client-canceled"
+	}
+	proxyLayer := isProxyLayerFailure(text)
+	switch {
+	case isTimeoutFailure(err) && proxyLayer:
+		return "proxy-timeout"
+	case isTimeoutFailure(err):
+		return "upstream-timeout"
+	case proxyLayer:
+		return "proxy-connect"
+	}
+	return "transport-error"
+}
+
+// failureReason renders the tag plus the transport cause for the body and log.
+func failureReason(err error, timeout time.Duration) string {
+	tag := failureTag(err)
+	if tag == "client-canceled" {
+		return tag
+	}
+	detail := compactFailureReason(err)
+	if isTimeoutFailure(err) {
+		return fmt.Sprintf("%s after %dms: %s", tag, timeout.Milliseconds(), detail)
+	}
+	return tag + ": " + detail
+}
 
 type transportEntry struct {
 	transport *http.Transport
@@ -195,7 +268,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := client.Do(upstream)
 	if err != nil {
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
+		reason := failureReason(err, timeout)
+		// The Python caller forwards stderr into its log stream, so the raw
+		// cause survives even when the client never reads this body.
+		fmt.Fprintf(os.Stderr, "[agytransport] %s %s failed: %s\n", r.Method, target.Redacted(), reason)
+		w.Header().Set(relayFailureHeader, failureTag(err))
+		http.Error(w, "upstream request failed: "+reason, http.StatusBadGateway)
 		return
 	}
 	defer response.Body.Close()

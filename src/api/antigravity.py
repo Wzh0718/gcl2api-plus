@@ -71,6 +71,9 @@ from src.api.utils import (
     check_should_auto_ban,
     handle_auto_ban,
     hold_transient_account,
+    is_relay_transport_failure,
+    relay_failure_tag,
+    strip_relay_failure_header,
     handle_error_with_retry,
     get_retry_config,
     record_api_call_success,
@@ -1579,6 +1582,17 @@ async def _stream_request_inner(
                     response_elapsed = time.monotonic() - attempt_started
                     if track_retry:
                         retry_trace.respond(status_code, response_elapsed, chunk)
+                    # 侧车合成 502：上游未应答，按传输层失败处理（短冷却、不记错误码）。
+                    relay_failure = is_relay_transport_failure(
+                        getattr(chunk, "headers", None), error_body
+                    )
+                    if relay_failure:
+                        log.warning(
+                            f"[ANTIGRAVITY STREAM] 侧车传输层失败（非上游 5xx）, "
+                            f"凭证: {current_file}, "
+                            f"tag: {relay_failure_tag(getattr(chunk, 'headers', None)) or '无'}, "
+                            f"正文: {(error_body or '')[:120]!r}"
+                        )
                     # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
                     upstream_503 = (
                         classify_antigravity_503(status_code, error_body)
@@ -1665,7 +1679,8 @@ async def _stream_request_inner(
                             cooldown_until, mode="antigravity", model_name=model_name,
                             error_message=error_body,
                             upstream_seconds=time.monotonic() - attempt_started,
-                            gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None
+                            gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None,
+                            record_error_state=not relay_failure,
                         )
 
                         if allow_alternate is not None:
@@ -1674,6 +1689,7 @@ async def _stream_request_inner(
                                     credential_manager, status_code, current_file,
                                     False, attempt, max_retries,
                                     mode="antigravity", error_text=error_body or "",
+                                    relay_failure=relay_failure,
                                 )
                             if (
                                 not success_recorded
@@ -2915,6 +2931,18 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     last_error_response, error_text, request_id=request_id,
                     credential_name=current_file, model=model_name, upstream_request=final_payload,
                 )
+                # 侧车合成 502 = 上游一个字节都没回（传输层失败），不是上游 5xx。
+                # 标记出来：短冷却、不写面板错误码、不推进 12h 阶梯。
+                relay_failure = is_relay_transport_failure(
+                    getattr(response, "headers", None), error_text
+                )
+                if relay_failure:
+                    strip_relay_failure_header(getattr(last_error_response, "headers", None))
+                    log.warning(
+                        f"[ANTIGRAVITY] 侧车传输层失败（非上游 5xx）, 凭证: {current_file}, "
+                        f"tag: {relay_failure_tag(getattr(response, 'headers', None)) or '无'}, "
+                        f"正文: {error_text[:120]!r}"
+                    )
                 if track_retry:
                     retry_trace.respond(status_code, upstream_elapsed, last_error_response)
                 # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
@@ -2996,7 +3024,8 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         cooldown_until, mode="antigravity", model_name=model_name,
                         error_message=error_text,
                         upstream_seconds=upstream_elapsed,
-                        gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None
+                        gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None,
+                        record_error_state=not relay_failure,
                     )
 
                     if allow_alternate is not None:
@@ -3005,6 +3034,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                                 credential_manager, status_code, current_file,
                                 False, attempt, max_retries,
                                 mode="antigravity", error_text=error_text or "",
+                                relay_failure=relay_failure,
                             )
                         if (
                             allow_alternate

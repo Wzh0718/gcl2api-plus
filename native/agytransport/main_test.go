@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -179,5 +181,88 @@ func TestTransportPoolIsBounded(t *testing.T) {
 	defer pool.mu.Unlock()
 	if len(pool.entries) > 2 {
 		t.Fatalf("pool exceeded bound: %d", len(pool.entries))
+	}
+}
+
+type probeTimeoutError struct{}
+
+func (probeTimeoutError) Error() string   { return "proxyconnect tcp: i/o timeout" }
+func (probeTimeoutError) Timeout() bool   { return true }
+func (probeTimeoutError) Temporary() bool { return true }
+
+func TestFailureTagSeparatesProxyFromOriginAndClient(t *testing.T) {
+	proxyErr := &net.OpError{Op: "dial", Net: "tcp", Err: probeTimeoutError{}}
+	if got := failureTag(proxyErr); got != "proxy-timeout" {
+		t.Fatalf("proxy timeout must tag proxy-timeout, got %q", got)
+	}
+	direct := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	if got := failureTag(direct); got != "transport-error" {
+		t.Fatalf("direct dial failure must not claim a proxy cause, got %q", got)
+	}
+	if got := failureTag(context.Canceled); got != "client-canceled" {
+		t.Fatalf("canceled request must tag client-canceled, got %q", got)
+	}
+	if got := failureTag(context.DeadlineExceeded); got != "upstream-timeout" {
+		t.Fatalf("deadline exceeded must tag upstream-timeout, got %q", got)
+	}
+}
+
+func TestRelayMarksSynthesized502AndCarriesCause(t *testing.T) {
+	relay := &server{
+		allowedHosts: map[string]bool{"127.0.0.1": true},
+		allowHTTP:    true,
+		pool:         newTransportPool(),
+	}
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	targetURL := closed.URL
+	closed.Close()
+	req := httptest.NewRequest("POST", "http://relay.invalid/request", strings.NewReader("payload"))
+	req.Header.Set("X-Agy-Target-Url", targetURL)
+	req.Header.Set("X-Agy-Profile", "cloudcode")
+	req.Header.Set("X-Agy-Timeout-Ms", "1000")
+	recorder := httptest.NewRecorder()
+	relay.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", recorder.Code)
+	}
+	if got := recorder.Header().Get(relayFailureHeader); got == "" {
+		t.Fatal("synthesized 502 must carry the relay-failure tag header")
+	}
+	body := strings.TrimSpace(recorder.Body.String())
+	if !strings.HasPrefix(body, "upstream request failed: ") {
+		t.Fatalf("body must keep the legacy prefix, got %q", body)
+	}
+	if body == "upstream request failed:" {
+		t.Fatalf("body must carry a cause, got %q", body)
+	}
+}
+
+func TestRelayDoesNotTagUpstreamReturned502(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error":"upstream says 502"}`)
+	}))
+	defer target.Close()
+	relay := &server{
+		allowedHosts: map[string]bool{"127.0.0.1": true},
+		allowHTTP:    true,
+		pool:         newTransportPool(),
+	}
+	req := httptest.NewRequest("POST", "http://relay.invalid/request", strings.NewReader("payload"))
+	req.Header.Set("X-Agy-Target-Url", target.URL)
+	req.Header.Set("X-Agy-Profile", "cloudcode")
+	recorder := httptest.NewRecorder()
+	relay.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("upstream status must pass through, got %d", recorder.Code)
+	}
+	if got := recorder.Header().Get(relayFailureHeader); got != "" {
+		t.Fatalf("upstream-returned 502 must not be tagged as a relay failure, got %q", got)
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != `{"error":"upstream says 502"}` {
+		t.Fatalf("upstream body must pass through unchanged, got %q", got)
 	}
 }

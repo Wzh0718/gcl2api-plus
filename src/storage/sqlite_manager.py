@@ -58,6 +58,10 @@ _EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
 # 5xx 直接冷却半天：5xx 往往是账号级处置的前兆（503 连击 → 短恢复 → 403/TOS），
 # 不再做阶梯试探；到期后由 warmup 组件以低并发缓慢放量。
 _TRANSIENT_HOLD_SECONDS = 43200
+# 侧车合成 502（上游一个字节都没回）只说明这一跳没谈成：同一个出口在前后一秒
+# 仍可能返回 200（实测同账号同节点同窗口既有 200 也有 502）。这类失败只做短
+# 冷却，既不写面板错误码，也不推进 5xx 阶梯。
+_RELAY_FAILURE_HOLD_SECONDS = 60.0
 # 5xx 冷却到期后的养号参数：并发 1、间隔 5s、每 5 次成功升一级
 POST_5XX_WARMUP_CONFIG = {
     "account_initial_concurrency": 1,
@@ -5902,6 +5906,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         filename: str,
         seconds: float = 600,
         status_code: Optional[int] = None,
+        *,
+        relay_failure: bool = False,
     ) -> float:
         """把账号放进瞬时冷却窗口，不改 ``disabled``。
 
@@ -5909,6 +5915,8 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         窗口到期自动放回。503 按连续失败次数退避（60/120/240/480 秒，随后取
         ``seconds`` 配置上限），500/502 直接使用配置时长；命中一次累计
         ``transient_error_count``，成功请求清零后重新从最短一档开始。
+        ``relay_failure`` 表示 502 由侧车自身合成（上游未应答）：只压短窗口，
+        已有窗口保持不延长。
 
         同一窗口内的并发失败不叠加、不推进阶梯：先读后写在同一个事务里完成，
         后到的失败只会返回已有截止时间。这保证「一次 503 一定把账号移出轮转」，
@@ -5940,7 +5948,15 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     return 0.0
                 current_hold = float(row[0] or 0.0)
                 count = max(int(row[1] or 0), 0)
-                if current_hold > now:
+                if relay_failure:
+                    # 传输层失败不归咎账号：已有冷却就保持原样（绝不延长），
+                    # 否则只压一个短窗口，把账号让给下一个再试。
+                    if current_hold > now:
+                        await db.rollback()
+                        return current_hold
+                    delay = min(max(seconds, 0.0) or _RELAY_FAILURE_HOLD_SECONDS,
+                                _RELAY_FAILURE_HOLD_SECONDS)
+                elif current_hold > now:
                     if status_code == 503 or current_hold - now >= cap:
                         # Same 503 window (or the configured 500/502 hold is no
                         # shorter): keep it, do not advance the ladder.
