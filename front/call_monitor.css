@@ -162,16 +162,73 @@
 .cm-model-cell .cm-upstream-model {
     color: var(--ui-accent, #2764ce);
 }
-html[data-theme="dark"] .cm-table td.cm-model-cell {
-    box-shadow: inset 2px 0 hsl(var(--cm-task-hue, 220) 50% 60%);
+/* 模型链：网关改投用细箭头串联，上游路由用一条折线分支挂在执行模型下面。
+   结构区分代替字符/标签：折线在 = 上游 modelVersion 路由，同一行箭头 = 网关降级链。 */
+.cm-model-cell .cm-chain {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 5px;
+    flex-wrap: wrap;
 }
-html[data-theme="dark"] .cm-model-cell .cm-model-meta .cm-tone-task {
-    color: hsl(var(--cm-task-hue, 220) 45% 70%);
+/* 请求模型弱化，实际执行的模型保持正文色，扫视时先看到真正跑的是谁。 */
+.cm-model-cell .cm-chain-model {
+    color: var(--ui-muted, #6b7684);
 }
-html[data-theme="dark"] .cm-model-cell .cm-model-meta .cm-tone-channel {
-    color: hsl(var(--cm-channel-hue, 220) 45% 70%);
+.cm-model-cell .cm-chain-arrow {
+    margin-top: 4px;
+    color: #aab3bf;
+    flex: none;
 }
-
+.cm-model-cell .cm-chain-tail {
+    display: inline-block;
+    font-weight: 500;
+}
+.cm-model-cell .cm-chain-branch {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    position: relative;
+    margin-top: 2px;
+    padding-left: 10px;
+    font-size: 11px;
+    line-height: 1.45;
+    font-weight: 400;
+}
+.cm-model-cell .cm-chain-branch::before {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: -2px;
+    height: 9px;
+    width: 7px;
+    border-left: 1px solid #c3cbd6;
+    border-bottom: 1px solid #c3cbd6;
+    border-bottom-left-radius: 4px;
+}
+.cm-model-cell .cm-chain-up-label {
+    color: #8b94a3;
+    font-size: 10px;
+    letter-spacing: .03em;
+}
+.cm-model-cell .cm-chain-up-model {
+    color: var(--ui-accent, #2764ce);
+    font-weight: 600;
+}
+html[data-theme="dark"] .cm-model-cell .cm-chain-model {
+    color: #9aa4b2;
+}
+html[data-theme="dark"] .cm-model-cell .cm-chain-arrow {
+    color: #6f7a88;
+}
+html[data-theme="dark"] .cm-model-cell .cm-chain-branch::before {
+    border-color: #4b5563;
+}
+html[data-theme="dark"] .cm-model-cell .cm-chain-up-label {
+    color: #8b94a3;
+}
+html[data-theme="dark"] .cm-model-cell .cm-chain-up-model {
+    color: #7cb0ff;
+}
 /* 遥测与请求详情合成一列：两个入口用细竖线隔开，列名只写「详情」。 */
 .cm-table td.cm-detail-cell {
     white-space: nowrap;

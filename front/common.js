@@ -4266,7 +4266,7 @@ const CM_PROTOCOL_LABELS = {
 };
 const CM_MODE_LABELS = { normal: '普通', fake_stream: '假流式', anti_truncation: '抗阻断' };
 const CM_CHANNEL_LABELS = { antigravity: 'Antigravity', geminicli: 'GeminiCLI', vertex: 'Vertex' };
-const CM_MODEL_HEADER_TIP = '左侧色条按任务类型着色：蓝=对话、琥珀=生图、青绿=嵌入；次行只写非默认的任务与上游，并按各自颜色标出';
+const CM_MODEL_HEADER_TIP = '左侧色条按任务类型着色：蓝=对话、琥珀=生图、青绿=嵌入；次行只写非默认的任务与上游，并按各自颜色标出。网关改投用细箭头串联，上游 modelVersion 的路由作为折线分支挂在执行模型下面';
 const CM_MODEL_HEADER = `<th title="${CM_MODEL_HEADER_TIP}">模型 / 协议 / 服务</th>`;
 // 聚合视图没有协议字段，列名只写模型与服务。
 const CM_MODEL_SERVICE_HEADER = `<th title="${CM_MODEL_HEADER_TIP}">模型 / 服务</th>`;
@@ -4320,28 +4320,64 @@ function _cmModelServiceCell(row, nameHtml, nameTip, { protocol = false } = {}) 
         <div class="cm-model-name" title="${_cmEscape(nameTip)}">${nameHtml}</div>${_cmModelMetaHtml(row, { protocol })}</td>`;
 }
 
-// 模型单元格：原始请求模型 → 网关执行模型（降级链切换后）→ 上游真实执行模型（modelVersion）逐条对比。
-// 发生降级或上游归一时，与原始请求不同的段会高亮，悬停显示完整链路。
+// 模型单元格：网关改投用细箭头串联，上游路由用一条折线分支挂在执行模型下面。
+// 结构上就区分了「谁改的」，不靠字符也不靠标签：
+//   gemini-2.5-flash-lite → gemini-3.8-flash-low
+//                           ╰ 上游 gemini-3.8-flash-n
+// 悬停给网关每跳的原因（容量窗口/无可用账号/首字超时/容量 503）。
+const CM_MODEL_HOP_LABELS = new Map([
+    ['capacity_503', '容量 503'],
+    ['capacity_window', '容量窗口'],
+    ['ttft_timeout', '首字超时'],
+    ['no_credential', '无可用账号'],
+]);
+
+const CM_MODEL_ARROW_SVG =
+    '<svg class="cm-chain-arrow" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">' +
+    '<path d="M2.2 6h7.2M6.9 2.9 10.1 6l-3.2 3.1" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 function _cmModelCell(row) {
     const executed = row.model_name || '';
     const requested = (row.request_model || '').trim() || executed; // 历史记录无 request_model，回落到执行模型
     const upstream = (row.upstream_model || '').trim();
+    const trace = (row.request_features || {}).model_fallback;
+    const events = Array.isArray(trace?.events) ? trace.events : [];
     const fellBack = requested !== executed;
     const normalized = !!upstream && upstream !== executed;
     if (!fellBack && !normalized) {
         return _cmModelServiceCell(row, _cmEscape(executed) || '-', executed, { protocol: true });
     }
-    const segments = [_cmEscape(requested) || '-'];
     const tips = [`原始请求: ${requested || '-'}`];
-    if (fellBack) {
-        segments.push(`<span class="cm-upstream-model">${_cmEscape(executed) || '-'}</span>`);
+    const hops = [];
+    let cursor = requested;
+    for (const event of events) {
+        const to = String(event?.to || '').trim();
+        if (!to || to === cursor) continue;
+        const reason = String(event?.reason || '');
+        const reasonLabel = CM_MODEL_HOP_LABELS.get(reason);
+        hops.push(to);
+        tips.push(`网关改投: ${cursor} → ${to}${reasonLabel ? `（${reasonLabel}）` : ''}`);
+        cursor = to;
+    }
+    if (fellBack && cursor !== executed) {
+        hops.push(executed);
         tips.push(`网关执行: ${executed || '-'}（降级链切换后的实际请求模型）`);
+        cursor = executed;
     }
+    const models = [requested, ...hops];
+    const head = models.slice(0, -1).map(model =>
+        `<span class="cm-chain-model is-request">${_cmEscape(model) || '-'}</span>${CM_MODEL_ARROW_SVG}`
+    ).join('');
+    let tailHtml = _cmEscape(models[models.length - 1]) || '-';
     if (normalized) {
-        segments.push(`<span class="cm-upstream-model">${_cmEscape(upstream)}</span>`);
         tips.push(`上游物理: ${upstream}（上游 modelVersion，请求被归一到该物理模型）`);
+        tailHtml += `<span class="cm-chain-branch" title="上游 modelVersion">` +
+            `<span class="cm-chain-up-label">上游</span>` +
+            `<span class="cm-chain-up-model">${_cmEscape(upstream)}</span></span>`;
     }
-    return _cmModelServiceCell(row, segments.join(' → '), tips.join('\n'), { protocol: true });
+    const chain = `${head}<span class="cm-chain-tail">${tailHtml}</span>`;
+    return _cmModelServiceCell(row, `<span class="cm-chain">${chain}</span>`, tips.join('\n'), { protocol: true });
 }
 
 // 密钥 → 账号视图：每个 key 下一行一个上游账号，模型列展示该账号主要命中的请求模型/上游物理模型
