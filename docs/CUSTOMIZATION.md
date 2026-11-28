@@ -231,7 +231,8 @@ Redis 侧状态自愈，没有额外清理任务：
 | `MAX_NON_STREAM_BUFFER_BYTES` ★ | 非流式响应收集缓冲上限（字节） | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` ★ | 单次请求候选凭证上限（1–32） | `32` |
 | `ANTIGRAVITY_SWITCH_CREDENTIAL` | 重试时是否切换凭证；关闭则固定当前凭证，直到其对该模型进入冷却或被禁用 | `false` |
-| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 发送前无可用凭证或首次有效响应超时时，只尝试链内后续文本模型；逗号分隔，留空关闭 | 空（关闭） |
+| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` ★ | 发送前无可用凭证、首次有效响应超时，或上游模型级容量 503（`MODEL_CAPACITY_EXHAUSTED`）时，只尝试链内后续文本模型；逗号分隔，留空关闭 | 空（关闭） |
+| `ANTIGRAVITY_CAPACITY_WINDOW_SECONDS` ★ | 上游 503 未给 RetryInfo 时的模型级容量窗口秒数（5–300）；窗口内入口直接改投降级链下一跳，未配链则照常尝试 | `30` |
 | `ANTIGRAVITY_TTFT_FALLBACK_SECONDS` ★ | 首次有效响应超时降级阈值（整数秒，0–86400）；0 仅关闭延迟降级。已因错误码换号后，若触发此超时则返回 504，不再发起模型降级请求 | `30` |
 | `ANTIGRAVITY_PACING_CONCURRENCY` ★ | 每账号同时在飞的上游请求上限；健康号池按请求原子轮转，历史及分钟次数不参与选号 | `15` |
 | `ANTIGRAVITY_PACING_SLOT_WAIT_SECONDS` ★ | 单账号并发占满时的最长排队等待秒数；超时先在本轮请求内换空闲账号，无候选时才返回 429；0 表示立即换号 | `30` |

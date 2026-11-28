@@ -58,6 +58,11 @@ from src.antigravity_error_classifier import (
     classify_antigravity_503,
     is_model_capacity_exhausted,
 )
+from src.antigravity_capacity_window import (
+    capacity_window_remaining,
+    record_capacity_window,
+    should_log_skip,
+)
 from src.antigravity_model_catalog import UnknownAntigravityModelError
 from src.antigravity_dynamic_warmup import (
     note_dynamic_warmup_outcome,
@@ -1229,6 +1234,66 @@ def _next_fallback_model(chain: List[str], current_model: str) -> Optional[str]:
     return None
 
 
+class CapacityFallbackRequired(Exception):
+    """模型级容量 503：本模型在这个窗口里换号也不会成功，改投降级链的下一个模型。
+
+    异常带着那次 503 响应一起抛出：链尾或降级目标同样被拒时，由外层用它把上游
+    错误原样交回客户端（含 Retry-After）。
+    """
+
+    def __init__(self, model: str, next_model: str, response: Response):
+        super().__init__(f"{model} 容量耗尽，降级到 {next_model}")
+        self.model = model
+        self.next_model = next_model
+        self.response = response
+
+
+def _apply_upstream_retry_after(
+    response: Optional[Response], delay: Optional[float]
+) -> Optional[Response]:
+    """把上游 RetryInfo 的秒数落成 Retry-After 头，避免客户端立刻重打。
+
+    上游 503 的等待时间在正文的 RetryInfo 里，不在响应头上；不转换的话客户端
+    SDK 会把 503 当成「立即可重试」，在同一个容量窗口里打循环。
+    """
+    if response is None or delay is None:
+        return response
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return response
+    try:
+        if any(str(key).lower() == "retry-after" for key in headers.keys()):
+            return response
+        headers["Retry-After"] = str(max(1, math.ceil(float(delay))))
+    except (TypeError, ValueError, AttributeError):
+        return response
+    return response
+
+
+def _skip_capacity_window(model_name: str, chain: List[str]) -> str:
+    """入口熔断：模型还在容量窗口里且有降级目标时，直接改用链上下一个模型。
+
+    没有降级链时保持原样：容量窗口只是「大概率被拒」，同一窗口里仍有成功请求，
+    提前拒绝反而会放大失败面。
+    """
+    seen = {model_name}
+    current = model_name
+    while True:
+        remaining = capacity_window_remaining(current)
+        if remaining <= 0:
+            return current
+        next_model = _next_fallback_model(chain, current)
+        if next_model is None or next_model in seen:
+            return current
+        if should_log_skip(current):
+            log.warning(
+                f"[ANTIGRAVITY] {current} 处于模型级容量窗口（剩余 {remaining:.0f}s），"
+                f"直接改投 {next_model}"
+            )
+        seen.add(next_model)
+        current = next_model
+
+
 async def _select_text_credential(model_name, chain=None):
     """Try the configured suffix in order, retaining the earliest known recovery."""
     from src.rate_limits import selection_retry_at, selection_usage_resume_at
@@ -1305,6 +1370,8 @@ async def _stream_request_inner(
             mode="antigravity", model_name=model_name, image_request=True
         )
     else:
+        # 该模型还在容量窗口里就不要再去撞：有降级链就入口改投下一跳。
+        model_name = _skip_capacity_window(model_name, chain)
         model_name, cred_result = await _select_text_credential(model_name, chain)
         next_model = _next_fallback_model(chain, model_name) if seconds else None
 
@@ -1766,8 +1833,29 @@ async def _stream_request_inner(
                             break
 
                         if capacity_error:
-                            # 容量型 503 的一次原号重试已经用掉：不再换号重投，
-                            # 直接把上游 503（含 RetryInfo）交给客户端。
+                            # 容量型 503 的一次原号重试已经用掉：不再换号重投。
+                            # 先记窗口（后续请求入口直接跳过本模型），有降级链
+                            # 就改投下一个模型，没有才把上游 503 交给客户端。
+                            record_capacity_window(
+                                model_name, upstream_503.upstream_delay_seconds
+                            )
+                            if upstream_503.upstream_model:
+                                record_capacity_window(
+                                    upstream_503.upstream_model,
+                                    upstream_503.upstream_delay_seconds,
+                                )
+                            chunk = _apply_upstream_retry_after(
+                                chunk, upstream_503.upstream_delay_seconds
+                            )
+                            fallback_model = _next_fallback_model(chain, model_name)
+                            if fallback_model is not None:
+                                log.warning(
+                                    "[ANTIGRAVITY STREAM] 模型级容量 503，降级到 "
+                                    f"{fallback_model}（原 {model_name}）: {current_file}"
+                                )
+                                raise CapacityFallbackRequired(
+                                    model_name, fallback_model, chunk
+                                )
                             log.error(
                                 "[ANTIGRAVITY STREAM] 模型级容量 503 不再重试，"
                                 f"透传上游错误: {current_file} / {model_name}"
@@ -2017,6 +2105,9 @@ async def _stream_request_inner(
             await record_billing_once(False, response=response)
             yield response
             return
+        except CapacityFallbackRequired:
+            # 模型级容量 503 且配置了降级链：交给外层换模型重投。
+            raise
         except Exception as e:
             if last_error_response is not None and last_error_response.status_code in (403, 429):
                 await record_billing_once(False, response=last_error_response)
@@ -2119,6 +2210,7 @@ class _ImageCredentialLeaseTracker:
 async def _model_attempts(body, native, headers, api_key_id, lease_tracker, request_model, settings):
     original = request_model or body.get("model", "")
     started = time.monotonic()
+    retired_models: Set[str] = set()
     while True:
         inner = _stream_request_inner(
             body=body, native=native, headers=headers, api_key_id=api_key_id,
@@ -2130,6 +2222,15 @@ async def _model_attempts(body, native, headers, api_key_id, lease_tracker, requ
                 yield item
             return
         except FirstOutputTimeoutError as exc:
+            body = {**body, "model": exc.next_model}
+        except CapacityFallbackRequired as exc:
+            # 模型级容量 503：窗口内换号无意义，改投链上下一个模型；降级目标也
+            # 被拒时把上游 503（含 Retry-After）交回客户端。
+            retired_models.add(exc.model)
+            if exc.next_model in retired_models:
+                yield exc.response
+                return
+            retired_models.add(exc.next_model)
             body = {**body, "model": exc.next_model}
         finally:
             await aclose_quietly(inner, "[ANTIGRAVITY TTFT]")
@@ -2602,12 +2703,21 @@ async def non_stream_request(
 
     settings = await _fallback_settings()
     gateway_started = time.monotonic()
+    retired_models: Set[str] = set()
     while True:
         try:
             return await _non_stream_text_attempt(
                 body, headers, api_key_id, original_model, settings, gateway_started
             )
         except FirstOutputTimeoutError as exc:
+            body = {**body, "model": exc.next_model}
+        except CapacityFallbackRequired as exc:
+            # 模型级容量 503：本模型在这个窗口里换号也不会成功，改投链上下一个
+            # 模型；链尾或降级目标也被判容量时，把上游 503（含 Retry-After）交回。
+            retired_models.add(exc.model)
+            if exc.next_model in retired_models:
+                return exc.response
+            retired_models.add(exc.next_model)
             body = {**body, "model": exc.next_model}
 
 
@@ -2623,6 +2733,8 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
     )
     mark_stage("api_started")
     # 1. 获取有效凭证
+    # 该模型还在容量窗口里就不要再去撞：有降级链就入口改投下一跳。
+    model_name = _skip_capacity_window(model_name, settings[0])
     model_name, cred_result = await _select_text_credential(model_name, settings[0])
     next_model = _next_fallback_model(settings[0], model_name) if settings[1] else None
 
@@ -3110,8 +3222,29 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         continue
 
                     if capacity_error:
-                        # 容量型 503 的一次原号重试已经用掉：不再换号重投，
-                        # 直接把上游 503（含 RetryInfo）交给客户端。
+                        # 容量型 503 的一次原号重试已经用掉：不再换号重投。
+                        # 先记窗口（后续请求入口直接跳过本模型），有降级链
+                        # 就改投下一个模型，没有才把上游 503 交给客户端。
+                        record_capacity_window(
+                            model_name, upstream_503.upstream_delay_seconds
+                        )
+                        if upstream_503.upstream_model:
+                            record_capacity_window(
+                                upstream_503.upstream_model,
+                                upstream_503.upstream_delay_seconds,
+                            )
+                        last_error_response = _apply_upstream_retry_after(
+                            last_error_response, upstream_503.upstream_delay_seconds
+                        )
+                        fallback_model = _next_fallback_model(settings[0], model_name)
+                        if fallback_model is not None:
+                            log.warning(
+                                "[ANTIGRAVITY] 模型级容量 503，降级到 "
+                                f"{fallback_model}（原 {model_name}）: {current_file}"
+                            )
+                            raise CapacityFallbackRequired(
+                                model_name, fallback_model, last_error_response
+                            )
                         log.error(
                             "[ANTIGRAVITY] 模型级容量 503 不再重试，"
                             f"透传上游错误: {current_file} / {model_name}"
@@ -3263,6 +3396,10 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
             if track_retry:
                 await record_billing_once(False, status_code=504)
                 return _alternate_first_output_timeout()
+            raise
+        except CapacityFallbackRequired:
+            # 模型级容量 503 且配置了降级链：交给外层换模型重投，
+            # 这一跳不能落进下面的通用异常处理（会被当成传输异常重试同模型）。
             raise
         except Exception as e:
             if last_error_response is not None and last_error_response.status_code in (403, 429):
