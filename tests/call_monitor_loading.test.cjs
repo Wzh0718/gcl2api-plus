@@ -147,6 +147,22 @@ test('late failure after changing filters leaves the new view intact', async () 
     assert.equal(content.innerHTML, html);
 });
 
+function resultCell(row) {
+    const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
+    const context = vm.createContext({
+        callMonitorState: {mask: false},
+        _cmEscape: String,
+        _cmMask: value => String(value ?? ''),
+        CM_ACCOUNT_TIER_LABELS: new Map(),
+        _cmRateLimitText: () => ({label: '限流', detail: '限流'}),
+    });
+    for (const name of ['_cmCompactTexts', '_cmStatusCodeChip', '_cmTooltipTrigger', '_cmTextRetryCells', '_cmResultCell']) {
+        const start = source.indexOf(`function ${name}(`);
+        vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    }
+    return context._cmResultCell(row);
+}
+
 function latencyCell(row) {
     const source = fs.readFileSync(path.join(__dirname, '../front/common.js'), 'utf8');
     const start = source.indexOf('function _cmFormatLatency(');
@@ -192,8 +208,10 @@ test('ingress timing and event-loop lag are shown when collected', () => {
     assert.match(html, /事件循环最大延迟 120\.00ms/);
 });
 
-test('retried requests show the attempt count on the row and in the tooltip', () => {
-    const html = latencyCell({
+test('attempt count moves to a superscript on the status code, latency keeps the tooltip', () => {
+    const row = {
+        status_code: 200,
+        success: true,
         response_total_seconds: 1.54,
         upstream_first_byte_seconds: 0.54,
         downstream_first_byte_seconds: 1.54,
@@ -201,11 +219,30 @@ test('retried requests show the attempt count on the row and in the tooltip', ()
             attempts: 3,
             stages: {first_upstream_send: 0.1, last_upstream_send: 0.99, last_upstream_data: 1.53},
         },
-    });
-    assert.match(html, /class="cm-attempts"[^>]*>×3</);
+    };
+    const html = latencyCell(row);
+    assert.doesNotMatch(html, /cm-attempts/, 'attempt badge must not stay in the latency column');
     assert.match(html, /上游尝试 3 次/);
     // 单一数字口径不变：耗时本身仍按最终结果展示。
     assert.match(html, />1\.54s</);
+    const result = resultCell(row);
+    assert.match(result, /<sup class="cm-attempts-sup"[^>]*>×3<\/sup>/);
+    assert.doesNotMatch(result, /cm-verdict/, 'green status already means success');
+});
+
+test('repeated identical codes already count themselves, so no extra superscript', () => {
+    const html = resultCell({
+        status_code: 503,
+        success: false,
+        timing_details: {attempts: 2},
+        request_features: {text_account_retry: {state: 'sent', attempts: [
+            {credential_name: 'a.json', status_code: 503},
+            {credential_name: 'b.json', status_code: 503},
+        ]}},
+    });
+    assert.match(html, /503×2/);
+    assert.doesNotMatch(html, /cm-attempts-sup/);
+    assert.match(html, /cm-verdict is-fail">失败/);
 });
 
 test('single-attempt and legacy rows render no attempt badge', () => {
