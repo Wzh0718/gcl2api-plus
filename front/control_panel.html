@@ -1664,7 +1664,7 @@
     </style>
     <link rel="stylesheet" href="./front/control_panel.css?v=config-layout-20261119">
     <link rel="stylesheet" href="./front/call_monitor.css?v=monitor-merged-inline-tier">
-    <link rel="stylesheet" href="./front/config_tabs.css?v=config-actions-20261127">
+    <link rel="stylesheet" href="./front/config_tabs.css?v=relay-observability-20261128">
     <link rel="stylesheet" href="./front/network_policy.css?v=20261113">
     <link rel="stylesheet" href="./front/account_usage.css?v=account-usage-dialog">
     <link rel="stylesheet" href="./front/warmup.css?v=warmup-dashboard">
@@ -2805,6 +2805,47 @@
                                 <small class="config-note">遇到错误时每两次重试间的等待时间</small>
                             </div>
                         </div>
+                        <div class="config-group relay-failure-settings">
+                            <h4>传输抖动（网关自身失败）</h4>
+
+                            <div class="form-group">
+                                <label for="antigravityRelayHoldSeconds">传输抖动冷却（秒）:</label>
+                                <input type="number" id="antigravityRelayHoldSeconds" class="config-input"
+                                    min="0" max="3600" step="1" />
+                                <small class="config-note">
+                                    网关侧车没能和上游建立 HTTP 交换（上游一个字节都没返回）时的短冷却。
+                                    这类失败不代表账号有问题：同一账号同一节点前后一秒仍可能返回 200，
+                                    所以只压一个短窗口，且不写「错误码」。0 表示不冷却，仅换号重试。
+                                </small>
+                            </div>
+
+                            <div class="form-group">
+                                <div class="relay-failure-head">
+                                    <span class="relay-failure-summary" id="relayFailureSummary" role="status">尚未加载</span>
+                                    <button type="button" class="btn btn-small" onclick="loadRelayFailures()">刷新记录</button>
+                                </div>
+                                <div class="relay-failure-table-wrap">
+                                    <table class="relay-failure-table">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>账号</th>
+                                                <th>失败类型</th>
+                                                <th>原因</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="relayFailureRows">
+                                            <tr><td colspan="4" class="relay-failure-empty">暂无记录</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <small class="config-note">
+                                    「失败类型」由侧车判定：proxy-connect / proxy-timeout 属代理链路，
+                                    upstream-timeout 是上游变慢，client-canceled 是客户端先断开，
+                                    transport-error 为其它传输错误。只保留最近 7 天、最多 2 万条。
+                                </small>
+                            </div>
+                        </div>
                         </section>
                         <section id="config-panel-models" class="config-category-panel" role="tabpanel" aria-labelledby="config-tab-models" tabindex="0" hidden>
                         <div class="config-group compatibility-settings">
@@ -3366,7 +3407,7 @@
     </div>
 
     <!-- 引入公共JavaScript模块 -->
-    <script src="./front/common.js?v=monitor-merged-inline-tier"></script>
+    <script src="./front/common.js?v=relay-observability-20261128"></script>
 
     <script src="./front/config_ui.js?v=20261127-spacing"></script>
 </body>

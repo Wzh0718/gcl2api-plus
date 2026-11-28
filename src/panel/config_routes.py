@@ -88,6 +88,17 @@ async def get_config(token: str = Depends(verify_panel_token)):
         current_config["retry_429_max_retries"] = await config.get_retry_429_max_retries()
         current_config["retry_429_enabled"] = await config.get_retry_429_enabled()
         current_config["retry_429_interval"] = await config.get_retry_429_interval()
+        # 侧车传输层失败（上游未应答）的短冷却窗口 + 最近留痕，供设置页直接查看
+        current_config["antigravity_relay_hold_seconds"] = await config.get_antigravity_relay_hold_seconds()
+        try:
+            storage_adapter = await get_storage_adapter()
+            current_config["relay_failures"] = await storage_adapter.list_antigravity_relay_failures(
+                limit=20, window_seconds=86400
+            )
+        except Exception as exc:  # noqa: BLE001 - 观测数据缺失不能挡住配置读取
+            log.debug(f"读取传输层失败留痕失败: {exc}")
+            current_config["relay_failures"] = {"items": [], "buckets": [], "total_in_window": 0,
+                                                "window_seconds": 86400}
         # 抗截断配置
         current_config["anti_truncation_max_attempts"] = await config.get_anti_truncation_max_attempts()
 
@@ -207,6 +218,21 @@ async def get_config(token: str = Depends(verify_panel_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/relay-failures")
+async def get_relay_failures(
+    limit: int = 20,
+    window_seconds: float = 86400,
+    token: str = Depends(verify_panel_token),
+):
+    """侧车传输层失败留痕：最近记录 + 按 tag 计数（面板设置页刷新用）。"""
+    storage_adapter = await get_storage_adapter()
+    payload = await storage_adapter.list_antigravity_relay_failures(
+        limit=limit, window_seconds=window_seconds
+    )
+    payload["hold_seconds"] = await config.get_antigravity_relay_hold_seconds()
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
 @router.post("/save")
 async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_panel_token)):
     """保存配置"""
@@ -261,6 +287,18 @@ async def save_config(request: ConfigSaveRequest, token: str = Depends(verify_pa
                 or new_config["retry_429_max_retries"] < 0
             ):
                 raise HTTPException(status_code=400, detail="最大429重试次数必须是大于等于0的整数")
+
+        if "antigravity_relay_hold_seconds" in new_config:
+            try:
+                relay_hold = int(new_config["antigravity_relay_hold_seconds"])
+                if relay_hold < 0 or relay_hold > 3600:
+                    raise ValueError
+                new_config["antigravity_relay_hold_seconds"] = relay_hold
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail="传输抖动冷却必须是0-3600之间的整数秒（0 表示不冷却）",
+                )
 
         if "retry_429_enabled" in new_config:
             if not isinstance(new_config["retry_429_enabled"], bool):

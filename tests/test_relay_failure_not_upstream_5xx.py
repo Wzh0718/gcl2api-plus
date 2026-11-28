@@ -187,3 +187,46 @@ async def test_real_upstream_502_still_records_error_code(tmp_path, monkeypatch)
 
     _until, _count, error_codes, _disabled = await read_hold(manager, "a.json")
     assert "502" in str(error_codes), "上游真实 502 的可见性保持不变"
+
+
+@pytest.mark.asyncio
+async def test_relay_hold_seconds_follows_configuration(tmp_path, monkeypatch):
+    """短冷却窗口可配：默认 60s，面板改 120s 后立即生效。"""
+    import config
+    from src.api.utils import relay_hold_seconds
+
+    monkeypatch.setenv("CREDENTIALS_DIR", str(tmp_path))
+    monkeypatch.delenv("ANTIGRAVITY_RELAY_HOLD_SECONDS", raising=False)
+    monkeypatch.setattr(config, "_config_cache", {})
+    monkeypatch.setattr(config, "_config_initialized", True)
+    assert await relay_hold_seconds() == 60.0
+
+    monkeypatch.setattr(config, "_config_cache", {"antigravity_relay_hold_seconds": 120})
+    assert await relay_hold_seconds() == 120.0
+
+    # 0 表示不冷却：调用方据此跳过 hold，只做换号重试。
+    monkeypatch.setattr(config, "_config_cache", {"antigravity_relay_hold_seconds": 0})
+    assert await relay_hold_seconds() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_relay_failure_is_recorded_for_the_panel(tmp_path, monkeypatch):
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.record_antigravity_relay_failure(
+        "a.json", "proxy-connect", "dial tcp 1.2.3.4:1081: connect: connection refused", 502
+    )
+    await manager.record_antigravity_relay_failure("b.json", "client-canceled", "", 502)
+
+    payload = await manager.list_antigravity_relay_failures(limit=10)
+    assert payload["total_in_window"] == 2
+    assert {bucket["tag"] for bucket in payload["buckets"]} == {"proxy-connect", "client-canceled"}
+    assert payload["items"][0]["credential_name"] == "b.json"
+    assert payload["items"][0]["status_code"] == 502
+
+
+@pytest.mark.asyncio
+async def test_relay_failure_recording_never_writes_error_codes(tmp_path, monkeypatch):
+    manager = await make_manager(tmp_path, monkeypatch)
+    await manager.record_antigravity_relay_failure("a.json", "proxy-timeout", "i/o timeout", 502)
+    _until, _count, error_codes, _disabled = await read_hold(manager, "a.json")
+    assert error_codes in ("[]", None) or "502" not in str(error_codes)

@@ -95,6 +95,7 @@ ENV_MAPPINGS = {
 }
 
 ENV_MAPPINGS["CALL_CONTENT_CAPTURE_ENABLED"] = "call_content_capture_enabled"
+ENV_MAPPINGS["ANTIGRAVITY_RELAY_HOLD_SECONDS"] = "antigravity_relay_hold_seconds"
 
 # ====================== 远程图片内联策略 ======================
 # all: 所有第三方 http(s) 图片一律下载后内联（历史默认）
@@ -1418,6 +1419,27 @@ async def get_antigravity_403_recheck_interval() -> int:
         return max(int(value), 60)
     except (TypeError, ValueError):
         return 3600
+
+
+async def get_antigravity_relay_hold_seconds() -> int:
+    """侧车合成 502（上游未应答）的就地冷却时长（秒）。
+
+    这类失败只说明这一跳没谈成：同一账号同一节点在前后一秒仍可能返回 200。
+    因此窗口远短于上游 5xx 的半天，并允许在面板「凭证与重试」里调整。
+    """
+    env_value = os.getenv("ANTIGRAVITY_RELAY_HOLD_SECONDS")
+    source = env_value if env_value not in (None, "") else None
+    if source is not None:
+        try:
+            return max(int(source), 0)
+        except ValueError:
+            pass
+    value = await get_config_value("antigravity_relay_hold_seconds", 60)
+    try:
+        seconds = int(str(value))
+    except ValueError:
+        return 60
+    return seconds if 0 <= seconds <= 3600 else 60
 
 
 async def get_antigravity_transient_hold_seconds() -> int:
