@@ -7211,6 +7211,8 @@ function populateConfigForm() {
     setConfigField('textAccountRetryStatusCodes', (c.text_account_retry_status_codes ?? [429, 502, 503]).join(','));
     setConfigField('retry429MaxRetries', c.retry_429_max_retries ?? 5);
     setConfigField('retry429Interval', c.retry_429_interval || 0.1);
+    setConfigField('antigravityRelayHoldSeconds', c.antigravity_relay_hold_seconds ?? 60);
+    renderRelayFailures(c.relay_failures);
 
     document.getElementById('compatibilityModeEnabled').checked = Boolean(c.compatibility_mode_enabled);
     document.getElementById('returnThoughtsToFrontend').checked = Boolean(c.return_thoughts_to_frontend !== false);
@@ -7404,6 +7406,73 @@ function setConfigField(fieldId, value) {
     }
 }
 
+// ===== 传输抖动（网关自身失败）观测 =====
+const RELAY_TAG_LABELS = {
+    'proxy-connect': '代理连接失败',
+    'proxy-timeout': '代理超时',
+    'upstream-timeout': '上游超时',
+    'client-canceled': '客户端取消',
+    'transport-error': '其它传输错误',
+};
+
+function formatRelayTime(epochSeconds) {
+    const value = Number(epochSeconds || 0);
+    if (!value) return '-';
+    const d = new Date(value * 1000);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function renderRelayFailures(payload) {
+    const rows = document.getElementById('relayFailureRows');
+    const summary = document.getElementById('relayFailureSummary');
+    if (!rows || !summary) return;
+    const data = payload || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+    const holdSeconds = Number(data.hold_seconds ?? 0);
+    const total = Number(data.total_in_window || 0);
+
+    if (!items.length) {
+        summary.textContent = `近 24 小时无传输抖动记录${holdSeconds ? `（当前冷却 ${holdSeconds}s）` : '（当前不冷却）'}`;
+        rows.innerHTML = '<tr><td colspan="4" class="relay-failure-empty">暂无记录</td></tr>';
+        return;
+    }
+
+    const bucketText = buckets
+        .map(b => `${b.tag}×${b.count}`)
+        .join('、');
+    summary.textContent = `近 24 小时 ${total} 次${bucketText ? `：${bucketText}` : ''}${holdSeconds ? `（冷却 ${holdSeconds}s）` : '（不冷却）'}`;
+
+    rows.innerHTML = items.map(item => {
+        const tag = String(item.tag || 'unknown');
+        const label = RELAY_TAG_LABELS[tag] || tag;
+        const isProxy = tag.indexOf('proxy-') === 0;
+        const reason = escapeHtml(String(item.reason || '').slice(0, 200));
+        return `<tr>
+            <td>${formatRelayTime(item.created_at)}</td>
+            <td>${escapeHtml(String(item.credential_name || '').replace(/\.json$/, ''))}</td>
+            <td><span class="relay-failure-tag${isProxy ? ' is-proxy' : ''}" title="${escapeHtml(label)}">${escapeHtml(tag)}</span></td>
+            <td>${reason || '<span class="relay-failure-empty">—</span>'}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function loadRelayFailures() {
+    const summary = document.getElementById('relayFailureSummary');
+    if (summary) summary.textContent = '正在刷新...';
+    try {
+        const res = await fetch('./config/relay-failures?limit=20&window_seconds=86400', {
+            headers: getAuthHeaders(),
+            cache: 'no-store',
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        renderRelayFailures(await res.json());
+    } catch (err) {
+        if (summary) summary.textContent = `刷新失败：${err.message}`;
+    }
+}
+
 function applyAccountUsageDefaults() {
     for (const [key, id] of Object.entries(accountUsageFields)) {
         setConfigField(id, AppState.accountUsageDefaults[key]);
@@ -7490,6 +7559,7 @@ async function saveConfig() {
             retry_429_enabled: getChecked('retry429Enabled'),
             retry_429_max_retries: Number(getValue('retry429MaxRetries', '5')),
             retry_429_interval: getFloat('retry429Interval', 0.1),
+            antigravity_relay_hold_seconds: getInt('antigravityRelayHoldSeconds', 60),
             compatibility_mode_enabled: getChecked('compatibilityModeEnabled'),
             return_thoughts_to_frontend: getChecked('returnThoughtsToFrontend'),
             antigravity_switch_credential_enabled: getChecked('antigravitySwitchCredentialEnabled'),

@@ -9,6 +9,7 @@ import inspect
 import json
 import math
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -573,6 +574,30 @@ def _upstream_trace_id(headers: Any) -> str:
 
 
 # ==================== 辅助函数 ====================
+
+
+async def _note_relay_failure(current_file, headers, error_text: str) -> str:
+    """记录一次侧车传输层失败并返回 tag（用于日志与面板留痕）。
+
+    这类失败不进 ``error_codes``：上游没应答不是账号证据。但必须在设置页可见，
+    否则一次连接抖动只能翻日志才能发现。
+    """
+    tag = relay_failure_tag(headers)
+    # 上游/代理 URL 里可能带 user:pass，落库前统一脱敏。
+    safe_reason = re.sub(r"(://[^:/@\s]+:)[^@\s]+@", r"\1***@", error_text or "")
+    try:
+        from src.storage_adapter import get_storage_adapter
+
+        storage = await get_storage_adapter()
+        recorder = getattr(storage, "record_antigravity_relay_failure", None)
+        if recorder is not None:
+            await recorder(
+                current_file or "", tag or "unknown",
+                safe_reason[:400], 502,
+            )
+    except Exception as exc:  # noqa: BLE001 - 留痕失败不能影响请求
+        log.debug(f"记录传输层失败失败: {exc}")
+    return tag
 
 
 def build_antigravity_headers(
@@ -1587,10 +1612,12 @@ async def _stream_request_inner(
                         getattr(chunk, "headers", None), error_body
                     )
                     if relay_failure:
+                        tag = await _note_relay_failure(
+                            current_file, getattr(chunk, "headers", None), error_body or ""
+                        )
                         log.warning(
                             f"[ANTIGRAVITY STREAM] 侧车传输层失败（非上游 5xx）, "
-                            f"凭证: {current_file}, "
-                            f"tag: {relay_failure_tag(getattr(chunk, 'headers', None)) or '无'}, "
+                            f"凭证: {current_file}, tag: {tag or '无'}, "
                             f"正文: {(error_body or '')[:120]!r}"
                         )
                     # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
@@ -2938,10 +2965,12 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                 )
                 if relay_failure:
                     strip_relay_failure_header(getattr(last_error_response, "headers", None))
+                    tag = await _note_relay_failure(
+                        current_file, getattr(response, "headers", None), error_text
+                    )
                     log.warning(
                         f"[ANTIGRAVITY] 侧车传输层失败（非上游 5xx）, 凭证: {current_file}, "
-                        f"tag: {relay_failure_tag(getattr(response, 'headers', None)) or '无'}, "
-                        f"正文: {error_text[:120]!r}"
+                        f"tag: {tag or '无'}, 正文: {error_text[:120]!r}"
                     )
                 if track_retry:
                     retry_trace.respond(status_code, upstream_elapsed, last_error_response)

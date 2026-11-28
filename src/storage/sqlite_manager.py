@@ -372,6 +372,19 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_credential_audit_time ON credential_audit_events(created_at)")
+        # 侧车传输层失败（上游一个字节都没回）留痕：与「上游 5xx」分开统计，
+        # 面板设置页直接展示，避免这类抖动只能去翻日志。
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS antigravity_relay_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at REAL NOT NULL,
+                credential_name TEXT NOT NULL,
+                status_code INTEGER,
+                tag TEXT NOT NULL,
+                reason TEXT NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_relay_failure_time ON antigravity_relay_failures(created_at)")
         # 凭证表
         await db.execute("""
             CREATE TABLE IF NOT EXISTS credentials (
@@ -5900,6 +5913,88 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         except Exception as exc:  # noqa: BLE001 - 降权失败不能影响请求
             log.warning(f"Error demoting rotation for {filename}: {exc}")
             return 0
+
+    async def record_antigravity_relay_failure(
+        self,
+        credential_name: str,
+        tag: str,
+        reason: str = "",
+        status_code: Optional[int] = None,
+    ) -> None:
+        """记一次侧车传输层失败（上游未应答）。
+
+        这类失败不代表账号有问题，因此不进 ``error_codes``；但需要在面板可见，
+        否则一次连接抖动只能靠翻日志才能发现。
+        """
+        self._ensure_initialized()
+        now = time.time()
+        payload = (
+            now, credential_name, status_code,
+            (tag or "unknown")[:64], (reason or "")[:400],
+        )
+        try:
+            async with sqlite_connect(self._db_path) as db:
+                await db.execute(
+                    "INSERT INTO antigravity_relay_failures"
+                    "(created_at, credential_name, status_code, tag, reason) "
+                    "VALUES (?,?,?,?,?)",
+                    payload,
+                )
+                # 7 天窗口、最多 20000 条：抖动是高频低价值事件，不需要长期留存。
+                await db.execute(
+                    "DELETE FROM antigravity_relay_failures WHERE created_at < ?",
+                    (now - 7 * 86400,),
+                )
+                await db.execute(
+                    """DELETE FROM antigravity_relay_failures WHERE id <= (
+                           SELECT cutoff FROM (
+                               SELECT MAX(id) - 20000 AS cutoff FROM antigravity_relay_failures
+                           ) AS relay_limit
+                       )"""
+                )
+                await db.commit()
+        except Exception as exc:  # noqa: BLE001 - 留痕失败不能影响请求
+            log.debug(f"记录传输层失败事件失败: {exc}")
+
+    async def list_antigravity_relay_failures(
+        self, limit: int = 20, window_seconds: float = 86400
+    ) -> Dict[str, Any]:
+        """返回最近的传输层失败、按 tag 的计数，以及窗口内的总数。"""
+        self._ensure_initialized()
+        limit = max(1, min(int(limit), 200))
+        now = time.time()
+        since = now - float(window_seconds)
+        items: list[Dict[str, Any]] = []
+        buckets: list[Dict[str, Any]] = []
+        total = 0
+        async with sqlite_connect(self._db_path) as db:
+            async with db.execute(
+                "SELECT created_at, credential_name, status_code, tag, reason "
+                "FROM antigravity_relay_failures ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    items.append({
+                        "created_at": float(row[0]),
+                        "credential_name": row[1],
+                        "status_code": int(row[2]) if row[2] is not None else None,
+                        "tag": row[3],
+                        "reason": row[4],
+                    })
+            async with db.execute(
+                "SELECT tag, COUNT(*) FROM antigravity_relay_failures "
+                "WHERE created_at >= ? GROUP BY tag ORDER BY COUNT(*) DESC",
+                (since,),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    buckets.append({"tag": row[0], "count": int(row[1])})
+                    total += int(row[1])
+        return {
+            "items": items,
+            "buckets": buckets,
+            "total_in_window": total,
+            "window_seconds": float(window_seconds),
+        }
 
     async def hold_antigravity_transient(
         self,
