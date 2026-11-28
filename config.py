@@ -1443,10 +1443,13 @@ async def get_antigravity_relay_hold_seconds() -> int:
 
 
 async def get_antigravity_transient_hold_seconds() -> int:
-    """上游 5xx 后该账号的就地冷却时长（秒）。
+    """账号级上游 5xx 的就地冷却时长（秒），由失败归因层唯一读取。
 
-    500/502 使用配置时长；503 每次都冷却，按连续失败窗口从 60 秒逐级退避
-    （60/120/240/480 秒）到此上限（默认 600 秒）。
+    ``src.antigravity_failure_policy`` 把账号级 500/502 以及正文判为服务级的
+    503 归入这一档；容量型 503 只降权、配额型 503 只冷模型，都不读这里。
+    默认 43200 秒（12 小时）：5xx 往往是账号级处置的前兆，窗口太短会让同一个
+    账号在十分钟内被反复放回轮转，重复制造同样的失败模式。设为 0 时归因层
+    退回默认值，不会关闭冷藏。
     """
     env_value = os.getenv("ANTIGRAVITY_TRANSIENT_HOLD_SECONDS")
     if env_value:
@@ -1454,11 +1457,11 @@ async def get_antigravity_transient_hold_seconds() -> int:
             return max(int(env_value), 0)
         except ValueError:
             pass
-    value = await get_config_value("antigravity_transient_hold_seconds", 600)
+    value = await get_config_value("antigravity_transient_hold_seconds", 43200)
     try:
         return max(int(value), 0)
     except (TypeError, ValueError):
-        return 600
+        return 43200
 
 
 async def get_antigravity_session_reuse_ratio() -> float:

@@ -1947,10 +1947,20 @@ async def test_credential(
         retry_headers = {}
         response = await send_probe()
         if mode == "antigravity" and response.status_code == 503:
-            from src.api.utils import get_retry_config, hold_transient_account
-            from src.api.antigravity import _resolve_error_cooldown
+            from src.api.utils import get_retry_config
+            from src.antigravity_failure_policy import decide
 
-            await hold_transient_account(credential_manager, 503, filename)
+            # 验活不产生账号级副作用：面板探测绕过轮换，一次 503 只能说明上游
+            # 此刻没有容量，不构成把账号冷藏半天的证据。处置留给真实业务请求
+            # 经 failure policy 归因；这里只把分类写进日志，必要时回一个
+            # Retry-After 让调用方等待。
+            disposition = decide(503, response.text or "")
+            log.info(
+                f"[AGY PROBE] {filename} 消息测试命中 503，分类={disposition.describe()}，"
+                "不做账号级处置"
+            )
+
+            from src.api.antigravity import _resolve_error_cooldown
 
             retry = await get_retry_config()
             if retry["retry_enabled"]:
@@ -2044,10 +2054,20 @@ async def test_credential(
 
                 if mode == "antigravity" and status_code == 403:
                     from src.api.antigravity import _handle_antigravity_403
+                    from src.antigravity_failure_policy import apply_action, decide
 
                     handling = await _handle_antigravity_403(
                         credential_name=filename, credential_data=credential_data,
                         model_name=test_model, error_text=error_text,
+                    )
+                    # 停用与冷藏统一由动作表执行；处理器只判定分类与停用意图。
+                    forbidden = decide(
+                        403, error_text,
+                        forbidden_category=handling.decision.category,
+                    )
+                    await apply_action(
+                        credential_manager, filename, forbidden,
+                        disable_account=handling.disable_account,
                     )
                     await credential_manager.record_api_call_result(
                         filename, False, error_code=403, error_message=error_text,

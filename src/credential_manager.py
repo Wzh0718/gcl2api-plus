@@ -1039,7 +1039,8 @@ class CredentialManager:
         """上游 5xx：把账号放回冷却窗口，等窗口过去再参与轮转。
 
         与 ``record_api_call_result`` 失败路径的区别：这里不写 error_codes、
-        不改 ``disabled``，账号只是暂时不被选中。
+        不改 ``disabled``，账号只是暂时不被选中。``seconds`` 通常由
+        ``src.antigravity_failure_policy`` 按失败来源给出；省略时退回配置值。
         """
         await self._ensure_initialized()
         if seconds is None:
@@ -1048,7 +1049,7 @@ class CredentialManager:
             seconds = await get_antigravity_transient_hold_seconds()
         if seconds <= 0:
             return 0.0
-        # 短冷却（侧车合成 502）走 relay 分支：只压窗口，不推进 5xx 阶梯。
+        # 侧车合成 502 走 relay 分支：存储层把窗口压到单跳时长，不写错误码。
         return await self._storage_adapter.hold_antigravity_transient(
             credential_name,
             seconds=seconds,

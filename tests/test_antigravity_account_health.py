@@ -776,10 +776,9 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "account_forbidden")
         self.assertFalse(result.should_retry)
-        self.assertEqual(
-            manager.disabled,
-            [("account.json", True, "antigravity")],
-        )
+        # 停用意图留在处理器（需要健康上下文），写入由执行入口完成。
+        self.assertTrue(result.disable_account)
+        self.assertEqual(manager.disabled, [])
 
     async def test_unknown_403_is_recorded_and_not_retried(self):
         from src.api import antigravity
@@ -841,7 +840,8 @@ class Antigravity403HandlingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.decision.category, "unknown_403")
         self.assertFalse(result.should_retry)
-        self.assertEqual(manager.disabled, [("account.json", True, "antigravity")])
+        self.assertTrue(result.disable_account)
+        self.assertEqual(manager.disabled, [])
         self.assertEqual(manager.rebind_calls, [])
 
     async def test_model_403_cools_model_and_disables_account_when_auto_ban_enabled(self):

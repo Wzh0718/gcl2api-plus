@@ -23,12 +23,21 @@ async def _apply_check_403(
 ) -> str:
     """检测过程中遇到 403 时，走与运行时一致的分类/封禁处置，返回分类名。"""
     from src.api.antigravity import _handle_antigravity_403
+    from src.antigravity_failure_policy import apply_action, decide
 
     result = await _handle_antigravity_403(
         credential_name=filename,
         credential_data={**credential, **network},
         model_name="",
         error_text=error_text,
+    )
+    # 复检同样走统一执行入口：分类在处理器里，停用/冷藏由动作表落地。
+    disposition = decide(
+        403, error_text, forbidden_category=result.decision.category
+    )
+    await apply_action(
+        credential_manager, filename, disposition,
+        disable_account=result.disable_account,
     )
     return result.decision.category
 

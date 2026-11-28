@@ -367,8 +367,8 @@ async def test_text_retry_waits_once_per_attempt(monkeypatch, streaming, failure
     }))
     monkeypatch.setattr(agy, "handle_error_with_retry", utils.handle_error_with_retry)
     monkeypatch.setattr(agy, "get_auto_ban_error_codes", lambda: _awaitable([500, 502]))
-    monkeypatch.setattr(utils, "hold_transient_account", lambda *a, **k: _awaitable(None))
-    monkeypatch.setattr(agy, "hold_transient_account", lambda *a, **k: _awaitable(None))
+    monkeypatch.setattr(utils, "apply_hold", lambda *a, **k: _awaitable(None))
+    monkeypatch.setattr(agy, "apply_hold", lambda *a, **k: _awaitable(None))
     monkeypatch.setattr(agy.credential_manager, "get_valid_credential", lambda **k: _awaitable(
         ("a.json", {"access_token": "a", "project_id": "proj"}),
     ))
