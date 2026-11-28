@@ -27,6 +27,8 @@ async def install_schema(conn):
             await cur.execute("SELECT MAX(version) FROM main_schema_versions")
             version = (await cur.fetchone())[0]
             if version == 1:
+                # v1 库不会重跑主 DDL，新增的观测表在这里幂等补齐。
+                await cur.execute(_RELAY_FAILURES_DDL)
                 await conn.commit()
                 return
             if version is not None:
@@ -43,6 +45,20 @@ async def install_schema(conn):
             await conn.commit()
         finally:
             await cur.execute("SELECT RELEASE_LOCK(%s)", (f"gcli-schema-{lock}",))
+
+
+# 老库升级用：与 scripts/mysql/main_tables.sql 中同名表保持一致。
+_RELAY_FAILURES_DDL = """
+CREATE TABLE IF NOT EXISTS antigravity_relay_failures (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  created_at DOUBLE NOT NULL,
+  credential_name VARCHAR(255) NOT NULL,
+  status_code INT NULL,
+  tag VARCHAR(64) NOT NULL,
+  reason TEXT NOT NULL,
+  KEY idx_relay_failure_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin
+"""
 
 
 class MySQLManager(SQLiteManager):

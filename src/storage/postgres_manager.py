@@ -75,6 +75,10 @@ class PostgresManager(SQLiteManager):
                     tables = re.findall(
                         r"^CREATE TABLE (\w+)", (DDL / "main_tables.sql").read_text(), re.M
                     )
+                    # 老库不会重跑 main_tables.sql，新增的独立表写在这里幂等补齐；
+                    # 它只含 CREATE ... IF NOT EXISTS，不引用任何基表，因此半成品
+                    # schema 仍然由下面的完整性校验 fail closed。
+                    await conn.execute((DDL / "main_upgrade.sql").read_text())
                     present = await (
                         await conn.execute(
                             "SELECT tablename FROM pg_tables WHERE schemaname=%s",

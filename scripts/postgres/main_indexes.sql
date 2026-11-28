@@ -86,3 +86,5 @@ CREATE INDEX idx_refresh_import_token
                 ON refresh_import_items(token_digest) WHERE status = 'imported';
 
 CREATE UNIQUE INDEX api_keys_ascii_nocase_name ON api_keys ((translate(name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') COLLATE "C"));
+
+CREATE INDEX idx_relay_failure_time ON antigravity_relay_failures(created_at);

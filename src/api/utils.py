@@ -33,8 +33,19 @@ from src.stream_guard import aclose_quietly
 # 返回，属于传输层失败，不是上游 5xx。两者必须分开处理，否则一次请求级的连接
 # 抖动会把经手的每个账号都按「上游 5xx」冷藏半天（实测 6 个账号 × 12h）。
 RELAY_FAILURE_HEADER = "x-agy-relay-failure"
-# 传输层失败的就地冷却：只让这个账号在短窗口内不被再次选中，不动 12h 阶梯。
+# 传输层失败的就地冷却默认值：只让这个账号在短窗口内不被再次选中，不动 12h 阶梯。
+# 实际窗口可由面板「凭证与重试 → 传输抖动冷却」覆盖（config.antigravity_relay_hold_seconds）。
 RELAY_FAILURE_HOLD_SECONDS = 60.0
+
+
+async def relay_hold_seconds() -> float:
+    """当前生效的传输层失败冷却窗口（面板可配，默认 60s）。"""
+    from config import get_antigravity_relay_hold_seconds
+
+    try:
+        return float(await get_antigravity_relay_hold_seconds())
+    except Exception:  # noqa: BLE001 - 配置读取失败用默认值
+        return RELAY_FAILURE_HOLD_SECONDS
 
 
 def relay_failure_tag(headers) -> str:
@@ -135,7 +146,7 @@ async def hold_transient_account(
     except (TypeError, ValueError):
         accepted = {}
     if "seconds" in accepted:
-        kwargs["seconds"] = RELAY_FAILURE_HOLD_SECONDS if relay_failure else None
+        kwargs["seconds"] = await relay_hold_seconds() if relay_failure else None
     if "relay_failure" in accepted:
         kwargs["relay_failure"] = relay_failure
     try:

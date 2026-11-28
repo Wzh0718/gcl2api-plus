@@ -454,3 +454,81 @@ dialog.telemetry-settings-dialog { width: min(560px, 94vw); max-height: 90vh; ov
 }
 #mainSection .config-action-button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 600px) { #mainSection .config-action-button { min-height: 44px; } }
+
+/* ===== 传输抖动（网关自身失败）观测 ===== */
+.relay-failure-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.relay-failure-summary {
+    font-size: 13px;
+    color: var(--text-secondary, #555);
+}
+
+.relay-failure-table-wrap {
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border-color, #e2e2e2);
+    border-radius: 6px;
+}
+
+.relay-failure-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.relay-failure-table th,
+.relay-failure-table td {
+    padding: 6px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color, #eee);
+    vertical-align: top;
+    word-break: break-all;
+}
+
+.relay-failure-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface-raised, #fafafa);
+    z-index: 1;
+    font-weight: 600;
+}
+
+.relay-failure-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.relay-failure-empty {
+    text-align: center;
+    color: var(--text-secondary, #888);
+}
+
+.relay-failure-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: rgba(120, 120, 120, 0.14);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap;
+}
+
+.relay-failure-tag.is-proxy {
+    background: rgba(214, 105, 32, 0.16);
+    color: #b45309;
+}
+
+@media (max-width: 720px) {
+    .relay-failure-table-wrap {
+        max-height: 200px;
+    }
+    .relay-failure-table th:nth-child(2),
+    .relay-failure-table td:nth-child(2) {
+        display: none;
+    }
+}

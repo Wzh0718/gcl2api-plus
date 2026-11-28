@@ -105,7 +105,31 @@ class StorageBackend(Protocol):
     async def get_antigravity_account_health(self, filename: str) -> Dict[str, Any]: ...
     async def update_antigravity_account_health(self, filename: str, **updates) -> Dict[str, Any]: ...
     async def hold_antigravity_transient(self, filename: str, seconds: float = 600, status_code: Optional[int] = None, *, relay_failure: bool = False) -> float: ...
+    async def record_antigravity_relay_failure(
+        self,
+        credential_name: str,
+        tag: str,
+        reason: str = "",
+        status_code: Optional[int] = None,
+    ) -> None:
+        """侧车传输层失败留痕（面板设置页可见，不进 error_codes）。"""
+        self._ensure_initialized()
+        await self._backend.record_antigravity_relay_failure(
+            credential_name, tag, reason, status_code
+        )
+
+    async def list_antigravity_relay_failures(
+        self, limit: int = 20, window_seconds: float = 86400
+    ):
+        """最近传输层失败与按 tag 计数。"""
+        self._ensure_initialized()
+        return await self._backend.list_antigravity_relay_failures(
+            limit=limit, window_seconds=window_seconds
+        )
+
     async def demote_antigravity_rotation(self, filename: str, steps: int = 2) -> int: ...
+    async def record_antigravity_relay_failure(self, credential_name: str, tag: str, reason: str = "", status_code: Optional[int] = None) -> None: ...
+    async def list_antigravity_relay_failures(self, limit: int = 20, window_seconds: float = 86400) -> Dict[str, Any]: ...
     async def recover_expired_transient_holds(self) -> list[str]: ...
     async def invalidate_antigravity_proxy_binding(self, filename: str, cooldown_seconds: int = 300, *, require_replacement: bool = False) -> bool: ...
     async def disable_orphan_proxy_nodes(self, group_id: int, keep_urls: set) -> int: ...
