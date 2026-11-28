@@ -75,6 +75,10 @@ class PostgresManager(SQLiteManager):
                     tables = re.findall(
                         r"^CREATE TABLE (\w+)", (DDL / "main_tables.sql").read_text(), re.M
                     )
+                    # 老库不重跑主 DDL，新增表只存在于 main_runtime.sql 里；
+                    # 必须先执行幂等增量、再做完整性校验，否则升级到含新表的
+                    # 版本时会因为「缺表」直接拒绝启动。
+                    await conn.execute((DDL / "main_runtime.sql").read_text())
                     present = await (
                         await conn.execute(
                             "SELECT tablename FROM pg_tables WHERE schemaname=%s",
@@ -85,7 +89,6 @@ class PostgresManager(SQLiteManager):
                         raise RuntimeError(
                             "Incomplete PostgreSQL main schema: " + ", ".join(sorted(missing))
                         )
-                    await conn.execute((DDL / "main_runtime.sql").read_text())
                     await install_monitor_history(conn, postgres=True)
                     cache_id = await recent_monitor_cache.install(conn, True)
                     await conn.execute(
