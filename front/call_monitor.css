@@ -64,15 +64,21 @@
     outline-offset: 3px;
 }
 
-/* 同一请求内的上游尝试次数：只在重试过（attempts ≥ 2）时出现。 */
-.cm-attempts {
-    display: inline-block;
-    margin-right: 4px;
-    padding: 0 3px;
-    border-radius: 3px;
-    background: rgba(127, 127, 127, 0.18);
-    font-size: 0.85em;
+/* 同一请求内的上游尝试次数：只在重试过（attempts ≥ 2）时作为状态码右上角的 ×N 出现。 */
+.cm-result-cell .cm-attempts-sup {
+    position: relative;
+    top: -1px;
+    margin-left: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 0;
+    vertical-align: super;
+    color: var(--ui-muted, #6b7684);
     font-variant-numeric: tabular-nums;
+    cursor: help;
+}
+html[data-theme="dark"] .cm-result-cell .cm-attempts-sup {
+    color: #9aa4b2;
 }
 
 .cm-latency-trigger[data-tip-multiline] {
