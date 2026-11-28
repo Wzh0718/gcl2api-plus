@@ -130,7 +130,8 @@ cp .env.example .env
 | `PROXY` | 全局代理 | 按需设置 `http` / `https` / `socks5` |
 | `REDIS_URL` | 计费镜像和看板加速 | 可选，故障时回退 SQLite |
 | `REDIS_USER` / `REDIS_PASSWORD` | Redis 分离认证 | 推荐单独设置 |
-| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | Antigravity 文本模型降级链 | 逗号分隔，留空关闭 |
+| `ANTIGRAVITY_MODEL_FALLBACK_CHAIN` | Antigravity 文本模型降级链（无可用凭证、首字超时、模型级容量 503） | 逗号分隔，留空关闭 |
+| `ANTIGRAVITY_CAPACITY_WINDOW_SECONDS` | 模型级容量 503 的熔断窗口（无 RetryInfo 时） | 默认 `30` 秒，范围 5–300 |
 | `ANTIGRAVITY_TTFT_FALLBACK_SECONDS` | 从发往上游到首个有效输出的降级阈值 | 默认 `30` 秒；`0` 只关闭超时降级 |
 | `MAX_NON_STREAM_BUFFER_BYTES` | 非流响应最大缓冲区 | `16777216` |
 | `CREDENTIAL_CANDIDATE_LIMIT` | 单次账号候选上限 | `32` |

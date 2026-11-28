@@ -23,3 +23,13 @@ def _sqlite_test_backend(monkeypatch):
     monkeypatch.delenv("MAIN_MYSQL_DSN", raising=False)
     monkeypatch.delenv("MAIN_POSTGRES_DSN", raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_capacity_windows():
+    """模型级容量窗口是进程内全局状态：每个用例前后清空，避免顺序影响断言。"""
+    from src.antigravity_capacity_window import reset_capacity_windows
+
+    reset_capacity_windows()
+    yield
+    reset_capacity_windows()
