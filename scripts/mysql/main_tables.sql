@@ -445,3 +445,13 @@ CREATE TABLE IF NOT EXISTS leases (
   owner VARCHAR(255) NOT NULL,
   expires DOUBLE NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
+
+CREATE TABLE IF NOT EXISTS antigravity_relay_failures (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  created_at DOUBLE NOT NULL,
+  credential_name VARCHAR(255) NOT NULL,
+  status_code INT NULL,
+  tag VARCHAR(64) NOT NULL,
+  reason TEXT NOT NULL,
+  KEY idx_relay_failure_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin;
