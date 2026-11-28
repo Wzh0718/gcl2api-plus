@@ -4,11 +4,13 @@
 而 `auto_ban_error_codes` 里含 500，`handle_error_with_retry` 在重试之前
 就把账号 `set_cred_disabled(True)`，一天内误杀 19 个可用账号。
 
-新语义：
-- 5xx 不封号，账号进入 ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``（默认 600s）窗口；
-- 窗口内选择器跳过该账号，请求换号重试；
-- 每命中一次累计 ``transient_error_count``，冷却到期后平等参与轮转；
-- 一次真实成功把窗口与计数清零。
+现行语义（2026-11-28 收敛后）：
+- 5xx 不封号，账号进入 ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``（默认 43200s）
+  窗口；档位由 ``src.antigravity_failure_policy`` 按失败来源给出，存储层按
+  传入的 ``seconds`` 原样写入；
+- 窗口内选择器跳过该账号，请求换号重试；窗口内重复失败不叠加、不延长；
+- 每命中一次累计 ``transient_error_count``；一次真实成功只清计数，不缩短窗口；
+- 到期后由 ``recover_expired_transient_holds`` 清零并转入养号 level 0。
 """
 
 import time
@@ -50,7 +52,9 @@ async def test_transient_hold_does_not_disable_account(tmp_path, monkeypatch):
         "a.json", seconds=600, status_code=500
     )
 
-    assert hold_until == pytest.approx(before + 43200, abs=5)
+    assert hold_until == pytest.approx(before + 600, abs=5), (
+        "存储层必须按传入窗口写入；档位由 failure policy 决定"
+    )
     stored_until, count, disabled = await read_hold(manager, "a.json")
     assert stored_until == pytest.approx(hold_until)
     assert count == 1
@@ -216,15 +220,21 @@ async def test_explicit_postgres_requires_dsn(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_first_503_cools_the_account_immediately(tmp_path, monkeypatch):
-    """一次 503 就必须冷藏账号：首档 60 秒，不依赖重试次数或重试开关。"""
+    """一次账号级 503 立刻冷藏：走 failure policy，时长取配置默认档。"""
+    from src.antigravity_failure_policy import (
+        DEFAULT_ACCOUNT_HOLD_SECONDS,
+        apply_hold,
+        decide_failure,
+    )
+
     manager = await make_manager(tmp_path, monkeypatch)
 
     before = time.time()
-    hold_until = await manager.hold_antigravity_transient(
-        "a.json", seconds=600, status_code=503
-    )
+    disposition = await decide_failure(503, "")
+    assert disposition.holds_account, "无正文的 503 按账号级处理"
+    hold_until = await apply_hold(manager, "a.json", disposition)
 
-    assert hold_until == pytest.approx(before + 43200, abs=5)
+    assert hold_until == pytest.approx(before + DEFAULT_ACCOUNT_HOLD_SECONDS, abs=5)
     _, count, disabled = await read_hold(manager, "a.json")
     assert count == 1
     assert disabled == 0
@@ -233,7 +243,7 @@ async def test_first_503_cools_the_account_immediately(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, monkeypatch):
+async def test_repeated_503_reopens_after_expiry_at_configured_length(tmp_path, monkeypatch):
     manager = await make_manager(tmp_path, monkeypatch)
 
     async def expire(name):
@@ -246,21 +256,21 @@ async def test_repeated_503_backs_off_then_caps_and_success_resets(tmp_path, mon
             )
             await db.commit()
 
-    # 5xx 直接冷却半天：任何 5xx 都取定值 43200s
+    # 档位由 policy 给出；这里验证存储层按传入窗口写入且不做阶梯叠加。
     for expected in (43200, 43200, 43200):
         hold_until = await manager.hold_antigravity_transient(
-            "a.json", seconds=600, status_code=503
+            "a.json", seconds=43200, status_code=503
         )
         assert hold_until - time.time() == pytest.approx(expected, abs=5)
         await expire("a.json")
 
-    # 恢复期渐进放量：一次成功只降一档，不把阶梯清零
+    # 一次成功只清计数，不缩短窗口
     await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
     await expire("a.json")
     hold_until = await manager.hold_antigravity_transient(
-        "a.json", seconds=600, status_code=503
+        "a.json", seconds=43200, status_code=503
     )
-    assert hold_until - time.time() == pytest.approx(43200, abs=5), "冷却为定值"
+    assert hold_until - time.time() == pytest.approx(43200, abs=5), "冷却为配置值"
 
     await manager.record_success("a.json", model_name="gemini-2.5-flash", mode="antigravity")
 
@@ -272,7 +282,7 @@ async def test_parallel_503_failures_share_one_window(tmp_path, monkeypatch):
     manager = await make_manager(tmp_path, monkeypatch)
 
     deadlines = await asyncio.gather(*(
-        manager.hold_antigravity_transient("a.json", seconds=600, status_code=503)
+        manager.hold_antigravity_transient("a.json", seconds=43200, status_code=503)
         for _ in range(4)
     ))
 

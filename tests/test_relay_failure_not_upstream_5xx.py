@@ -114,11 +114,14 @@ async def test_relay_failure_without_retry_budget_stops_retrying():
 
 @pytest.mark.asyncio
 async def test_real_upstream_5xx_keeps_half_day_hold(tmp_path, monkeypatch):
+    """上游真实 502 仍按账号级冷藏，档位由 failure policy 从配置读取。"""
+    from src.antigravity_failure_policy import DEFAULT_ACCOUNT_HOLD_SECONDS, apply_hold, decide
+
     manager = await make_manager(tmp_path, monkeypatch)
     before = time.time()
-    hold_until = await manager.hold_antigravity_transient(
-        "a.json", seconds=600, status_code=502
-    )
+    disposition = decide(502, "", account_hold_seconds=DEFAULT_ACCOUNT_HOLD_SECONDS)
+    assert disposition.holds_account is True
+    hold_until = await apply_hold(manager, "a.json", disposition)
     assert hold_until == pytest.approx(before + 43200, abs=5), (
         "上游真实 502 保持原有半天冷却，本次改动不得放宽"
     )
@@ -126,11 +129,13 @@ async def test_real_upstream_5xx_keeps_half_day_hold(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_relay_502_only_benches_account_for_a_minute(tmp_path, monkeypatch):
+    """传输层失败只压一跳：窗口由 policy 给出（面板可配，默认 60s）。"""
+    from src.antigravity_failure_policy import apply_hold, decide
+
     manager = await make_manager(tmp_path, monkeypatch)
     before = time.time()
-    hold_until = await manager.hold_antigravity_transient(
-        "a.json", seconds=600, status_code=502, relay_failure=True
-    )
+    disposition = decide(502, "", relay_failure=True)
+    hold_until = await apply_hold(manager, "a.json", disposition)
     assert hold_until == pytest.approx(before + RELAY_FAILURE_HOLD_SECONDS, abs=5)
     stored_until, count, _error_codes, disabled = await read_hold(manager, "a.json")
     assert stored_until == pytest.approx(hold_until)

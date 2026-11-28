@@ -59,10 +59,11 @@ async def test_retry_helper_does_not_hold_account_on_capacity(monkeypatch):
 
     held = []
 
-    async def fake_hold(credential_manager, status_code, credential_name):
-        held.append((status_code, credential_name))
+    async def fake_apply_hold(credential_manager, credential_name, disposition):
+        if disposition.holds_account:
+            held.append((disposition.status_code, credential_name))
 
-    monkeypatch.setattr(utils, "hold_transient_account", fake_hold)
+    monkeypatch.setattr(utils, "apply_hold", fake_apply_hold)
 
     should_retry = await utils.handle_error_with_retry(
         object(), 503, "a.json", True, 0, 3,
@@ -79,10 +80,11 @@ async def test_retry_helper_still_holds_on_account_level_503(monkeypatch):
 
     held = []
 
-    async def fake_hold(credential_manager, status_code, credential_name):
-        held.append((status_code, credential_name))
+    async def fake_apply_hold(credential_manager, credential_name, disposition):
+        if disposition.holds_account:
+            held.append((disposition.status_code, credential_name))
 
-    monkeypatch.setattr(utils, "hold_transient_account", fake_hold)
+    monkeypatch.setattr(utils, "apply_hold", fake_apply_hold)
 
     should_retry = await utils.handle_error_with_retry(
         object(), 503, "a.json", True, 0, 3,

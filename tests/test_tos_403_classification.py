@@ -88,7 +88,17 @@ async def test_tos_disables_account_even_when_auto_ban_is_disabled(monkeypatch):
         error_text=TOS_ERROR,
     )
 
-    assert manager.disabled == [("tos.json", True, "antigravity")]
+    # 处理器只判定「是否停用」，写入统一交给 failure policy 的执行入口。
+    assert manager.disabled == []
+    assert result.disable_account is True
     assert manager.health["last_403_category"] == "account_forbidden"
     assert result.should_retry is False
     auto_ban.assert_not_awaited()
+
+    from src.antigravity_failure_policy import apply_action, decide
+
+    disposition = decide(403, TOS_ERROR, forbidden_category="account_forbidden")
+    await apply_action(
+        manager, "tos.json", disposition, disable_account=result.disable_account
+    )
+    assert manager.disabled == [("tos.json", True, "antigravity")]
