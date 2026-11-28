@@ -3,7 +3,6 @@ Base API Client - 共用的 API 客户端基础功能
 提供错误处理、自动封禁、重试逻辑等共同功能
 """
 
-import inspect
 import json
 import re
 import time
@@ -22,7 +21,11 @@ from config import (
     get_max_non_stream_buffer_bytes,
 )
 from log import log
-from src.antigravity_error_classifier import is_model_capacity_exhausted
+from src.antigravity_failure_policy import (
+    RELAY_HOLD_SECONDS,
+    apply_hold,
+    decide_failure,
+)
 from src.credential_manager import CredentialManager
 from src.stream_guard import aclose_quietly
 
@@ -34,18 +37,19 @@ from src.stream_guard import aclose_quietly
 # 抖动会把经手的每个账号都按「上游 5xx」冷藏半天（实测 6 个账号 × 12h）。
 RELAY_FAILURE_HEADER = "x-agy-relay-failure"
 # 传输层失败的就地冷却默认值：只让这个账号在短窗口内不被再次选中，不动 12h 阶梯。
-# 实际窗口可由面板「凭证与重试 → 传输抖动冷却」覆盖（config.antigravity_relay_hold_seconds）。
-RELAY_FAILURE_HOLD_SECONDS = 60.0
+# 实际窗口可由面板「凭证与重试 → 传输抖动冷却」覆盖（config.antigravity_relay_hold_seconds）；
+# 档位由 failure policy 的动作表统一定义，这里只保留默认值别名。
+RELAY_FAILURE_HOLD_SECONDS = RELAY_HOLD_SECONDS
 
 
 async def relay_hold_seconds() -> float:
-    """当前生效的传输层失败冷却窗口（面板可配，默认 60s）。"""
-    from config import get_antigravity_relay_hold_seconds
+    """当前生效的传输层失败冷却窗口（面板可配，默认 60s）。
 
-    try:
-        return float(await get_antigravity_relay_hold_seconds())
-    except Exception:  # noqa: BLE001 - 配置读取失败用默认值
-        return RELAY_FAILURE_HOLD_SECONDS
+    实现位于 failure policy，这里保留函数名是为了兼容上游调用方与测试。
+    """
+    from src.antigravity_failure_policy import resolve_relay_hold_seconds
+
+    return await resolve_relay_hold_seconds()
 
 
 def relay_failure_tag(headers) -> str:
@@ -121,43 +125,6 @@ async def handle_auto_ban(
         )
 
 
-async def hold_transient_account(
-    credential_manager: CredentialManager,
-    status_code: int,
-    credential_name: str,
-    *,
-    relay_failure: bool = False,
-) -> None:
-    """Place the account in a short cooldown instead of banning it.
-
-    Never raises: a failed hold must not turn a retryable 5xx into a request
-    failure. A real upstream 5xx uses ``ANTIGRAVITY_TRANSIENT_HOLD_SECONDS``;
-    a relay-synthesized transport failure only benches the account for
-    ``RELAY_FAILURE_HOLD_SECONDS`` because the upstream never answered.
-    """
-    hold = getattr(credential_manager, "hold_transient", None)
-    if hold is None or not credential_name:
-        return
-    kwargs = {"status_code": status_code, "mode": "antigravity"}
-    # 只传 target 实现真正声明的参数：既能给支持短冷却的实现传窗口，
-    # 也不会让只接受旧签名的实现（含测试替身）因多余关键字报错。
-    try:
-        accepted = inspect.signature(hold).parameters
-    except (TypeError, ValueError):
-        accepted = {}
-    if "seconds" in accepted:
-        kwargs["seconds"] = await relay_hold_seconds() if relay_failure else None
-    if "relay_failure" in accepted:
-        kwargs["relay_failure"] = relay_failure
-    try:
-        await hold(credential_name, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - retry path must stay intact
-        log.warning(
-            f"[ANTIGRAVITY TRANSIENT] hold failed for {credential_name}: "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-
 async def handle_error_with_retry(
     credential_manager: CredentialManager,
     status_code: int,
@@ -196,33 +163,23 @@ async def handle_error_with_retry(
     if mode == "antigravity" and status_code == 400:
         return False
 
-    # 侧车合成 502（上游未应答）只说明这一跳没谈成：短冷却 + 换号，不计入
-    # 「上游 5xx」的半天冷藏，避免一次连接抖动连坐多个账号。
-    if mode == "antigravity" and relay_failure:
-        await hold_transient_account(
-            credential_manager, status_code, credential_name, relay_failure=True
+    # 侧车合成 502（上游未应答）与上游 5xx 共用一次归因：冷藏多久、要不要冷藏
+    # 由 failure policy 决定（relay 压 60s；容量型 503 不冷藏；配额型 503 只冷
+    # 模型；服务级 503 与 500/502 冷藏配置时长）。这里只负责换号重试。
+    if mode == "antigravity" and (relay_failure or status_code in (500, 502, 503)):
+        disposition = await decide_failure(
+            status_code, error_text, relay_failure=relay_failure
         )
+        await apply_hold(credential_manager, credential_name, disposition)
         can_retry = retry_enabled and attempt < max_retries
         if can_retry:
-            log.info(
-                f"[{mode.upper()} RETRY] relay transport failure {status_code}; "
-                f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
+            reason = (
+                "relay transport failure"
+                if relay_failure
+                else f"{status_code} {disposition.category}"
             )
-            return True
-        return False
-
-    # 上游 5xx 触发账号冷却；503 按连续失败窗口退避，其余使用配置时长。
-    # 本次请求换号重试。放在自动封禁之前，保证配置里残留 500/502/503 也不生效。
-    if mode == "antigravity" and status_code in (500, 502, 503):
-        # The caller independently persists any explicit upstream cooldown.
-        can_retry = retry_enabled and attempt < max_retries
-        # 模型级容量耗尽（503 + MODEL_CAPACITY_EXHAUSTED）是上游全局窗口，
-        # 与凭证无关：只按上游 retryDelay 做模型冷却，不冷藏账号。
-        if not is_model_capacity_exhausted(status_code, error_text):
-            await hold_transient_account(credential_manager, status_code, credential_name)
-        if can_retry:
             log.info(
-                f"[{mode.upper()} RETRY] {status_code} transient; "
+                f"[{mode.upper()} RETRY] {reason}; "
                 f"retrying with next credential (attempt {attempt + 1}/{max_retries})"
             )
             return True

@@ -623,10 +623,11 @@ async def test_pg_503_half_day_hold_coalesces_parallel_failures_and_resets(pg_st
     name = "backoff.json"
     await pg_store.store_credential(name, {"project_id": "test"}, mode="antigravity")
     backend = pg_store._backend
+    # 窗口档位由 failure policy 给出；存储层按传入 seconds 原样写入。
     for expected_count in (1, 2):
         start = time.time()
         deadlines = await asyncio.gather(*(
-            backend.hold_antigravity_transient(name, 600, 503) for _ in range(4)
+            backend.hold_antigravity_transient(name, 12 * 3600, 503) for _ in range(4)
         ))
         assert max(deadlines) == min(deadlines)
         assert deadlines[0] - start == pytest.approx(12 * 3600, abs=2)

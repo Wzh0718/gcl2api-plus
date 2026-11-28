@@ -1191,10 +1191,17 @@ async def test_image_non_stream_recovers_from_503(
     assert response.status_code == (503 if single_account else 200)
     assert len(billing_records) == 1
     if single_account:
-        # 单账号 + 无容量标记：账号级 503，换成没号可换，只能冷藏该账号
-        manager.hold_transient.assert_awaited_once_with(
-            "ultra.json", status_code=503, mode="antigravity"
-        )
+        # 单账号 + 无容量标记：账号级 503，换成没号可换，只能冷藏该账号。
+        # 窗口长度由 failure policy 决定（配置默认档），链路层不再自带时长。
+        from src.antigravity_failure_policy import DEFAULT_ACCOUNT_HOLD_SECONDS
+
+        manager.hold_transient.assert_awaited_once()
+        hold_kwargs = manager.hold_transient.await_args.kwargs
+        assert manager.hold_transient.await_args.args == ("ultra.json",)
+        assert hold_kwargs["status_code"] == 503
+        assert hold_kwargs["mode"] == "antigravity"
+        assert hold_kwargs["seconds"] == pytest.approx(DEFAULT_ACCOUNT_HOLD_SECONDS)
+        assert hold_kwargs["relay_failure"] is False
         assert manager.selections == [set(), {"ultra.json"}]
         assert [call["json_body"]["project"] for call in upstream_calls] == ["ultra-project"]
         assert manager.releases == [("ultra.json", "lease-ultra")]

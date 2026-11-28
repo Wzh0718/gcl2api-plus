@@ -55,13 +55,18 @@ from src.antigravity_error_classifier import (
     MODEL_CAPACITY_MARKER,
     Antigravity403Decision,
     classify_antigravity_403,
-    classify_antigravity_503,
     is_model_capacity_exhausted,
 )
 from src.antigravity_capacity_window import (
     capacity_window_remaining,
     record_capacity_window,
     should_log_skip,
+)
+from src.antigravity_failure_policy import (
+    apply_action,
+    apply_hold,
+    decide,
+    decide_failure,
 )
 from src.model_fallback_trace import (
     REASON_CAPACITY_503,
@@ -83,7 +88,6 @@ from src.api.text_retry import is_image_request as is_antigravity_image_request
 from src.api.utils import (
     check_should_auto_ban,
     handle_auto_ban,
-    hold_transient_account,
     is_relay_transport_failure,
     relay_failure_tag,
     strip_relay_failure_header,
@@ -143,6 +147,9 @@ class Antigravity403HandlingResult:
     cooldown_until: Optional[float] = None
     # 地区拒绝/绑定异常：换掉出口 IP 后可以用同一账号重试本次请求
     rebind_retry: bool = False
+    # 是否停用账号。判定需要账号健康与 AUTO_BAN 配置上下文，因此留在 403
+    # 处理器里；写入统一由 failure policy 的 apply_action 执行。
+    disable_account: bool = False
 
 
 @dataclass(frozen=True)
@@ -1060,18 +1067,17 @@ async def _handle_antigravity_403(
     # 绑定故障和地区拒绝本身都不证明账号已被禁用。
     # 只有明确的账号级拒绝（或无法归类的 403 且配置要求封禁）才禁用账号。
     account_level_denial = decision.disable_account or decision.category == "unknown_403"
-    if decision.tos_violation or (
-        account_level_denial and await check_should_auto_ban(403)
-    ):
-        await credential_manager.set_cred_disabled(
-            credential_name, True, mode="antigravity"
-        )
+    disable_account = bool(
+        decision.tos_violation
+        or (account_level_denial and await check_should_auto_ban(403))
+    )
 
     if decision.category == "validation_required":
         return Antigravity403HandlingResult(
             decision,
             should_retry=False,
             cooldown_until=timestamp + VALIDATION_REQUIRED_COOLDOWN_SECONDS,
+            disable_account=disable_account,
         )
 
     if decision.cooldown_model:
@@ -1079,12 +1085,14 @@ async def _handle_antigravity_403(
             decision,
             should_retry=False,
             cooldown_until=timestamp + MODEL_FORBIDDEN_COOLDOWN_SECONDS,
+            disable_account=disable_account,
         )
 
     return Antigravity403HandlingResult(
         decision,
         should_retry=False,
         rebind_retry=bool(decision.retry_after_rebind),
+        disable_account=disable_account,
     )
 
 
@@ -1707,18 +1715,13 @@ async def _stream_request_inner(
                             f"凭证: {current_file}, tag: {tag or '无'}, "
                             f"正文: {(error_body or '')[:120]!r}"
                         )
-                    # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
-                    upstream_503 = (
-                        classify_antigravity_503(status_code, error_body)
-                        if status_code == 503
-                        else None
+                    # 失败归因与账号处置统一走 failure policy：侧车 502 只压 60s，
+                    # 容量型 503 只降权，配额型 503 只冷模型，服务级 503 与
+                    # 500/502 冷藏配置时长。链路层不再自行判断要不要冷藏账号。
+                    disposition = await decide_failure(
+                        status_code, error_body or "", relay_failure=relay_failure
                     )
-                    if upstream_503 is not None and upstream_503.hold_account:
-                        # 账号级/未知 503 才冷藏账号；模型级容量是上游全局窗口，
-                        # 不归咎账号，也不依赖重试开关与后续分支。
-                        await hold_transient_account(
-                            credential_manager, status_code, current_file
-                        )
+                    await apply_hold(credential_manager, current_file, disposition)
 
                     # 403 必须先分类；429/503/配置错误码继续走通用重试。
                     allow_alternate = text_retry_decision(
@@ -1732,21 +1735,19 @@ async def _stream_request_inner(
                         log.warning(
                             f"[ANTIGRAVITY STREAM] 流式请求失败 (status={status_code}), "
                             f"凭证: {current_file}, "
-                            f"分类: {upstream_503.describe() if upstream_503 else '-'}, "
+                            f"分类: {disposition.describe() if status_code >= 500 or status_code == 429 or relay_failure else '-'}, "
                             f"traceId: {_upstream_trace_id(getattr(chunk, 'headers', None)) or '无'}"
                         )
 
                         # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                         cooldown_until = None
-                        if status_code == 429 or (
-                            upstream_503 is not None and upstream_503.write_cooldown
-                        ):
+                        if status_code == 429 or disposition.model_cooldown:
                             cooldown_until = await _resolve_error_cooldown(
                                 status_code, error_body, current_file,
                                 headers=getattr(chunk, "headers", None),
                             )
 
-                        if upstream_503 is not None and upstream_503.retry_same_account:
+                        if disposition.demote_round_robin:
                             # 容量 503 归咎不到账号，但同一个号在窗口里会被反复撞上：
                             # 把它在轮转队列里往后挪几步（软降权），不写冷却、不禁用。
                             await _demote_capacity_account(current_file)
@@ -1760,6 +1761,16 @@ async def _stream_request_inner(
                                 error_text=error_body or "",
                             )
                             cooldown_until = classified_403.cooldown_until
+                            # 停用与冷藏统一由动作表执行；403 处理器只判定分类
+                            # 与「是否停用」，不再直接写账号字段。
+                            forbidden = decide(
+                                status_code, error_body or "",
+                                forbidden_category=classified_403.decision.category,
+                            )
+                            await apply_action(
+                                credential_manager, current_file, forbidden,
+                                disable_account=classified_403.disable_account,
+                            )
 
                         if status_code == 429:
                             # 归因带上该账号的恢复时刻，监控可直接显示「何时能再用」。
@@ -1769,7 +1780,7 @@ async def _stream_request_inner(
 
                         # 记录错误并切换凭证
                         # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
-                        capacity_error = upstream_503 is not None and upstream_503.retry_same_account
+                        capacity_error = disposition.retry_same_account
                         retry_capacity_here = _should_retry_same_account(
                             # 换号已经用过就不再补试：同一容量窗口里换过的号也在 503，
                             # 再打一次注定失败，只多一次上游往返和延迟。
@@ -1794,7 +1805,7 @@ async def _stream_request_inner(
                             error_message=error_body,
                             upstream_seconds=time.monotonic() - attempt_started,
                             gateway_seconds=(time.monotonic() - gateway_started) if stream_final_failure else None,
-                            record_error_state=not relay_failure,
+                            record_error_state=disposition.record_error_state,
                         )
 
                         if allow_alternate is not None:
@@ -1845,7 +1856,7 @@ async def _stream_request_inner(
                                 "[ANTIGRAVITY STREAM] 503 分类=模型级容量耗尽，"
                                 "立即原号重试一次: "
                                 f"{current_file} / {model_name}, "
-                                f"{upstream_503.describe() if upstream_503 else '-'}"
+                                f"{disposition.describe()}"
                             )
                             need_retry = True
                             same_account_retry = True
@@ -1857,15 +1868,15 @@ async def _stream_request_inner(
                             # 先记窗口（后续请求入口直接跳过本模型），有降级链
                             # 就改投下一个模型，没有才把上游 503 交给客户端。
                             record_capacity_window(
-                                model_name, upstream_503.upstream_delay_seconds
+                                model_name, disposition.upstream_delay_seconds
                             )
-                            if upstream_503.upstream_model:
+                            if disposition.upstream_model:
                                 record_capacity_window(
-                                    upstream_503.upstream_model,
-                                    upstream_503.upstream_delay_seconds,
+                                    disposition.upstream_model,
+                                    disposition.upstream_delay_seconds,
                                 )
                             chunk = _apply_upstream_retry_after(
-                                chunk, upstream_503.upstream_delay_seconds
+                                chunk, disposition.upstream_delay_seconds
                             )
                             fallback_model = _next_fallback_model(chain, model_name)
                             if fallback_model is not None:
@@ -2550,11 +2561,24 @@ async def _non_stream_image_request_inner(
             last_response, error_text, request_id=last_request_id, credential_name=current_file,
             model=requested_model, upstream_request=final_payload, image_request=True,
         )
-        last_was_capacity = is_image_model_capacity_exhausted(
-            status_code, error_text
+        # 图像链路同样走 failure policy：侧车合成 502 只压一跳短窗（此前图像路径
+        # 没有 relay 豁免，一次代理抖动就会把图像账号冷藏半天）；容量型 503 只
+        # 降权，服务级 503 与 500/502 才冷藏。
+        image_relay_failure = is_relay_transport_failure(
+            getattr(response, "headers", None), error_text or ""
         )
-        if status_code == 503 and not last_was_capacity:
-            await hold_transient_account(credential_manager, status_code, current_file)
+        if image_relay_failure:
+            strip_relay_failure_header(getattr(last_response, "headers", None))
+            log.warning(
+                f"[ANTIGRAVITY IMAGE] 侧车传输层失败（非上游 5xx）, 凭证: {current_file}, "
+                f"tag: {relay_failure_tag(getattr(response, 'headers', None)) or '无'}, "
+                f"正文: {(error_text or '')[:120]!r}"
+            )
+        disposition = await decide_failure(
+            status_code, error_text or "", relay_failure=image_relay_failure
+        )
+        await apply_hold(credential_manager, current_file, disposition)
+        last_was_capacity = disposition.retry_same_account
         if last_was_capacity and status_code != 429:
             await _record_image_account_outcome(
                 current_file,
@@ -2571,7 +2595,7 @@ async def _non_stream_image_request_inner(
         await lease_tracker.release()
         cooldown_until = None
         classified_403 = None
-        if status_code in (429, 503):
+        if status_code == 429 or disposition.model_cooldown:
             cooldown_until = await _resolve_error_cooldown(
                 status_code, error_text, current_file,
                 headers=getattr(response, "headers", None),
@@ -2584,6 +2608,15 @@ async def _non_stream_image_request_inner(
                 error_text=error_text,
             )
             cooldown_until = classified_403.cooldown_until
+            # 与文本链路共用同一个执行入口（动作表决定停用）。
+            forbidden = decide(
+                status_code, error_text or "",
+                forbidden_category=classified_403.decision.category,
+            )
+            await apply_action(
+                credential_manager, current_file, forbidden,
+                disable_account=classified_403.disable_account,
+            )
         if status_code == 429:
             # 归因带上恢复时刻，并给客户端一个 Retry-After：429 的语义是「这个账号
             # 这个模型要等到 reset」，不是一个可以立刻重试的瞬时错误。
@@ -3111,7 +3144,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     credential_name=current_file, model=model_name, upstream_request=final_payload,
                 )
                 # 侧车合成 502 = 上游一个字节都没回（传输层失败），不是上游 5xx。
-                # 标记出来：短冷却、不写面板错误码、不推进 12h 阶梯。
+                # 标记出来：只压 60s 短窗、不写面板错误码、不占用账号级冷藏时长。
                 relay_failure = is_relay_transport_failure(
                     getattr(response, "headers", None), error_text
                 )
@@ -3126,17 +3159,11 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     )
                 if track_retry:
                     retry_trace.respond(status_code, upstream_elapsed, last_error_response)
-                # 503 不是一个东西：按正文分类后再决定冷藏/冷却/重试。
-                upstream_503 = (
-                    classify_antigravity_503(status_code, error_text)
-                    if status_code == 503
-                    else None
+                # 失败归因与账号处置与流式路径共用同一个 policy：不再各自判断。
+                disposition = await decide_failure(
+                    status_code, error_text or "", relay_failure=relay_failure
                 )
-                if upstream_503 is not None and upstream_503.hold_account:
-                    # 与流式路径一致：账号级/未知 503 先冷藏，模型级容量不归咎账号。
-                    await hold_transient_account(
-                        credential_manager, status_code, current_file
-                    )
+                await apply_hold(credential_manager, current_file, disposition)
 
                 allow_alternate = text_retry_decision(
                     retry_config, status_code, image=False
@@ -3149,21 +3176,19 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                     log.warning(
                         f"[ANTIGRAVITY] 非流式请求失败 (status={status_code}), "
                         f"凭证: {current_file}, "
-                        f"分类: {upstream_503.describe() if upstream_503 else '-'}, "
+                        f"分类: {disposition.describe() if status_code >= 500 or status_code == 429 or relay_failure else '-'}, "
                         f"traceId: {_upstream_trace_id(getattr(response, 'headers', None)) or '无'}"
                     )
 
                     # 解析冷却时间（明确重置时间优先，其余 429 只短冷却）
                     cooldown_until = None
-                    if status_code == 429 or (
-                        upstream_503 is not None and upstream_503.write_cooldown
-                    ):
+                    if status_code == 429 or disposition.model_cooldown:
                         cooldown_until = await _resolve_error_cooldown(
                             status_code, error_text, current_file,
                             headers=getattr(response, "headers", None),
                         )
 
-                    if upstream_503 is not None and upstream_503.retry_same_account:
+                    if disposition.demote_round_robin:
                         # 容量 503 归咎不到账号，但同一个号在窗口里会被反复撞上：
                         # 把它在轮转队列里往后挪几步（软降权），不写冷却、不禁用。
                         await _demote_capacity_account(current_file)
@@ -3177,6 +3202,15 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                             error_text=error_text,
                         )
                         cooldown_until = classified_403.cooldown_until
+                        # 与流式路径共用同一个执行入口（动作表决定停用）。
+                        forbidden = decide(
+                            status_code, error_text or "",
+                            forbidden_category=classified_403.decision.category,
+                        )
+                        await apply_action(
+                            credential_manager, current_file, forbidden,
+                            disable_account=classified_403.disable_account,
+                        )
 
                     if status_code == 429:
                         last_error_response.rate_limit = with_reset_at(
@@ -3186,7 +3220,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
 
                     # 记录错误并切换凭证
                     # 网关耗时只在最终结果时记一次：重试耗尽/重试关闭/403 判定不再重试
-                    capacity_error = upstream_503 is not None and upstream_503.retry_same_account
+                    capacity_error = disposition.retry_same_account
                     retry_capacity_here = _should_retry_same_account(
                         # 换号已经用过就不再补试：同一容量窗口里换过的号也在 503。
                         requested=capacity_error and not used_alternate,
@@ -3206,7 +3240,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         error_message=error_text,
                         upstream_seconds=upstream_elapsed,
                         gateway_seconds=(time.monotonic() - gateway_started) if ns_final_failure else None,
-                        record_error_state=not relay_failure,
+                        record_error_state=disposition.record_error_state,
                     )
 
                     if allow_alternate is not None:
@@ -3256,7 +3290,7 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                             "[ANTIGRAVITY] 503 分类=模型级容量耗尽，"
                             "立即原号重试一次: "
                             f"{current_file} / {model_name}, "
-                            f"{upstream_503.describe() if upstream_503 else '-'}"
+                            f"{disposition.describe()}"
                         )
                         attempt += 1
                         continue
@@ -3266,15 +3300,15 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
                         # 先记窗口（后续请求入口直接跳过本模型），有降级链
                         # 就改投下一个模型，没有才把上游 503 交给客户端。
                         record_capacity_window(
-                            model_name, upstream_503.upstream_delay_seconds
+                            model_name, disposition.upstream_delay_seconds
                         )
-                        if upstream_503.upstream_model:
+                        if disposition.upstream_model:
                             record_capacity_window(
-                                upstream_503.upstream_model,
-                                upstream_503.upstream_delay_seconds,
+                                disposition.upstream_model,
+                                disposition.upstream_delay_seconds,
                             )
                         last_error_response = _apply_upstream_retry_after(
-                            last_error_response, upstream_503.upstream_delay_seconds
+                            last_error_response, disposition.upstream_delay_seconds
                         )
                         fallback_model = _next_fallback_model(settings[0], model_name)
                         if fallback_model is not None:

@@ -51,17 +51,10 @@ _EXCLUSIVE_PROBE_FAILURE = """(h.eligibility_status = 'geo_blocked' OR (
         'IP echo read failed: ReadError', 'IP echo read failed: ReadTimeout',
         'IP check failed: ValueError: ReadError', 'IP check failed: ValueError: ReadTimeout'
     )))"""
-# 503 连续失败退避阶梯（秒），最后一档之外统一使用配置上限。
-# 5xx 就地冷却阶梯：60s → 5m → 15m → 30m → 1h → 2h → 4h → 12h。
-# 上游 5xx 往往先于账号级处置出现（503 连击 → 短恢复 → 403/TOS），
-# 只在 10 分钟内反复放回轮转会持续制造同样的失败模式，因此阶梯必须能到半天。
-# 5xx 直接冷却半天：5xx 往往是账号级处置的前兆（503 连击 → 短恢复 → 403/TOS），
-# 不再做阶梯试探；到期后由 warmup 组件以低并发缓慢放量。
-_TRANSIENT_HOLD_SECONDS = 43200
-# 侧车合成 502（上游一个字节都没回）只说明这一跳没谈成：同一个出口在前后一秒
-# 仍可能返回 200（实测同账号同节点同窗口既有 200 也有 502）。这类失败只做短
-# 冷却，既不写面板错误码，也不推进 5xx 阶梯。
-_RELAY_FAILURE_HOLD_SECONDS = 60.0
+# 5xx 的就地冷却时长不在存储层决定：档位由 ``src.antigravity_failure_policy``
+# 唯一给出（账号级 5xx 取配置，侧车合成 502 只压一跳）。存储层只负责把给定的
+# 窗口写进 ``transient_hold_until``，不再自行做阶梯试探或改档，避免同一个故障
+# 被链路层和存储层按两套口径处置。
 # 5xx 冷却到期后的养号参数：并发 1、间隔 5s、每 5 次成功升一级
 POST_5XX_WARMUP_CONFIG = {
     "account_initial_concurrency": 1,
@@ -69,8 +62,6 @@ POST_5XX_WARMUP_CONFIG = {
     "success_threshold": 5,
     "max_level": 3,
 }
-_TRANSIENT_BACKOFF_STEPS = (_TRANSIENT_HOLD_SECONDS,)
-_TRANSIENT_BACKOFF_CAP = _TRANSIENT_HOLD_SECONDS
 ROUTING_WINDOW_SECONDS = 60
 PROXY_EXPIRY_LEAD_SECONDS = 24 * 3600
 
@@ -5833,6 +5824,10 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         5xx 冷却半天的目的不是「歇够了就满速」，而是给账号一次重新起步的
         机会：到期后进入 warmup level 0（初始并发 1、初始间隔 5s），
         按 success_threshold 次成功逐级放量；过程中再出 5xx 会重新进冷却。
+
+        判定只看冷却窗口本身，不看 ``transient_error_count``：窗口内的任何一次
+        成功（例如面板「消息测试」）都会把计数清零，若以计数为前提，到期时
+        就匹配不到这些账号，窗口残留而 warmup 不启动，账号直接满速回到轮转。
         """
         self._ensure_initialized()
         now = time.time()
@@ -5843,7 +5838,6 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                 async with db.execute(
                     """SELECT filename FROM antigravity_credentials
                        WHERE COALESCE(disabled, 0) = 0
-                         AND COALESCE(transient_error_count, 0) > 0
                          AND COALESCE(transient_hold_until, 0) > 0
                          AND COALESCE(transient_hold_until, 0) <= ?""",
                     (now,),
@@ -6004,30 +5998,27 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
         *,
         relay_failure: bool = False,
     ) -> float:
-        """把账号放进瞬时冷却窗口，不改 ``disabled``。
+        """把账号放进就地冷却窗口，不改 ``disabled``。
 
-        上游 5xx 是服务端瞬时错误，不构成封号证据：选择器在窗口内跳过该账号，
-        窗口到期自动放回。503 按连续失败次数退避（60/120/240/480 秒，随后取
-        ``seconds`` 配置上限），500/502 直接使用配置时长；命中一次累计
-        ``transient_error_count``，成功请求清零后重新从最短一档开始。
-        ``relay_failure`` 表示 502 由侧车自身合成（上游未应答）：只压短窗口，
-        已有窗口保持不延长。
+        窗口时长由 ``src.antigravity_failure_policy`` 唯一给出：账号级 5xx 取
+        配置 ``antigravity_transient_hold_seconds``（默认 12h），侧车合成的
+        传输层失败只压一跳（60s）。存储层不再自行分档或做阶梯试探。
 
-        同一窗口内的并发失败不叠加、不推进阶梯：先读后写在同一个事务里完成，
-        后到的失败只会返回已有截止时间。这保证「一次 503 一定把账号移出轮转」，
-        同时避免多 worker 把一次故障放大成整段上限冷却。
+        同一窗口内的重复/并发失败只返回已有截止时间，不叠加、不延长，保证
+        「一次故障只产生一个窗口」。``relay_failure`` 为真时窗口被压到
+        ``RELAY_HOLD_SECONDS``，且已有窗口保持不延长（传输层失败不归咎账号）。
         """
         self._ensure_initialized()
         filename = os.path.basename(filename)
         now = time.time()
-        cap = max(float(seconds or 0), 0.0)
-        if cap <= 0:
+        window = max(float(seconds or 0), 0.0)
+        if window <= 0:
             return 0.0
         hold_until = 0.0
         advanced = False
         try:
             async with sqlite_connect(self._db_path) as db:
-                # Serialize the read and update of this account's backoff window.
+                # Serialize the read and update of this account's hold window.
                 if not self.main_postgres:
                     await db.execute("BEGIN IMMEDIATE")
                 async with db.execute(
@@ -6043,26 +6034,11 @@ class SQLiteManager(AntigravityWarmupStore, AntigravityTelemetryStore):
                     return 0.0
                 current_hold = float(row[0] or 0.0)
                 count = max(int(row[1] or 0), 0)
-                if relay_failure:
-                    # 传输层失败不归咎账号：已有冷却就保持原样（绝不延长），
-                    # 否则只压一个短窗口，把账号让给下一个再试。
-                    if current_hold > now:
-                        await db.rollback()
-                        return current_hold
-                    delay = min(max(seconds, 0.0) or _RELAY_FAILURE_HOLD_SECONDS,
-                                _RELAY_FAILURE_HOLD_SECONDS)
-                elif current_hold > now:
-                    if status_code == 503 or current_hold - now >= cap:
-                        # Same 503 window (or the configured 500/502 hold is no
-                        # shorter): keep it, do not advance the ladder.
-                        await db.rollback()
-                        return current_hold
-                    delay = cap  # 500/502 may lengthen its own hold
-                elif status_code is not None and 500 <= int(status_code) < 600:
-                    delay = _TRANSIENT_HOLD_SECONDS
-                else:
-                    delay = max(cap, _TRANSIENT_HOLD_SECONDS)
-                hold_until = now + delay
+                if current_hold > now:
+                    # 窗口已存在：并发失败、重试回环、传输层抖动都不得改写它。
+                    await db.rollback()
+                    return current_hold
+                hold_until = now + window
                 await db.execute(
                     """UPDATE antigravity_credentials
                        SET transient_hold_until = ?, transient_error_count = ?,
