@@ -72,7 +72,12 @@ def _patch_common(monkeypatch, chain, max_retries=2):
         agy,
         "get_retry_config",
         lambda: _awaitable(
-            {"retry_enabled": True, "max_retries": max_retries, "retry_interval": 0.01}
+            {
+                "text_codes": (429, 502, 503),
+                "retry_enabled": True,
+                "max_retries": max_retries,
+                "retry_interval": 0.01,
+            }
         ),
     )
     monkeypatch.setattr(agy, "get_auto_ban_error_codes", lambda: _awaitable([]))
@@ -135,6 +140,50 @@ async def test_non_stream_capacity_503_falls_back_to_next_model(monkeypatch):
     assert resp.status_code == 200
     # 原号 + 原号补试都在 LITE 上，然后才降级
     assert sent == [LITE, LITE, FLASH]
+
+
+@pytest.mark.asyncio
+async def test_capacity_503_on_two_accounts_triggers_chain_fallback(monkeypatch):
+    """A 503、换号后 B 也 503：这才判成模型级窗口，第 3 次改投降级模型。
+
+    账号级 503 才值得在同一模型上继续换号；两个不同账号在同一模型上都拿到
+    容量 503，换第三个号同样不会成功，直接走降级链。
+    """
+    _patch_common(monkeypatch, [LITE, FLASH])
+    creds = {
+        "a.json": {"access_token": "token-a", "project_id": "proj", "user_email": "a@gmail.com"},
+        "b.json": {"access_token": "token-b", "project_id": "proj", "user_email": "b@gmail.com"},
+    }
+
+    async def fake_get_valid_credential(mode=None, model_name=None, exclude_filenames=None, **kwargs):
+        for name, data in creds.items():
+            if exclude_filenames and name in exclude_filenames:
+                continue
+            return name, dict(data)
+        return None
+
+    monkeypatch.setattr(
+        agy.credential_manager, "get_valid_credential", fake_get_valid_credential
+    )
+
+    sent = []
+
+    async def fake_post_async(url=None, json=None, headers=None, proxy_url=None, timeout=None, transport=None):
+        sent.append((json["model"], headers["Authorization"].split()[-1]))
+        if json["model"] == LITE:
+            return _FakeResponse(503, CAPACITY_BODY.encode())
+        return _FakeResponse(200, b'{"response": {"candidates": []}}')
+
+    monkeypatch.setattr(agy, "post_async", fake_post_async)
+
+    resp = await agy.non_stream_request(_body())
+
+    assert resp.status_code == 200
+    assert sent == [
+        (LITE, "token-a"),   # 原号
+        (LITE, "token-b"),   # 换号：同一模型第二个账号
+        (FLASH, "token-a"),  # 两个账号都 503 → 改投降级模型，账号重新按轮转选
+    ]
 
 
 @pytest.mark.asyncio
