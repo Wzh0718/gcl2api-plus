@@ -63,6 +63,13 @@ from src.antigravity_capacity_window import (
     record_capacity_window,
     should_log_skip,
 )
+from src.model_fallback_trace import (
+    REASON_CAPACITY_503,
+    REASON_CAPACITY_WINDOW,
+    REASON_NO_CREDENTIAL,
+    REASON_TTFT_TIMEOUT,
+    ModelFallbackTrace,
+)
 from src.antigravity_model_catalog import UnknownAntigravityModelError
 from src.antigravity_dynamic_warmup import (
     note_dynamic_warmup_outcome,
@@ -1343,6 +1350,7 @@ async def _stream_request_inner(
     *,
     fallback_settings: tuple[list[str], int],
     gateway_started: float,
+    model_fallback_trace: Optional[ModelFallbackTrace] = None,
 ):
     """
     流式请求函数
@@ -1371,8 +1379,16 @@ async def _stream_request_inner(
         )
     else:
         # 该模型还在容量窗口里就不要再去撞：有降级链就入口改投下一跳。
+        requested_by_gateway = model_name
         model_name = _skip_capacity_window(model_name, chain)
-        model_name, cred_result = await _select_text_credential(model_name, chain)
+        if model_fallback_trace is not None:
+            model_fallback_trace.record(
+                REASON_CAPACITY_WINDOW, requested_by_gateway, model_name
+            )
+        selected_model, cred_result = await _select_text_credential(model_name, chain)
+        if model_fallback_trace is not None:
+            model_fallback_trace.record(REASON_NO_CREDENTIAL, model_name, selected_model)
+        model_name = selected_model
         next_model = _next_fallback_model(chain, model_name) if seconds else None
 
     if not cred_result:
@@ -1487,9 +1503,13 @@ async def _stream_request_inner(
         try:
             mark_stage("recorder_lookup")
             recorder = await get_billing_recorder()
+            fallback_summary = (
+                model_fallback_trace.snapshot() if model_fallback_trace is not None else None
+            )
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
                 **({"text_account_retry": retry_trace.snapshot()} if retry_trace else {}),
+                **({"model_fallback": fallback_summary} if fallback_summary else {}),
                 usage_metadata=usage_metadata, success=success, api_key_id=api_key_id,
                 task_type="image" if image_request else "chat",
                 gateway_seconds=time.monotonic() - gateway_started,
@@ -2211,21 +2231,24 @@ async def _model_attempts(body, native, headers, api_key_id, lease_tracker, requ
     original = request_model or body.get("model", "")
     started = time.monotonic()
     retired_models: Set[str] = set()
+    fallback_trace = ModelFallbackTrace()
     while True:
         inner = _stream_request_inner(
             body=body, native=native, headers=headers, api_key_id=api_key_id,
             lease_tracker=lease_tracker, request_model=original, fallback_settings=settings,
-            gateway_started=started,
+            gateway_started=started, model_fallback_trace=fallback_trace,
         )
         try:
             async for item in inner:
                 yield item
             return
         except FirstOutputTimeoutError as exc:
+            fallback_trace.record(REASON_TTFT_TIMEOUT, body.get("model", ""), exc.next_model)
             body = {**body, "model": exc.next_model}
         except CapacityFallbackRequired as exc:
             # 模型级容量 503：窗口内换号无意义，改投链上下一个模型；降级目标也
             # 被拒时把上游 503（含 Retry-After）交回客户端。
+            fallback_trace.record(REASON_CAPACITY_503, exc.model, exc.next_model)
             retired_models.add(exc.model)
             if exc.next_model in retired_models:
                 yield exc.response
@@ -2704,14 +2727,18 @@ async def non_stream_request(
     settings = await _fallback_settings()
     gateway_started = time.monotonic()
     retired_models: Set[str] = set()
+    fallback_trace = ModelFallbackTrace()
     while True:
         try:
             return await _non_stream_text_attempt(
-                body, headers, api_key_id, original_model, settings, gateway_started
+                body, headers, api_key_id, original_model, settings, gateway_started,
+                fallback_trace,
             )
         except FirstOutputTimeoutError as exc:
+            fallback_trace.record(REASON_TTFT_TIMEOUT, body.get("model", ""), exc.next_model)
             body = {**body, "model": exc.next_model}
         except CapacityFallbackRequired as exc:
+            fallback_trace.record(REASON_CAPACITY_503, exc.model, exc.next_model)
             # 模型级容量 503：本模型在这个窗口里换号也不会成功，改投链上下一个
             # 模型；链尾或降级目标也被判容量时，把上游 503（含 Retry-After）交回。
             retired_models.add(exc.model)
@@ -2721,7 +2748,8 @@ async def non_stream_request(
             body = {**body, "model": exc.next_model}
 
 
-async def _non_stream_text_attempt(body, headers, api_key_id, original_model, settings, gateway_started):
+async def _non_stream_text_attempt(body, headers, api_key_id, original_model, settings, gateway_started,
+                                   model_fallback_trace=None):
     model_name = body["model"] if "model" in body else ""
     # 否则使用传统非流式模式
     log.debug("[ANTIGRAVITY] 使用传统非流式模式")
@@ -2734,8 +2762,16 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
     mark_stage("api_started")
     # 1. 获取有效凭证
     # 该模型还在容量窗口里就不要再去撞：有降级链就入口改投下一跳。
+    requested_by_gateway = model_name
     model_name = _skip_capacity_window(model_name, settings[0])
-    model_name, cred_result = await _select_text_credential(model_name, settings[0])
+    if model_fallback_trace is not None:
+        model_fallback_trace.record(
+            REASON_CAPACITY_WINDOW, requested_by_gateway, model_name
+        )
+    selected_model, cred_result = await _select_text_credential(model_name, settings[0])
+    if model_fallback_trace is not None:
+        model_fallback_trace.record(REASON_NO_CREDENTIAL, model_name, selected_model)
+    model_name = selected_model
     next_model = _next_fallback_model(settings[0], model_name) if settings[1] else None
 
     if not cred_result:
@@ -2824,9 +2860,13 @@ async def _non_stream_text_attempt(body, headers, api_key_id, original_model, se
         )
         try:
             recorder = await get_billing_recorder()
+            fallback_summary = (
+                model_fallback_trace.snapshot() if model_fallback_trace is not None else None
+            )
             await recorder.record(
                 **_billing_response_fields(response, status_code, request_id, current_file, model_name, final_payload),
                 **({"text_account_retry": retry_trace.snapshot()} if retry_trace else {}),
+                **({"model_fallback": fallback_summary} if fallback_summary else {}),
                 usage_metadata=usage_metadata,
                 success=success,
                 api_key_id=api_key_id,
