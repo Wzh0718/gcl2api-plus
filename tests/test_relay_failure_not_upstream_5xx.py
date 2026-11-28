@@ -230,3 +230,20 @@ async def test_relay_failure_recording_never_writes_error_codes(tmp_path, monkey
     await manager.record_antigravity_relay_failure("a.json", "proxy-timeout", "i/o timeout", 502)
     _until, _count, error_codes, _disabled = await read_hold(manager, "a.json")
     assert error_codes in ("[]", None) or "502" not in str(error_codes)
+
+
+def test_storage_adapter_exposes_relay_failure_api():
+    """适配层必须真正暴露留痕接口，而不是只写在 Protocol 里。
+
+    生产中调用链是 `get_storage_adapter()` → StorageAdapter → backend；
+    方法漏在 Protocol 上时单元测试用 SQLiteManager 仍会通过，但线上会
+    AttributeError（2026-11-28 发布时踩到）。
+    """
+    from src.storage_adapter import StorageAdapter
+
+    assert hasattr(StorageAdapter, "record_antigravity_relay_failure"), (
+        "StorageAdapter 缺少 record_antigravity_relay_failure"
+    )
+    assert hasattr(StorageAdapter, "list_antigravity_relay_failures"), (
+        "StorageAdapter 缺少 list_antigravity_relay_failures"
+    )
